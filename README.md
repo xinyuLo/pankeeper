@@ -55,6 +55,22 @@ python -m venv .venv
 - 前端队列引擎（本地 600ms tick 模拟）切到消费后端：轮询 `GET /api/queue/state` 或订阅 SSE
   `GET /api/queue/events`，`QueueBoard/QueueBadge` 渲染层不用动。
 
+## Docker 部署（NAS）
+
+```bash
+docker compose up -d --build     # 构建并启动，数据落在 pankeeper-data volume
+# 访问 http://<NAS_IP>:8000/docs
+```
+
+**持久化说明（重要）**：
+- 所有配置与数据都在容器内 `/app/data`（SQLite `pankeeper.db` + 加密密钥 `jwt.key`/`cred.key`），已挂 volume `pankeeper-data`——升级镜像、重建容器**不丢任何配置**。
+- 网盘连接（加密凭据）、系统设置、转存配置、队列配置、自动任务、转存记录：全部落 SQLite。
+- 目录树缓存/分享清单缓存是**内存态**（重启即清，重新浏览自动重建——设计如此）。
+- **备份 = 备份 volume**（或直接拷 `data/` 目录）。⚠️ 别只拷 db 不拷两个 `.key` 文件——密钥丢了加密凭据解不开。
+- 时区已在镜像里固定 Asia/Shanghai（记录时间不会差 8 小时）。
+
+首次启动：默认管理员 `admin / 12345678`（日志里也会打印），登录后先改密码。
+
 ## 测试
 
 ```bash
