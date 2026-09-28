@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import accounts, auth, cache_api, dd, queue_api, records, search, settings as settings_api
+from .api import accounts, auth, cache_api, dd, pa, queue_api, records, search, settings as settings_api
 from .api.auth import ensure_admin
 from .db import init_db
 
@@ -26,6 +26,7 @@ def create_app() -> FastAPI:
     app.include_router(search.router)
     app.include_router(queue_api.router)
     app.include_router(records.router)
+    app.include_router(pa.router)
     app.include_router(cache_api.router)
 
     @app.on_event("startup")
