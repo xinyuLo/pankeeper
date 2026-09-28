@@ -893,3 +893,23 @@ button,
 .ch-chip.ch-more { background: var(--split); color: var(--text2); border-color: transparent; }
 .ch-edit { font-size: 12px; color: var(--text3); white-space: nowrap; }
 .ch-strip:hover .ch-edit { color: var(--primary); }
+
+/* ===== 设计说明（原型批注）：真实系统不需要，全局隐藏 ===== */
+.note-box { display: none !important; }
+
+/* ===== 搜索页搜索框：桌面一行（输入框 flex + 104px 按钮），整体限宽不拉满 ===== */
+.searchwrap {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  max-width: 840px;
+  margin-bottom: 18px;
+}
+.searchwrap .kw-input { flex: 1 1 auto; min-width: 0; }
+.searchwrap .btn-search { flex: 0 0 104px; height: 44px; font-size: 15px; border-radius: 10px; }
+@media (max-width: 767px) {
+  /* 手机保持堆叠：输入框整行，按钮下一行 */
+  .searchwrap { flex-direction: column; align-items: stretch; max-width: none; }
+  .searchwrap .btn-search { flex: 0 0 auto; width: 100%; }
+}

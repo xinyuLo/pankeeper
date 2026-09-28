@@ -27,7 +27,7 @@ const T_NO_CRED = '请先到「网盘连接」页配置该网盘凭据'
 const T_NO_DD = '请先到「转存配置」页给该网盘添加一个路径'
 
 /* ===== 基础数据 ===== */
-const kw = ref('庆余年 第二季')
+const kw = ref('')
 const channels = ref<SearchChannel[]>([])
 const addr = ref('')
 const results = ref<SearchResultItem[]>([])
@@ -144,6 +144,10 @@ const kwRef = ref()
 
 async function doSearch() {
   if (busy.value) return
+  if (!kw.value.trim()) {
+    message.warning('请输入搜索关键词')
+    return
+  }
   busy.value = true
   barOn.value = true
   barDone.value = false
@@ -435,14 +439,7 @@ onUnmounted(() => {
       <PkPager v-model:current="page" v-model:pageSize="size" :total="filtered.length" />
     </div>
 
-    <div class="note-box">
-      <b>设计说明</b>
-      <ul>
-        <li>点「转存」时目录树会按这条结果的来源<b>自动加载对应网盘的目录</b>——百度资源出百度树，不需要手动选网盘。</li>
-        <li>若该网盘尚未配置凭据，「转存」按钮置灰并引导去「网盘连接」；「快速转存」还要该网盘配过转存目录。</li>
-        <li>搜索请求由后端代理转发 PanSou，前端不直连，避免 TG 频道配置与地址暴露在浏览器。</li>
-      </ul>
-    </div>
+
 
     <!-- 快速转存弹窗（qsMask）：凭转存配置直入队列 -->
     <QuickTransferModal v-model:open="qsOpen" :type="qsType" :share-name="qsName" :share-url="qsUrl" :share-code="qsCode" />

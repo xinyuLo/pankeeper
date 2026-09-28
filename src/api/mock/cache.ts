@@ -22,8 +22,8 @@ export interface CacheCfg {
   /** 内存水位阈值（超过开始降级） */
   memHigh: 75 | 85 | 95
   act: CacheAct
-  /** 缓存条目上限（LRU 淘汰） */
-  maxEntries: number
+  /** 缓存大小上限（MB），超出按 LRU 淘汰 */
+  maxSizeMb: number
 }
 
 /** ===== 已缓存目录树一行 ===== */
@@ -41,8 +41,9 @@ export interface CacheTree {
 /** 内存水位（mock 固定值：62% · 4.9 GB / 8 GB，与原型一致） */
 export interface MemUsage {
   pct: number
-  usedGb: number
-  totalGb: number
+  /** 已用 / 上限（MB） */
+  usedMb: number
+  totalMb: number
 }
 
 export const cacheStore = reactive<{
@@ -58,7 +59,7 @@ export const cacheStore = reactive<{
     ttlUnit: '小时',
     memHigh: 85,
     act: 'ladder',
-    maxEntries: 500,
+    maxSizeMb: 800,
   },
   trees: [
     { id: 1, type: 'baidu', acc: '主账号 138****6688', path: '/影视', entries: 156, size: '42 KB', ttlMin: 96 },
@@ -68,7 +69,7 @@ export const cacheStore = reactive<{
     { id: 5, type: 'quark', acc: '主账号 185****2233', path: '/媒体/电影', entries: 41, size: '12 KB', ttlMin: -38 },
     { id: 6, type: '115', acc: '主账号 xinyu115', path: '/影视/电影', entries: 64, size: '18 KB', ttlMin: 12 },
   ],
-  mem: { pct: 62, usedGb: 4.9, totalGb: 8 },
+  mem: { pct: 62, usedMb: 490, totalMb: 800 },
   seq: 100,
 })
 

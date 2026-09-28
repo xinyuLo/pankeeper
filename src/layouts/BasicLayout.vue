@@ -304,7 +304,8 @@ watch(
   top: 0;
   bottom: 0;
   width: 212px;
-  background: var(--card);
+  /* 轻品牌渐变底：和内容区拉开层次，不再是白花花一片 */
+  background: linear-gradient(180deg, #f8fbff 0%, #f1f6fc 100%);
   border-right: 1px solid var(--split);
   display: flex;
   flex-direction: column;
@@ -407,6 +408,7 @@ watch(
 }
 .pagehead h2 { font-size: 16px; font-weight: 600; letter-spacing: 0.2px; }
 html[data-theme='dark'] .pagehead { background: rgba(23, 26, 33, 0.9); }
+html[data-theme='dark'] .sidebar { background: linear-gradient(180deg, #171c26 0%, #141822 100%); }
 
 .theme-btn {
   display: inline-flex;
