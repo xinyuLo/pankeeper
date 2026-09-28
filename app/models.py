@@ -50,6 +50,8 @@ class PaTask(Base):
     strm_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     regex_pattern: Mapped[str] = mapped_column(Text, default="")
     regex_replace: Mapped[str] = mapped_column(Text, default="")
+    drill_on: Mapped[bool] = mapped_column(Boolean, default=False)
+    drill_json: Mapped[str] = mapped_column(Text, default="[]")
     post_qms: Mapped[bool] = mapped_column(Boolean, default=False)
     post_notify: Mapped[bool] = mapped_column(Boolean, default=True)
     last_run: Mapped[str] = mapped_column(Text, default="")

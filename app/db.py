@@ -33,6 +33,34 @@ def init_db() -> None:
     from . import models  # noqa: F401  确保模型已注册
 
     Base.metadata.create_all(engine)
+    _migrate_columns()
+
+
+def _migrate_columns() -> None:
+    """轻量列迁移：create_all 只建新表不加列，老库缺列时在这里补。"""
+    plan = {
+        "pa_tasks": [
+            ("drill_on", "INTEGER DEFAULT 0"),
+            ("drill_json", "TEXT DEFAULT '[]'"),
+            ("regex_pattern", "TEXT DEFAULT ''"),
+            ("regex_replace", "TEXT DEFAULT ''"),
+            ("qms_id", "INTEGER"),
+            ("strm_id", "INTEGER"),
+            ("exclude_json", "TEXT DEFAULT '[]'"),
+            ("ban_reason", "TEXT DEFAULT ''"),
+            ("compare_path", "TEXT DEFAULT ''"),
+        ],
+    }
+    with engine.connect() as conn:
+        for table, columns in plan.items():
+            rows = conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()
+            if not rows:
+                continue  # 表还不存在，create_all 会带上全部列
+            existing = {r[1] for r in rows}
+            for name, ddl in columns:
+                if name not in existing:
+                    conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+        conn.commit()
 
 
 def db_session() -> Session:
