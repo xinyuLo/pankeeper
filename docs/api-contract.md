@@ -75,10 +75,12 @@ QMS 刮削目录 / STRM 同步目录字典（转存配置联动 + 记录页手�
 **前端不直连 PanSou**，后端转发（避免 TG 频道配置与地址暴露在浏览器）。
 
 ### GET /api/search/results?kw={keyword}
-聚合检索，返回 `SearchResultItem[]`：
+聚合检索（后端代理 pansou，实测本例的 pansou-web 镜像必须走 GET），返回 `SearchResultItem[]`：
 ```jsonc
-{ "n": "庆余年.第二季.4K.HDR.国粤双语", "t": "baidu", "s": "82.4 GB", "d": "2 天前", "ok": true, "hot": true }
-// t: baidu|quark|115|123|ali|xunlei|uc；ok=是否有该网盘凭据（决定「转存」按钮可用）；hot=极速标
+{ "n": "庆余年.第二季.4K.HDR.国粤双语", "t": "baidu", "s": "—", "d": "2026-09-01", "ok": true, "hot": false,
+  "url": "https://pan.baidu.com/s/1xxxx", "share_code": "8888", "source": "tg:xxx" }
+// t: baidu|quark|115|123|ali|xunlei|uc（pansou 的 aliyun→ali 映射；magnet/ed2k/天翼等不支持转存的类型后端直接丢弃）
+// s: pansou 不提供大小，展示 —；ok=是否有该网盘凭据；url/share_code 供入队真实转存
 ```
 - `d`（分享时间）保留 PanSou 原文即可。
 - 支持结果缓存（见 §6 搜索源设置：开启·30 分钟）。
@@ -109,11 +111,15 @@ QMS 刮削目录 / STRM 同步目录字典（转存配置联动 + 记录页手�
 
 ### POST /api/queue/tasks（入队，所有转存动作的唯一入口）
 ```jsonc
-// 请求
-{ "name": "庆余年.第二季.4K", "type": "baidu", "path": "/影视/国产剧", "files": 36, "size": "82.4 GB" }
+// 请求（⚠️ 真实转存必须带 share_url/share_code——mock 时代不需要，前端搜索入队要补上）
+{ "name": "庆余年.第二季.4K", "type": "quark", "path": "/影视/国产剧",
+  "files": 36, "size": "82.4 GB",
+  "share_url": "https://pan.quark.cn/s/xxxx", "share_code": "ab12",
+  "include_subdirs": true }
 // 200
 { "id": 43, "pos": 1 }   // pos = 当前第几位（wait+run 计数），前端 toast 用
 ```
+搜索结果行相应扩展：`GET /api/search/results` 返回的每行含 `url` / `share_code` / `source`（真实转存的数据源）。
 
 ### GET /api/queue/state
 全量状态（前端 600ms 轮询或 SSE），形状 = 前端 `queueView`：
