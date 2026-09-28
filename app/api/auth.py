@@ -14,7 +14,7 @@ from ..services.settings_svc import get_group
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 ADMIN_KEY = "admin"
-DEFAULT_PWD = "admin123456"
+DEFAULT_PWD = "12345678"  # 与前端登录页预填一致（原型同款）
 
 
 def ensure_admin() -> None:
