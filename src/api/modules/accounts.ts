@@ -7,6 +7,19 @@ import { accountStore, type AccountRow } from '../mock/accounts'
 import { MAIN_ORDER } from '../mock/meta'
 import type { AccountStatus, MainDriveType } from '@/types/model'
 
+/** 容量 + 会员摘要（卡片容量条数据源）；拿不到的字段为 null */
+export interface AccountSummary {
+  capacity: { total: number; used: number } | null
+  vip: { name: string; expires: string | null } | null
+}
+
+export function getSummary(type: MainDriveType): Promise<AccountSummary> {
+  if (USE_MOCK) {
+    return mockDelay({ capacity: null, vip: null })
+  }
+  return get<AccountSummary>(`/accounts/${type}/summary`)
+}
+
 export function listAccounts(): Promise<AccountRow[]> {
   if (USE_MOCK) return mockDelay(MAIN_ORDER.map((t) => accountStore.accounts[t]))
   // 真实模式：后端状态灌进 store（保留前端的品牌元信息），视图照旧读 store
