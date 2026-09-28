@@ -21,6 +21,8 @@ export interface SearchSrcCfg {
   /** 默认目标目录：百度 / 夸克各一（手动搜索转存的目标建议） */
   def_dir_baidu: string
   def_dir_quark: string
+  /** 搜索频道白名单（空 = 使用 pansou 全部频道） */
+  channels: string[]
 }
 
 /** ===== tab2 推送通知 ===== */
@@ -67,6 +69,7 @@ export const settingsStore = reactive<SettingsData>({
     cache_mode: 'on',
     def_dir_baidu: '/影视',
     def_dir_quark: '/剧集',
+    channels: [],
   },
   notify: {
     enabled: true,

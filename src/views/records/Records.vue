@@ -8,6 +8,7 @@ import { message } from 'ant-design-vue'
 import QueueBoard from '@/queue/QueueBoard.vue'
 import PkPager from '@/components/PkPager.vue'
 import LogBox from '@/components/LogBox.vue'
+import { useIsMobile } from '@/composables/useIsMobile'
 import { queueView } from '@/queue/engine'
 import { DD_MEDIA, DRIVE_META, MAIN_ORDER } from '@/api/mock/meta'
 import { recordsStore } from '@/api/mock/records'
@@ -27,6 +28,8 @@ import type { DdQmsPath, DdStrmPath, QueueLogLine } from '@/types/model'
 
 /* ===== 分段 tab：默认全部记录；#queue 直达队列段（右下角浮标跳转用） ===== */
 const route = useRoute()
+/* 手机（<768px）8 列表格换卡片列表，点卡片=开详情抽屉 */
+const isMobile = useIsMobile()
 const seg = ref<'queue' | 'records'>('records')
 // hash 是分段唯一事实源（同原型）：#queue → 队列段；hash 消失（如从别处切回 /records）回落记录段
 function applyHash() {
@@ -249,7 +252,7 @@ async function confirmTrig() {
           <a-button @click="openTrig">触发 QMS / STRM</a-button>
           <a-button @click="onClearOld">清空三月前记录</a-button>
         </div>
-        <table>
+        <table v-if="!isMobile">
           <thead>
             <tr>
               <th style="width: 30%">资源名称</th>
@@ -283,6 +286,35 @@ async function confirmTrig() {
             </tr>
           </tbody>
         </table>
+
+        <!-- 手机端：一条记录一张卡，点卡片开详情（与表格同一 handler） -->
+        <div v-else class="rk-cards">
+          <div
+            v-for="r in paged"
+            :key="r.id"
+            class="rk-card"
+            role="button"
+            tabindex="0"
+            @click="openDrawer(r)"
+            @keydown.enter.prevent="openDrawer(r)"
+          >
+            <div class="rk-card-top">
+              <span class="srcbar" :style="{ background: metaOf(r).color }"></span>
+              <span class="rk-card-name">{{ r.n }}</span>
+              <span class="tag" :class="r.cls">{{ r.st }}</span>
+            </div>
+            <div class="rk-card-meta">
+              <span class="tag" :class="metaOf(r).tag">{{ metaOf(r).name }}</span>
+              <span class="small muted rk-card-path">{{ r.p }}</span>
+            </div>
+            <div class="rk-card-foot">
+              <span class="tag" :class="r.qms.cls">{{ r.qms.st }}</span>
+              <span class="tag" :class="r.strm.cls">{{ r.strm.st }}</span>
+              <span class="small muted rk-card-tm">{{ r.tm }}</span>
+            </div>
+          </div>
+          <div v-if="!paged.length" class="pq-empty">没有匹配的记录 · 换个筛选条件试试</div>
+        </div>
         <PkPager v-model:current="page" v-model:pageSize="size" :total="filtered.length" />
       </div>
       <div class="note-box">
@@ -441,5 +473,68 @@ async function confirmTrig() {
   font-size: 13px;
   color: var(--text2);
   margin-bottom: 6px;
+}
+
+/* ---- 移动端（<768px）：8 列表格换卡片列表；PC 一条不动 ---- */
+.rk-cards { display: none; }
+@media (max-width: 767px) {
+  /* 筛选条两颗动作按钮换行时占满整行，好按 */
+  .filterbar :deep(.ant-btn) {
+    flex: 1 1 auto;
+  }
+
+  .rk-cards { display: block; }
+  .rk-card {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--split);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .rk-card:active { background: var(--surface-3); }
+  .rk-card-top {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .rk-card-name {
+    flex: 1;
+    min-width: 0;
+    font-size: 13.5px;
+    font-weight: 500;
+    line-height: 1.45;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    word-break: break-all;
+  }
+  .rk-card-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 7px 0 0 11px;
+    min-width: 0;
+  }
+  .rk-card-path {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rk-card-foot {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 8px 0 0 11px;
+    flex-wrap: wrap;
+  }
+  .rk-card-foot .tag { margin-right: 0; }
+  .rk-card-tm { margin-left: auto; white-space: nowrap; font-size: 11.5px; }
+
+  /* 详情抽屉操作按钮窄屏换行 */
+  .rk-drawerbtns { flex-wrap: wrap; }
 }
 </style>
