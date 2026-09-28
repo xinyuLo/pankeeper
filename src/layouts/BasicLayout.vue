@@ -17,6 +17,7 @@ import {
   FieldTimeOutlined,
   SettingOutlined,
   AppstoreOutlined,
+  LogoutOutlined,
 } from '@ant-design/icons-vue'
 import { useAuthStore } from '@/store/auth'
 import { useThemeStore } from '@/store/theme'
@@ -228,7 +229,7 @@ watch(
             <div class="small muted">已登录</div>
           </div>
         </div>
-        <button class="btn-link" style="margin-top: 8px; padding-left: 0; color: var(--primary); cursor: pointer" @click="logout">退出登录</button>
+        <button class="logout-btn" type="button" @click="logout"><LogoutOutlined /> 退出登录</button>
       </div>
     </aside>
 
@@ -376,6 +377,28 @@ watch(
 .menu .nav-sub .menu-item :deep(.lico) { font-size: 15px; }
 
 .side-foot { padding: 14px 16px; border-top: 1px solid var(--split); flex-shrink: 0; }
+.logout-btn {
+  margin-top: 10px;
+  width: 100%;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text2);
+  cursor: pointer;
+  transition: all 0.18s;
+}
+.logout-btn:hover {
+  border-color: rgba(255, 77, 79, 0.5);
+  color: var(--error);
+  background: rgba(255, 77, 79, 0.06);
+}
+html[data-theme='dark'] .logout-btn { background: transparent; }
 .who { display: flex; align-items: center; gap: 10px; }
 .avatar {
   width: 30px;
