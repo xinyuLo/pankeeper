@@ -10,6 +10,8 @@ import { message } from 'ant-design-vue'
 import { ddStore, ddQmsPaths, ddStrmPaths, ddFind } from '@/api/mock/dd'
 import { DD_ACCOUNTS, DD_MEDIA, MAIN_ORDER, DRIVE_META } from '@/api/mock/meta'
 import { DD_TREES } from '@/api/mock/tree'
+import { getFilesList } from '@/api/modules/files'
+import { USE_MOCK } from '@/api/http'
 import { saveDdItem, deleteDdItem, setDefaultDir } from '@/api/modules/dd'
 import type { DdItem, MainDriveType, TreeNode } from '@/types/model'
 
@@ -103,6 +105,8 @@ function onTypeChange() {
   fAcc.value = DD_ACCOUNTS[fType.value][0]?.id || ''
   fPath.value = ''
   expanded.value = new Set()
+  remoteRows.value = []
+  fidByPath.value = {}
 }
 
 /* ===== 目录树（dd-tnode 结构，扁平化渲染：缩进 = 深度 × 18px，视觉与原型嵌套版一致） ===== */
@@ -114,7 +118,53 @@ interface FlatNode {
 }
 const expanded = ref(new Set<string>())
 
+/* ===== 真实模式：远程目录（按需懒加载，fid 记在 path→fid 映射里） ===== */
+const remoteRows = ref<FlatNode[]>([])
+const remoteLoading = ref(false)
+const fidByPath = ref<Record<string, string>>({})
+
+async function loadRemoteRoot(force = false) {
+  if (remoteLoading.value) return
+  remoteLoading.value = true
+  try {
+    const items = await getFilesList(fType.value, '0', '/', force)
+    const rows: FlatNode[] = []
+    for (const it of items) {
+      const p = '/' + it.name
+      if (it.is_dir) fidByPath.value[p] = it.fid
+      rows.push({ path: p, name: it.name, depth: 0, hasKids: it.is_dir })
+    }
+    remoteRows.value = rows
+  } catch {
+    remoteRows.value = []
+  } finally {
+    remoteLoading.value = false
+  }
+}
+
+async function loadRemoteKids(parent: string) {
+  const fid = fidByPath.value[parent]
+  if (!fid) return
+  try {
+    const items = await getFilesList(fType.value, fid)
+    const depth = parent.split('/').filter(Boolean).length
+    const rows: FlatNode[] = []
+    for (const it of items) {
+      const p = parent === '/' ? '/' + it.name : parent + '/' + it.name
+      if (it.is_dir) fidByPath.value[p] = it.fid
+      rows.push({ path: p, name: it.name, depth: depth, hasKids: it.is_dir })
+    }
+    // 插到父节点之后（保持深度序）
+    const list = remoteRows.value
+    const idx = list.findIndex((r) => r.path === parent)
+    list.splice(idx + 1, 0, ...rows)
+  } catch {
+    /* 加载失败：收起即可重试 */
+  }
+}
+
 const flatTree = computed<FlatNode[]>(() => {
+  if (!USE_MOCK) return remoteRows.value
   const out: FlatNode[] = []
   const walk = (nodes: TreeNode[], parent: string, depth: number) => {
     for (const nd of nodes) {
@@ -129,7 +179,22 @@ const flatTree = computed<FlatNode[]>(() => {
   return out
 })
 
-function toggleNode(p: string) {
+async function toggleNode(p: string) {
+  if (!USE_MOCK) {
+    const s = new Set(expanded.value)
+    if (s.has(p)) {
+      s.delete(p)
+      expanded.value = s
+      return
+    }
+    s.add(p)
+    expanded.value = s
+    // 该节点子层还没拉过：拉一次（有 fid 才是真实目录）
+    if (fidByPath.value[p] && !remoteRows.value.some((r) => r.path.startsWith(p + '/'))) {
+      await loadRemoteKids(p)
+    }
+    return
+  }
   const s = new Set(expanded.value)
   if (s.has(p)) s.delete(p)
   else s.add(p)
@@ -142,6 +207,7 @@ function pickPath(p: string) {
 
 function toggleTree() {
   treeOpen.value = !treeOpen.value
+  if (treeOpen.value && !USE_MOCK && remoteRows.value.length === 0) loadRemoteRoot()
 }
 
 /* ===== 保存（校验全部不关弹窗，重名只在同网盘 + 同账号内拦截） ===== */

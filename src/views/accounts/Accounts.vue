@@ -10,6 +10,12 @@ import { accountStore, ACCOUNT_STATUS_VIEW, type AccountRow } from '@/api/mock/a
 import { MAIN_ORDER, DRIVE_META } from '@/api/mock/meta'
 import { checkAccount, clearAccount, getSummary, saveCredential, type AccountSummary } from '@/api/modules/accounts'
 import type { MainDriveType } from '@/types/model'
+import { ddGetDefault } from '@/api/mock/dd'
+
+/** 默认目标目录：取「转存配置」里该网盘的默认项路径（真实数据，不再写死） */
+function ddBase(type: MainDriveType): string {
+  return ddGetDefault(type)?.path || '—'
+}
 
 /** 卡片按 baidu/quark/115 固定顺序（MAIN_ORDER）铺开，store 变了视图自动跟 */
 const rows = computed<AccountRow[]>(() => MAIN_ORDER.map((t) => accountStore.accounts[t]))
@@ -136,7 +142,7 @@ async function onClear(a: AccountRow) {
         </div>
         <div class="kv"><span>凭据类型</span><b>{{ a.cred_kind }}</b></div>
         <div class="kv"><span>上次检测</span><b>{{ a.last_check }}</b></div>
-        <div class="kv"><span>默认目标目录</span><b>{{ a.base }}</b></div>
+        <div class="kv"><span>默认目标目录</span><b>{{ ddBase(a.type) }}</b></div>
         <div v-if="a.status === 'connected'" class="capblock">
           <template v-if="capOf(a.type)">
             <div class="capbar"><i :class="capClass(capOf(a.type)!.pct)" :style="{ width: capOf(a.type)!.pct + '%' }"></i></div>

@@ -20,16 +20,20 @@ import { computed, provide, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { FolderOutlined } from '@ant-design/icons-vue'
 import PkTree from '@/components/PkTree.vue'
+import LazyDirTree from '@/components/LazyDirTree.vue'
+import { USE_MOCK } from '@/api/http'
 import ShareTree from './ShareTree.vue'
 import { pkQueue } from '@/queue/engine'
 import { DRIVE_META } from '@/api/mock/meta'
 import { SHARE_TREE, MINE_TREE } from '@/api/mock/tree'
-import type { TreeNode } from '@/types/model'
+import type { MainDriveType, TreeNode } from '@/types/model'
 
 const props = defineProps<{ open: boolean; target: TransferTarget | null }>()
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>()
 
-const DEFAULT_DIR = '/我的资源/影视/电视剧/国产剧'
+const DEFAULT_DIR = USE_MOCK ? '/我的资源/影视/电视剧/国产剧' : '/'
+/** 只有三大盘支持真实目录浏览；其余盘允许直接转存（目标目录自动创建） */
+const isMainDrive = computed(() => !!props.target && (['baidu', 'quark', '115'] as string[]).includes(props.target.type))
 
 const meta = computed(() => (props.target ? DRIVE_META[props.target.type] : null))
 /** 分享摘要行：资源名 + 「N 项 · X GB」跟着资源走（项数 mock 固定 12） */
@@ -172,7 +176,15 @@ function start() {
           <a-button size="small" @click="mkfolder">新建文件夹</a-button>
         </div>
         <div class="pane-bd">
-          <PkTree :nodes="MINE_TREE" selectable :default-expand-depth="2" @select="onPick" />
+          <LazyDirTree
+            v-if="!USE_MOCK && isMainDrive"
+            :type="target!.type as MainDriveType"
+            @select="(p: string) => (selectedDir = p)"
+          />
+          <div v-else-if="!USE_MOCK" class="small" style="color: var(--text3); padding: 12px 0">
+            该网盘的目录浏览暂未支持，可直接开始转存（目标目录不存在时会自动创建）。
+          </div>
+          <PkTree v-else :nodes="MINE_TREE" selectable :default-expand-depth="2" @select="onPick" />
         </div>
       </div>
       <div class="bcrumb">
