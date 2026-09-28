@@ -323,6 +323,45 @@ class QuarkAdapter(CloudAdapter):
             except (AdapterError, CircuitOpen, RateLimited) as e:
                 on_log(f"改名失败 {f.name} → {target}：{e}")
 
+    def summary(self) -> dict:
+        """会员 + 容量摘要（防御性解析，拿不到的字段为 None）。
+
+        接口为夸克网页端公开接口（社区工具广泛使用）：
+        - GET /1/clouddrive/member   会员类型与到期时间
+        - GET /1/clouddrive/capacity 容量（含各分类，取合计字段）
+        """
+        member, cap = None, None
+        try:
+            data = self._req(
+                "GET",
+                "https://drive-pc.quark.cn/1/clouddrive/member",
+                params=self._fake_browse_params(),
+            )
+            d = data.get("data") or {}
+            mtype = str(d.get("member_type") or "NORMAL")
+            expires = d.get("member_expires") or None
+            name = {"EXP_SVIP": "体验 SVIP", "SVIP": "SVIP", "VIP": "VIP"}.get(mtype, "普通用户" if mtype == "NORMAL" else mtype)
+            member = {"name": name, "expires": str(expires)[:10] if expires else None}
+        except (AdapterError, CredentialExpired, CircuitOpen):
+            member = None
+        try:
+            data = self._req(
+                "GET",
+                "https://drive-pc.quark.cn/1/clouddrive/capacity",
+                params=self._fake_browse_params(),
+            )
+            d = data.get("data") or {}
+            total = d.get("total_capacity")
+            if not total:
+                # 有些版本把合计放在 file_* 分类里，做一次兜底求和
+                total = sum(v for k, v in d.items() if isinstance(v, (int, float)) and k.startswith(("total", "use")))
+            used = d.get("use_capacity") or d.get("used_capacity")
+            if total:
+                cap = {"total": int(total), "used": int(used or 0)}
+        except (AdapterError, CredentialExpired, CircuitOpen):
+            cap = None
+        return {"capacity": cap, "vip": member}
+
     # stoken 在 list_share 与 save 之间复用，避免重复请求
 
     def prepare(self, spec: TaskSpec) -> dict:
