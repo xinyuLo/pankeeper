@@ -305,9 +305,10 @@ watch(
   top: 0;
   bottom: 0;
   width: 212px;
-  /* 深海军蓝侧栏：和浅色内容区强分层（antd pro 管理台经典做法） */
-  background: linear-gradient(180deg, #1d2739 0%, #16202e 100%);
-  color: rgba(255, 255, 255, 0.88);
+  /* 高级浅侧栏（Linear/Vercel 风）：近白中性底 + 深色选中胶囊，靠字色和胶囊分层 */
+  background: linear-gradient(180deg, #fbfbfc 0%, #f7f7f9 100%);
+  border-right: 1px solid #ececef;
+  color: #1f2329;
   border-right: 1px solid var(--split);
   display: flex;
   flex-direction: column;
@@ -317,8 +318,9 @@ watch(
   height: 60px;
   font-size: 16.5px;
   font-weight: 600;
-  color: #fff;
+  color: #1f2329;
   display: flex;
+  transition: color 0.2s;
   align-items: center;
   gap: 10px;
   border-bottom: 1px solid var(--split);
@@ -353,8 +355,8 @@ watch(
   width: 100%;
   padding: 0 12px;
   height: 38px;
-  border-radius: var(--r-sm);
-  color: rgba(255, 255, 255, 0.62);
+  border-radius: 8px;
+  color: #5c6066;
   text-decoration: none;
   font-size: 13.5px;
   border: none;
@@ -364,16 +366,24 @@ watch(
   text-align: left;
   transition: background 0.18s, color 0.18s;
 }
-.menu .nav-hd { font-weight: 500; color: rgba(255, 255, 255, 0.85); margin-top: 6px; }
+.menu .nav-hd { font-weight: 500; color: #8a8f98; margin-top: 6px; font-size: 13px; }
 .menu-item :deep(.lico),
 .menu .nav-hd .lico { font-size: 16px; opacity: 0.85; }
 .menu-item:hover,
-.menu .nav-hd:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+.menu .nav-hd:hover { background: #eef0f2; color: #1f2329; }
+/* 深色选中胶囊：AI 产品风点睛之笔 */
 .menu-item.on {
-  background: linear-gradient(90deg, rgba(22, 119, 255, 0.85), rgba(64, 150, 255, 0.45));
+  background: #1f2329;
   color: #fff;
   font-weight: 500;
+  box-shadow: 0 2px 8px rgba(16, 24, 40, 0.18);
 }
+html[data-theme='dark'] .menu-item,
+html[data-theme='dark'] .menu .nav-hd { color: rgba(255, 255, 255, 0.6); }
+html[data-theme='dark'] .menu .nav-hd { color: rgba(255, 255, 255, 0.5); }
+html[data-theme='dark'] .menu-item:hover,
+html[data-theme='dark'] .menu .nav-hd:hover { background: rgba(255, 255, 255, 0.07); color: #fff; }
+html[data-theme='dark'] .menu-item.on { background: #f7f7f9; color: #17191c; }
 .menu .nav-hd .chev { margin-left: auto; width: 14px; height: 14px; opacity: 0.4; transition: transform 0.22s; }
 .nav-group.open .nav-hd .chev { transform: rotate(180deg); }
 .menu .nav-sub { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 0.24s ease; }
@@ -382,9 +392,16 @@ watch(
 .menu .nav-sub .menu-item { padding-left: 26px; height: 34px; font-size: 13px; }
 .menu .nav-sub .menu-item :deep(.lico) { font-size: 15px; }
 
-.side-foot { padding: 14px 16px; border-top: 1px solid rgba(255, 255, 255, 0.08); flex-shrink: 0; }
-.side-foot .small { color: rgba(255, 255, 255, 0.45); }
+.side-foot { padding: 14px 16px; border-top: 1px solid #ececef; flex-shrink: 0; }
+.side-foot .small { color: #8a8f98; }
 .side-foot .logout-btn {
+  background: transparent;
+  border-color: #e4e6ea;
+  color: #5c6066;
+}
+html[data-theme='dark'] .side-foot { border-top-color: rgba(255, 255, 255, 0.08); }
+html[data-theme='dark'] .side-foot .small { color: rgba(255, 255, 255, 0.4); }
+html[data-theme='dark'] .side-foot .logout-btn {
   background: transparent;
   border-color: rgba(255, 255, 255, 0.14);
   color: rgba(255, 255, 255, 0.6);
@@ -443,7 +460,12 @@ html[data-theme='dark'] .logout-btn { background: transparent; }
 }
 .pagehead h2 { font-size: 16px; font-weight: 600; letter-spacing: 0.2px; }
 html[data-theme='dark'] .pagehead { background: rgba(23, 26, 33, 0.9); }
-html[data-theme='dark'] .sidebar { background: linear-gradient(180deg, #151b26 0%, #10151f 100%); }
+html[data-theme='dark'] .logo { color: #f2f4fb; }
+html[data-theme='dark'] .sidebar {
+  background: linear-gradient(180deg, #17191c 0%, #131518 100%);
+  border-right-color: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.88);
+}
 
 .theme-btn {
   display: inline-flex;
