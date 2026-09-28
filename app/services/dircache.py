@@ -21,9 +21,19 @@ class DirTreeCache:
         self._lock = threading.Lock()
         self._store: OrderedDict[tuple, tuple[dict, int]] = OrderedDict()  # key → (data, expires_at)
         self._key_locks: dict[tuple, threading.Lock] = {}
+        self._bytes = 0  # 缓存内容近似字节数（水位条依据）
         self.hits = 0
         self.misses = 0
         self.evictions = 0
+
+    @staticmethod
+    def _est_size(data: Any) -> int:
+        import json as _json
+
+        try:
+            return max(256, len(_json.dumps(data, ensure_ascii=False).encode()))
+        except (TypeError, ValueError):
+            return 1024
 
     # ---------- 配置 ----------
 
@@ -38,7 +48,7 @@ class DirTreeCache:
         return ttl * (60 if cfg.get("ttlUnit") == "分钟" else 3600)
 
     def _max_entries(self) -> int:
-        return int(self._cfg().get("maxEntries") or 500)
+        return int(self._cfg().get("maxEntries") or 5000)
 
     # ---------- 读写 ----------
 
@@ -67,6 +77,7 @@ class DirTreeCache:
             with self._lock:
                 self.misses += 1
                 self._store[key] = (data, time.time() + ttl)
+                self._bytes += self._est_size(data)
                 self._evict_if_needed()
             return data
 
@@ -78,13 +89,19 @@ class DirTreeCache:
         with self._lock:
             n = len(self._store)
             self._store.clear()
+            self._bytes = 0
             return n
 
+    def _max_bytes(self) -> int:
+        return max(16, int(self._cfg().get("maxSizeMb") or 800)) * 1024 * 1024
+
     def _evict_if_needed(self) -> None:
-        """条目上限 LRU 逐出；内存水位按条目数近似（每条目按 2KB 估），80% 批量逐出。"""
-        max_n = self._max_entries()
-        while len(self._store) > max_n:
-            self._store.popitem(last=False)
+        """双上限 LRU 逐出：缓存大小（maxSizeMb）优先，条目数做硬顶。"""
+        max_n = max(16, self._max_entries())
+        limit = self._max_bytes()
+        while self._store and (self._bytes > limit or len(self._store) > max_n):
+            _, (data, _) = self._store.popitem(last=False)
+            self._bytes -= self._est_size(data)
             self.evictions += 1
 
     # ---------- 观测（缓存配置页展示） ----------
@@ -94,6 +111,7 @@ class DirTreeCache:
             total = self.hits + self.misses
             return {
                 "entries": len(self._store),
+                "bytes": self._bytes,
                 "hits": self.hits,
                 "misses": self.misses,
                 "evictions": self.evictions,
