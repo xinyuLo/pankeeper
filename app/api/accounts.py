@@ -98,6 +98,29 @@ def delete_credential(drive_type: str, _user=CurrentUser):
     return {"ok": True}
 
 
+@router.get("/{drive_type}/summary")
+def account_summary(drive_type: str, _user=CurrentUser):
+    """容量 + 会员摘要（卡片上的容量条数据源）。
+
+    原则同凭据红线：只回摘要数字，不回任何凭据内容。
+    未配置/不支持/获取失败统一返回 null 字段，前端显示「暂无」。
+    """
+    if drive_type not in ORDER:
+        raise HTTPException(status_code=404, detail="未知网盘")
+    with SessionLocal() as db:
+        acc = db.get(Account, drive_type)
+        if acc is None or acc.status != "connected" or not acc.cookies_enc:
+            return {"capacity": None, "vip": None}
+        try:
+            adapter = make_adapter_for(db, drive_type)
+        except HTTPException:
+            return {"capacity": None, "vip": None}
+    try:
+        return adapter.summary()
+    except Exception:
+        return {"capacity": None, "vip": None}
+
+
 @router.post("/{drive_type}/check")
 def check_account(drive_type: str, _user=CurrentUser):
     with SessionLocal() as db:

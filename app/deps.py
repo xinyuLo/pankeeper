@@ -32,6 +32,7 @@ CurrentUser = Depends(get_current_user)
 
 def make_adapter_for(db: OrmSession, drive_type: str):
     """按网盘类型构造 adapter 实例（Cookie 解密）。未配置抛 400。"""
+    from .adapters.baidu import BaiduClient
     from .adapters.base import AdapterError
     from .adapters.quark import QuarkAdapter
 
@@ -40,6 +41,8 @@ def make_adapter_for(db: OrmSession, drive_type: str):
         raise HTTPException(status_code=400, detail=f"{drive_type} 账号未配置凭据")
     if drive_type == "quark":
         return QuarkAdapter(acc.cookies_enc)
+    if drive_type == "baidu":
+        return BaiduClient(acc.cookies_enc)
     raise HTTPException(status_code=400, detail=f"网盘 {drive_type} 适配器尚未实现")
 
 
