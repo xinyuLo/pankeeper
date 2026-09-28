@@ -19,6 +19,9 @@ DEFAULTS: dict[str, dict[str, Any]] = {
             "cache_mode": "on",
             "def_dir_baidu": "/影视",
             "def_dir_quark": "/剧集",
+            # 搜索频道白名单（空 = 使用 pansou 的全部频道）；pansou 容器环境变量的
+            # CHANNELS 决定"有哪些可选"，这里决定"每次搜索带哪些"
+            "channels": [],
         },
         "notify": {
             "enabled": False,

@@ -44,6 +44,10 @@ def search(kw: str, cloud_types: list[str] | None = None, refresh: bool = False)
         # 不指定就按我们支持的网盘集合问（省得 pansou 返回一堆转存不了的类型）
         "cloud_types": ",".join(cloud_types or list(TYPE_MAP.keys())),
     }
+    # 频道白名单（设置页维护；空 = pansou 的全部频道）
+    selected = get_group("settings")["search"].get("channels") or []
+    if selected:
+        params["channels"] = ",".join(selected)
     if refresh:
         params["refresh"] = "true"
     try:
