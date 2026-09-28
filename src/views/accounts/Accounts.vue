@@ -119,7 +119,7 @@ async function onClear(a: AccountRow) {
   <div>
     <!-- 网盘卡片网格：未配置的卡整体半透明（.off） -->
     <div class="accgrid">
-      <div v-for="a in rows" :key="a.type" class="acc" :class="{ off: a.status === 'unset' }">
+      <div v-for="a in rows" :key="a.type" class="acc" :class="{ off: a.status === 'unset' }" :style="{ '--acc': a.color }">
         <div class="acchead">
           <div class="accname">
             <span class="chip" :style="{ background: a.color }">{{ a.short }}</span>
@@ -189,6 +189,21 @@ async function onClear(a: AccountRow) {
 
 <style scoped>
 /* 卡片网格/卡片本体的视觉在 pk.css 共享段（.accgrid/.acc/.acchead/...），这里只补页面私有微调 */
+/* 品牌色顶条：与首页驾驶舱网盘卡同款分层（百度蓝/夸克青/115 紫） */
+.acc {
+  position: relative;
+  overflow: hidden;
+}
+.acc::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--acc, var(--border));
+  opacity: 0.9;
+}
 /* 状态 tag 挤在卡头右侧，去掉共享 .tag 的右边距避免顶着卡片边 */
 .acchead .tag {
   margin-right: 0;
