@@ -231,14 +231,7 @@ async function confirmTrig() {
       <div class="card rk-flush">
         <QueueBoard />
       </div>
-      <div class="note-box">
-        <b>设计说明</b>
-        <ul>
-          <li>队列<b>串行执行</b>：同一时刻只跑一个，避免触发网盘风控；点完「开始转存」就能走，过会儿来这里看日志。</li>
-          <li>转存中/最新完成的任务日志默认展开，更早的自动收起；<b>已完成任务在队列里保留 30 分钟</b>，之后自动清掉，历史去「全部记录」查。</li>
-          <li>队列节奏（线程数/触发间隔/QMS、STRM 延迟）在「系统管理 → 队列配置」里调。</li>
-        </ul>
-      </div>
+
     </template>
 
     <!-- 全部记录分段：筛选条与表格合并成一张卡（同搜索页：别让两块白卡夹灰缝） -->
@@ -317,13 +310,7 @@ async function confirmTrig() {
         </div>
         <PkPager v-model:current="page" v-model:pageSize="size" :total="filtered.length" />
       </div>
-      <div class="note-box">
-        <b>设计说明</b>
-        <ul>
-          <li>记录是<b>快照</b>：存当时选的目标路径与结果，事后改配置不影响旧记录。</li>
-          <li>失败任务可在抽屉里看到具体哪几个文件失败及原因，支持「重试失败项」。</li>
-        </ul>
-      </div>
+
     </template>
 
     <!-- 详情抽屉：快照字段 + 执行日志 + 记录级操作 -->

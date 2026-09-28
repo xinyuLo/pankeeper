@@ -28,9 +28,9 @@ const cfg = reactive<CacheCfg>({
   ttlUnit: '小时',
   memHigh: 85,
   act: 'ladder',
-  maxEntries: 500,
+  maxSizeMb: 800,
 })
-const mem = ref<MemUsage>({ pct: 62, usedGb: 4.9, totalGb: 8 })
+const mem = ref<MemUsage>({ pct: 62, usedMb: 0, totalMb: 800 })
 const trees = ref<CacheTree[]>([])
 
 let loaded = false // 首次装载期间不回写（否则 onMounted 的赋值会触发一轮保存）
@@ -179,7 +179,7 @@ async function onClearAll() {
           <i :style="{ width: mem.pct + '%' }"></i>
         </div>
         <span class="cc-memtext" :class="{ hot: mem.pct > 85 }">
-          内存占用 <b>{{ mem.pct }}%</b> · {{ mem.usedGb }} GB / {{ mem.totalGb }} GB
+          缓存占用 <b>{{ mem.pct }}%</b> · {{ mem.usedMb }} MB / {{ mem.totalMb }} MB
         </span>
       </div>
       <div class="formrow">
@@ -199,10 +199,10 @@ async function onClearAll() {
         </div>
       </div>
       <div class="formrow">
-        <label>缓存条目上限</label>
+        <label>缓存大小上限（MB）</label>
         <div class="ctl">
-          <a-input-number v-model:value="cfg.maxEntries" :min="50" style="width: 130px" @change="toastCfg()" />
-          <span class="muted small">超过后按「最久未使用」淘汰</span>
+          <a-input-number v-model:value="cfg.maxSizeMb" :min="50" style="width: 130px" @change="toastCfg()" />
+          <span class="muted small">超过后按「最久未使用」淘汰目录</span>
         </div>
       </div>
 
@@ -249,14 +249,7 @@ async function onClearAll() {
       <div class="cc-foot">转存弹窗打开时优先读缓存；过期或未命中才实时拉取，拉完立即回填这份表。</div>
     </div>
 
-    <div class="note-box">
-      <b>设计说明</b>
-      <ul>
-        <li>目录树缓存的<b>失效时间</b>别配太长：网盘那头新建/删除文件夹，靠的就是过期重拉才看得见。</li>
-        <li><b>自动刷新</b>本质是后台预取：在过期前静默换新，用户无感；关掉它省流量，但弹窗可能等一次接口。</li>
-        <li>内存保护按<b>逐级降级</b>设计：压缩 → 减上限 → 关缓存，任何一级都只影响速度、不影响转存能不能用。</li>
-      </ul>
-    </div>
+
   </div>
 </template>
 

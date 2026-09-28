@@ -149,7 +149,6 @@ async function onClear(a: AccountRow) {
             {{ summaries[a.type] === null ? '容量信息获取失败' : '暂无容量信息' }}
           </div>
         </div>
-        <p class="accnote">{{ a.note }}</p>
         <div class="accbtns">
           <a-button type="primary" size="small" @click="onConfig(a)">配置凭据</a-button>
           <a-button size="small" :loading="checking === a.type" @click="onCheck(a)">检测连通</a-button>
@@ -165,15 +164,7 @@ async function onClear(a: AccountRow) {
       </div>
     </div>
 
-    <!-- 设计说明（原型 note-box 原文） -->
-    <div class="note-box">
-      <b>设计说明</b>
-      <ul>
-        <li>凭据（cookie / token）在数据库里<b>加密存储</b>，接口只回状态、绝不回填明文——等同于网盘账号密码。</li>
-        <li>「检测连通」就是 adapter 的第 5 件事：凭据有效性自检。建议再加每日定时自检，过期在页面上标红。</li>
-        <li>115 因为有 p115client 的自动续 cookie 能力，可以做成扫码登录而不是手填。</li>
-      </ul>
-    </div>
+
 
     <!-- 凭据配置弹窗：粘贴整串 Cookie，后端保存即验证 -->
     <a-modal

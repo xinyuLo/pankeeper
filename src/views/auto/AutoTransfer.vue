@@ -269,16 +269,7 @@ function detailCron(c: string): string {
       </div>
     </div>
 
-    <!-- 设计说明 -->
-    <div class="note-box">
-      <b>设计说明</b>
-      <ul>
-        <li>三个网盘菜单共用同一套任务模型和页面，只是按 type 过滤——baidu/quark/115 的差异只体现在 adapter 层，不在 UI 层。</li>
-        <li>任务配置、对比路径、排除清单这些原本在 bdsavepro 里放在 config.json 的字段，新版全部迁到 SQLite，避免高频回写把配置覆盖掉。</li>
-        <li>「上次执行」和「最近结果」来自 task_history 快照表，改任务配置不会影响旧记录。</li>
-        <li>「排除」入口在任务行上（不在编辑弹窗里）：任务执行时会顺手缓存文件清单，点开排除弹窗直接命中缓存秒开。</li>
-      </ul>
-    </div>
+
 
     <!-- 任务弹窗（内含叠加的目录选择弹窗） -->
     <TaskModal
