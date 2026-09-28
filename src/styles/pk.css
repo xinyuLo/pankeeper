@@ -452,7 +452,8 @@ html[data-theme='dark'] .kids { border-left-color: #3a3f4b; }
 /* ===== 网盘连接卡 ===== */
 .accgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 18px; }
 .acc {
-  border: 1px solid var(--split);
+  /* 用户点名要回的清晰描边框（--split 太淡几乎隐形，换 --border） */
+  border: 1px solid var(--border);
   border-radius: var(--r);
   padding: 22px;
   background: var(--card);
@@ -480,6 +481,44 @@ html[data-theme='dark'] .kids { border-left-color: #3a3f4b; }
 .kv b { color: var(--text); font-weight: 500; }
 .accnote { font-size: 12.5px; color: var(--text3); margin: 12px 0 0; line-height: 1.7; }
 .accbtns { display: flex; gap: 8px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--split); }
+
+/* ===== 网盘容量条 + 会员信息（网盘连接卡片） ===== */
+.capblock { margin: 14px 0 0; }
+.capbar {
+  height: 8px;
+  border-radius: 100px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.capbar i {
+  display: block;
+  height: 100%;
+  border-radius: 100px;
+  background: linear-gradient(90deg, #1677ff, #69c0ff);
+  transition: width 0.4s;
+}
+.capbar i.warn { background: linear-gradient(90deg, #faad14, #ffd666); }
+.capbar i.full { background: linear-gradient(90deg, #fa541c, #ff7875); }
+.capmeta {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text3);
+}
+.vip-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(124, 58, 237, 0.12), rgba(8, 145, 178, 0.12));
+  border: 1px solid rgba(124, 58, 237, 0.35);
+  color: #7c3aed;
+  white-space: nowrap;
+}
+html[data-theme='dark'] .vip-tag { color: #b39cf8; }
 
 /* ===== 设计说明批注框 ===== */
 .note-box {

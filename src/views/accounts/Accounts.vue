@@ -8,7 +8,7 @@ import { computed, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { accountStore, ACCOUNT_STATUS_VIEW, type AccountRow } from '@/api/mock/accounts'
 import { MAIN_ORDER, DRIVE_META } from '@/api/mock/meta'
-import { checkAccount, clearAccount, saveCredential } from '@/api/modules/accounts'
+import { checkAccount, clearAccount, getSummary, saveCredential, type AccountSummary } from '@/api/modules/accounts'
 import type { MainDriveType } from '@/types/model'
 
 /** 卡片按 baidu/quark/115 固定顺序（MAIN_ORDER）铺开，store 变了视图自动跟 */
@@ -28,12 +28,48 @@ async function onCheck(a: AccountRow) {
     const res = await checkAccount(a.type)
     // 检测结果回写：last_check 已在 api 里更新，status 以返回为准（真实后端可能探成过期）
     accountStore.accounts[a.type].status = res.status
-    if (res.kind === 'success') message.success(res.message)
-    else if (res.kind === 'warning') message.warning(res.message)
+    if (res.kind === 'success') {
+      message.success(res.message)
+      await loadSummary(a.type)
+    } else if (res.kind === 'warning') message.warning(res.message)
     else message.error(res.message)
   } finally {
     checking.value = null
   }
+}
+
+/* ===== 容量 + 会员摘要：connected 时拉取，检测连通成功后刷新 ===== */
+const summaries = ref<Record<string, AccountSummary | null>>({})
+
+async function loadSummary(type: MainDriveType) {
+  try {
+    summaries.value[type] = await getSummary(type)
+  } catch {
+    summaries.value[type] = null
+  }
+}
+
+function summaryOf(type: MainDriveType): AccountSummary | null {
+  return summaries.value[type] || null
+}
+
+function capOf(type: MainDriveType) {
+  const cap = summaryOf(type)?.capacity
+  if (!cap || !cap.total) return null
+  const pct = Math.min(100, Math.round((cap.used / cap.total) * 100))
+  return {
+    pct,
+    used: (cap.used / 1024 ** 3).toFixed(cap.used > 10 * 1024 ** 3 ? 0 : 1),
+    total: (cap.total / 1024 ** 3).toFixed(cap.total > 10 * 1024 ** 3 ? 0 : 1),
+  }
+}
+
+function capClass(pct: number): string {
+  return pct >= 95 ? 'full' : pct >= 80 ? 'warn' : ''
+}
+
+function gb(v: number): string {
+  return (v / 1024 ** 3).toFixed(v > 10 * 1024 ** 3 ? 0 : 1)
 }
 
 /* 凭据表单：从浏览器 F12 复制整串 Cookie 粘贴；后端保存即验证，永远不回填明文 */
@@ -64,6 +100,7 @@ async function onCredSave() {
     }
     credOpen.value = false
     message.success(`凭据已保存并验证通过（${nickname}）`)
+    await loadSummary(credType.value)
   } catch (e: unknown) {
     const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
     message.error(detail || '凭据验证失败')
@@ -91,10 +128,27 @@ async function onClear(a: AccountRow) {
           <span class="tag acc-tag" :class="view(a.status).cls">
             <span class="dot" :class="view(a.status).dot"></span>{{ view(a.status).label }}
           </span>
+          <span
+            v-if="a.status === 'connected' && summaryOf(a.type)?.vip && summaryOf(a.type)!.vip!.name !== '普通用户'"
+            class="vip-tag"
+            :title="summaryOf(a.type)!.vip!.expires ? `会员到期：${summaryOf(a.type)!.vip!.expires}` : ''"
+          >✦ {{ summaryOf(a.type)!.vip!.name }}<template v-if="summaryOf(a.type)!.vip!.expires"> · {{ summaryOf(a.type)!.vip!.expires }}</template></span>
         </div>
         <div class="kv"><span>凭据类型</span><b>{{ a.cred_kind }}</b></div>
         <div class="kv"><span>上次检测</span><b>{{ a.last_check }}</b></div>
         <div class="kv"><span>默认目标目录</span><b>{{ a.base }}</b></div>
+        <div v-if="a.status === 'connected'" class="capblock">
+          <template v-if="capOf(a.type)">
+            <div class="capbar"><i :class="capClass(capOf(a.type)!.pct)" :style="{ width: capOf(a.type)!.pct + '%' }"></i></div>
+            <div class="capmeta">
+              <span>已用 {{ capOf(a.type)!.used }} GB / 共 {{ capOf(a.type)!.total }} GB</span>
+              <span>{{ capOf(a.type)!.pct }}%</span>
+            </div>
+          </template>
+          <div v-else-if="summaries[a.type] !== undefined" class="small" style="color: var(--text3)">
+            {{ summaries[a.type] === null ? '容量信息获取失败' : '暂无容量信息' }}
+          </div>
+        </div>
         <p class="accnote">{{ a.note }}</p>
         <div class="accbtns">
           <a-button type="primary" size="small" @click="onConfig(a)">配置凭据</a-button>
