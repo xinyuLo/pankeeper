@@ -28,4 +28,8 @@ def pansou_addr(_user=CurrentUser):
 
 @router.get("/channels")
 def search_channels(_user=CurrentUser):
-    return [{"name": c, "on": True} for c in pansou.channels()]
+    """频道清单 + 选中状态：on = 白名单为空（全用）或该频道在白名单里。"""
+    from ..services.settings_svc import get_group
+
+    selected = get_group("settings")["search"].get("channels") or []
+    return [{"name": c, "on": (not selected) or (c in selected)} for c in pansou.channels()]
