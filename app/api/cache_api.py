@@ -16,7 +16,13 @@ router = APIRouter(prefix="/api", tags=["cache"])
 
 @router.get("/cache/config")
 def get_cache_config(_user=CurrentUser):
-    return {"cfg": get_group("cache_cfg"), "stats": dir_cache.stats()}
+    cfg = get_group("cache_cfg")
+    stats = dir_cache.stats()
+    # 水位条语义：条目占用 / 条目上限（真实进程内存水位留在 M2 接 psutil）
+    max_n = max(1, int(cfg.get("maxEntries") or 500))
+    pct = min(100, round(stats["entries"] / max_n * 100))
+    mem = {"pct": pct, "usedGb": stats["entries"], "totalGb": max_n}
+    return {"cfg": cfg, "mem": mem}
 
 
 @router.put("/cache/config")
@@ -27,9 +33,11 @@ def put_cache_config(body: dict, _user=CurrentUser):
 
 @router.get("/cache/trees")
 def list_cache_trees(_user=CurrentUser):
+    """裸数组返回（前端 CacheTree[]），id = "type/account/cid" 组合键。"""
     entries = dir_cache.list_entries()
-    stale = sum(1 for e in entries if e["ttlMin"] < 0)
-    return {"trees": entries, "stale": stale, "mem": dir_cache.stats()}
+    for e in entries:
+        e["id"] = f"{e['type']}/{e['acc']}/{e['path']}"
+    return entries
 
 
 @router.post("/cache/trees/{key}/refresh")
