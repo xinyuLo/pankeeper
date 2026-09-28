@@ -9,7 +9,11 @@ import type { QueueLogLine } from '@/types/model'
 
 export function listRecords(): Promise<RecordRow[]> {
   if (USE_MOCK) return mockDelay(recordsStore.items)
-  return get<RecordRow[]>('/records')
+  // 真实模式：后端灌回 recordsStore（记录页读的是 store）
+  return get<RecordRow[]>('/records').then((rows) => {
+    recordsStore.items.splice(0, recordsStore.items.length, ...rows)
+    return rows
+  })
 }
 
 export function getRecordLog(r: RecordRow): Promise<QueueLogLine[]> {
@@ -23,6 +27,7 @@ export async function deleteRecord(id: number): Promise<void> {
     return mockDelay(undefined)
   }
   await del(`/records/${id}`)
+  recordsStore.items = recordsStore.items.filter((x) => x.id !== id)
 }
 
 /** 清空三月前记录，返回清掉的条数（0 = 没有三月前数据，页面据此提示） */
@@ -43,6 +48,7 @@ export async function clearRecords3MonthsAgo(): Promise<number> {
   }
   const before = new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString()
   const { count } = await del<{ count: number }>('/records', { params: { before } })
+  await listRecords() // 回读对齐 store
   return count
 }
 
