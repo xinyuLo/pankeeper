@@ -229,6 +229,7 @@ html[data-theme='dark'] .tabs > div.on { background: #262b35; color: var(--text)
   display: flex;
   flex-wrap: wrap; /* 9 张卡（命中+7 盘+耗时）窄屏放不下时换行，不许挤出容器 */
   gap: 12px;
+  margin-top: 16px; /* 与上方频道卡片拉开，不再贴着 */
   margin-bottom: 18px;
   background: transparent;
 }
@@ -774,8 +775,10 @@ button,
   border-radius: 8px;
   font-size: 13.5px;
   color: var(--text2);
-  background: transparent;
-  transition: background 0.16s, color 0.16s, box-shadow 0.16s;
+  /* 未选中：白底 + 描边，让每个胶囊看得出来是可点的按钮 */
+  background: var(--card);
+  border: 1px solid var(--border);
+  transition: background 0.16s, color 0.16s, box-shadow 0.16s, border-color 0.16s;
   white-space: nowrap;
 }
 .pktab:hover {
@@ -786,6 +789,7 @@ button,
   color: #fff;
   font-weight: 500;
   background: var(--primary);
+  border-color: var(--primary);
   box-shadow: 0 2px 8px rgba(22, 119, 255, 0.28);
 }
 .pktab.on:hover {
