@@ -49,7 +49,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "auto": True,
         "memHigh": 85,
         "act": "ladder",
-        "maxEntries": 500,
+        # 缓存大小上限（MB）：水位条 = 已用字节 / 该上限，超出按 LRU 淘汰
+        "maxSizeMb": 800,
     },
 }
 

@@ -18,10 +18,11 @@ router = APIRouter(prefix="/api", tags=["cache"])
 def get_cache_config(_user=CurrentUser):
     cfg = get_group("cache_cfg")
     stats = dir_cache.stats()
-    # 水位条语义：条目占用 / 条目上限（真实进程内存水位留在 M2 接 psutil）
-    max_n = max(1, int(cfg.get("maxEntries") or 500))
-    pct = min(100, round(stats["entries"] / max_n * 100))
-    mem = {"pct": pct, "usedGb": stats["entries"], "totalGb": max_n}
+    # 水位条语义：已用缓存字节 / 设置的缓存大小上限（MB）
+    total_mb = max(1, int(cfg.get("maxSizeMb") or 800))
+    used_mb = round(stats.get("bytes", 0) / 1024 / 1024, 1)
+    pct = min(100, round(used_mb / total_mb * 100))
+    mem = {"pct": pct, "usedMb": used_mb, "totalMb": total_mb}
     return {"cfg": cfg, "mem": mem}
 
 
