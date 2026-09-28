@@ -21,6 +21,7 @@ import {
   togglePaTask,
 } from '@/api/modules/tasks'
 import type { MainDriveType, PaTask, QueueLogLine } from '@/types/model'
+import ShareFilesModal from './ShareFilesModal.vue'
 
 const route = useRoute()
 const type = computed(() => (route.params.type as MainDriveType) || 'baidu')
@@ -54,6 +55,23 @@ const STATUS_TEXT: Record<PaTask['last_status'], string> = {
 async function onToggle(t: PaTask) {
   const on = await togglePaTask(t.id)
   message.success(on ? '已启用任务' : '已暂停任务')
+}
+
+/* ===== 分享链接三按钮：查看（实时文件树）/ 跳转 / 复制 ===== */
+const sfOpen = ref(false)
+const sfTask = ref<PaTask | null>(null)
+
+function onViewFiles(t: PaTask) {
+  sfTask.value = t
+  sfOpen.value = true
+}
+
+function onJump(t: PaTask) {
+  if (!t.share_url) {
+    message.warning('该任务没有分享链接')
+    return
+  }
+  window.open(t.share_url, '_blank')
 }
 
 async function onCopy(t: PaTask) {
@@ -181,9 +199,12 @@ function detailCron(c: string): string {
               ><span class="pa-knob"></span></span>
             </td>
             <td class="pa-td pa-link">
-              <span class="pa-url" :title="t.share_url">{{ linkTrunc(t.share_url) }}</span>
               <span v-if="t.share_code" class="pa-code">{{ t.share_code }}</span>
-              <button class="pa-copy" @click="onCopy(t)">复制</button>
+              <div class="pa-linkops">
+                <button class="pa-op" @click="onViewFiles(t)">查看</button>
+                <button class="pa-op" @click="onJump(t)">跳转</button>
+                <button class="pa-op" @click="onCopy(t)">复制</button>
+              </div>
             </td>
             <td class="pa-td">{{ cronText(t.cron) }}</td>
             <td class="pa-td pa-muted">{{ t.exclude_count ? t.exclude_count + ' 项' : '—' }}</td>
@@ -239,9 +260,12 @@ function detailCron(c: string): string {
             <span class="small muted">{{ cronText(t.cron) }}</span>
           </div>
           <div class="pa-c-row">
-            <span class="pa-url" :title="t.share_url">{{ linkTrunc(t.share_url) }}</span>
             <span v-if="t.share_code" class="pa-code">{{ t.share_code }}</span>
-            <button class="pa-copy" @click="onCopy(t)">复制</button>
+            <div class="pa-linkops">
+              <button class="pa-op" @click="onViewFiles(t)">查看</button>
+              <button class="pa-op" @click="onJump(t)">跳转</button>
+              <button class="pa-op" @click="onCopy(t)">复制</button>
+            </div>
           </div>
           <div class="pa-c-row pa-c-info">
             <span>上次执行 {{ t.last_run || '—' }}</span>
@@ -329,235 +353,6 @@ function detailCron(c: string): string {
       </template>
     </a-drawer>
   </div>
+  <!-- 查看分享内容：实时文件树 -->
+  <ShareFilesModal v-model:open="sfOpen" :task-id="sfTask?.id ?? null" :task-name="sfTask?.name || ''" />
 </template>
-
-<style scoped>
-/* 布局 .content 已带 28px 内边距，这里不再叠加（原型 pa-wrap 的 padding 由外壳负责） */
-.pa-wrap { display: flex; flex-direction: column; }
-
-/* ===== 工具条 ===== */
-.pa-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; gap: 12px; flex-wrap: wrap; }
-.pa-left { display: flex; align-items: center; gap: 10px; }
-.pa-title { margin: 0; font-size: 18px; font-weight: 600; color: var(--text); }
-.pa-count {
-  font-size: 13px;
-  color: var(--text2);
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  padding: 2px 10px;
-}
-.pa-right { display: flex; gap: 8px; }
-.pa-btn {
-  height: 34px;
-  padding: 0 14px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--card);
-  color: var(--text);
-  cursor: pointer;
-  font-size: 13.5px;
-  line-height: 1;
-  font-family: inherit;
-  transition: all 0.15s;
-}
-.pa-btn:hover { border-color: var(--primary-h); color: var(--primary); }
-.pa-btn-primary { background: var(--primary); border-color: var(--primary); color: #fff; }
-.pa-btn-primary:hover { background: var(--primary-h); border-color: var(--primary-h); color: #fff; }
-
-/* ===== 任务表 ===== */
-.pa-card { background: var(--card); border-radius: var(--r); box-shadow: var(--shadow); overflow: hidden; }
-.pa-table { width: 100%; border-collapse: collapse; }
-.pa-th {
-  text-align: left;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text2);
-  background: var(--surface-2);
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--split);
-  white-space: nowrap;
-}
-.pa-th-ops { text-align: right; }
-.pa-td {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--split);
-  font-size: 13.5px;
-  color: var(--text);
-  vertical-align: middle;
-}
-tbody tr.pa-row:last-child .pa-td { border-bottom: none; }
-.pa-name { font-weight: 500; }
-.pa-muted { color: var(--text3); }
-
-/* 启用开关（原型自绘，保留手感和 class） */
-.pa-switch {
-  display: inline-block;
-  width: 40px;
-  height: 22px;
-  border-radius: 11px;
-  background: var(--border);
-  position: relative;
-  cursor: pointer;
-  transition: background 0.2s;
-  vertical-align: middle;
-}
-.pa-switch.pa-on { background: var(--primary); }
-.pa-knob {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--card);
-  transition: left 0.2s;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
-}
-.pa-switch.pa-on .pa-knob { left: 20px; }
-
-/* 分享链接格 */
-.pa-link { display: flex; align-items: center; gap: 6px; }
-.pa-url { color: var(--text2); max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pa-code {
-  font-size: 12px;
-  color: var(--text2);
-  background: var(--split);
-  border-radius: 4px;
-  padding: 1px 6px;
-  white-space: nowrap;
-}
-.pa-copy {
-  height: 24px;
-  padding: 0 8px;
-  font-size: 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--card);
-  cursor: pointer;
-  color: var(--text2);
-  font-family: inherit;
-}
-.pa-copy:hover { border-color: var(--primary-h); color: var(--primary); }
-
-/* 最近结果染色 tag：success 绿 / fail 红 / running 蓝 / never 灰 */
-.pa-tag { font-size: 12.5px; padding: 2px 8px; border-radius: 6px; display: inline-block; white-space: nowrap; }
-.pa-st-success { color: #52c41a; background: rgba(82, 196, 26, 0.12); }
-.pa-st-fail { color: #ff4d4f; background: rgba(255, 77, 79, 0.12); }
-.pa-st-running { color: #1677ff; background: rgba(22, 119, 255, 0.12); }
-.pa-st-never { color: var(--text3); background: rgba(0, 0, 0, 0.05); }
-html[data-theme='dark'] .pa-st-success { color: #95de64; background: rgba(82, 196, 26, 0.16); }
-html[data-theme='dark'] .pa-st-fail { color: #ff9c9c; background: rgba(255, 77, 79, 0.16); }
-html[data-theme='dark'] .pa-st-running { color: #69b1ff; background: rgba(22, 119, 255, 0.2); }
-html[data-theme='dark'] .pa-st-never { color: var(--text3); background: rgba(255, 255, 255, 0.06); }
-
-/* ===== 行操作五色按钮（颜色即语义）：
-   执行=蓝 / 编辑=青 / 排除=橙（带计数徽标）/ 详情=中性 / 删除=红（Popconfirm 确认） ===== */
-.pa-ops { display: flex; gap: 4px; justify-content: flex-end; }
-.pa-op {
-  height: 28px;
-  padding: 0 10px;
-  font-size: 13px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--card);
-  cursor: pointer;
-  color: var(--text);
-  font-family: inherit;
-  transition: all 0.15s;
-  white-space: nowrap;
-}
-.pa-op:hover { border-color: var(--primary); color: var(--primary); }
-.pa-op-run { color: #1677ff; border-color: #91caff; }
-.pa-op-run:hover { background: #f0f8ff; border-color: #1677ff; color: #1677ff; }
-.pa-op-edit { color: #08979c; border-color: #87e8de; }
-.pa-op-edit:hover { background: #e6fffb; border-color: #08979c; color: #08979c; }
-.pa-op-excl { color: #d48806; border-color: #ffd591; }
-.pa-op-excl:hover { background: #fffbe6; border-color: #d48806; color: #d48806; }
-.pa-op-num {
-  display: inline-block;
-  margin-left: 3px;
-  font-size: 11px;
-  background: #fff1b8;
-  border-radius: 999px;
-  padding: 0 5px;
-  line-height: 16px;
-  font-style: normal;
-}
-.pa-op-detail { color: var(--text2); }
-.pa-op-detail:hover { border-color: var(--text3); color: var(--text); }
-.pa-op-del { color: #ff4d4f; border-color: #ffccc7; }
-.pa-op-del:hover { background: #fff1f0; border-color: #ff4d4f; color: #ff4d4f; }
-/* 暗色一套（浅色 hover 底直接压暗，语义色提亮一档） */
-html[data-theme='dark'] .pa-op-run { color: #69b1ff; border-color: #1d3948; }
-html[data-theme='dark'] .pa-op-run:hover { background: #111a2c; border-color: #69b1ff; }
-html[data-theme='dark'] .pa-op-edit { color: #36cfc9; border-color: #134848; }
-html[data-theme='dark'] .pa-op-edit:hover { background: #0e2929; border-color: #36cfc9; }
-html[data-theme='dark'] .pa-op-excl { color: #ffc53d; border-color: #594214; }
-html[data-theme='dark'] .pa-op-excl:hover { background: #2b2111; border-color: #ffc53d; }
-html[data-theme='dark'] .pa-op-num { background: #594214; color: #ffe58f; }
-html[data-theme='dark'] .pa-op-del { color: #ff7875; border-color: #582a27; }
-html[data-theme='dark'] .pa-op-del:hover { background: #2b1314; border-color: #ff7875; }
-
-/* ===== 详情抽屉：快照 dl 网格（与转存记录页同一长相） ===== */
-.pa-snap { display: grid; grid-template-columns: 96px 1fr; gap: 11px 14px; font-size: 13.5px; margin-bottom: 22px; }
-.pa-snap dt { color: var(--text3); }
-.pa-snap dd { min-width: 0; overflow-wrap: anywhere; }
-.pa-mono { font-family: var(--font-mono); }
-.pa-sect { font-size: 13px; font-weight: 600; margin-bottom: 10px; color: var(--text2); }
-
-/* ---- 移动端（<768px）：任务卡片列表；PC 一条不动 ---- */
-.pa-cards { display: none; }
-@media (max-width: 767px) {
-  .pa-toolbar { margin-bottom: 12px; }
-  .pa-title { font-size: 16.5px; }
-  /* 新增任务按钮宽出来，主操作好按 */
-  .pa-right { width: 100%; }
-  .pa-right .pa-btn { flex: 1; }
-
-  .pa-cards { display: block; }
-  .pa-carditem {
-    padding: 12px 14px;
-    border-bottom: 1px solid var(--split);
-  }
-  .pa-carditem:last-child { border-bottom: none; }
-  .pa-c-top {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-  }
-  .pa-c-name {
-    flex: 1;
-    min-width: 0;
-    font-weight: 500;
-    font-size: 14px;
-    line-height: 1.45;
-    word-break: break-all;
-  }
-  .pa-c-meta {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-    margin-top: 8px;
-  }
-  .pa-c-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-top: 8px;
-    min-width: 0;
-  }
-  .pa-c-row .pa-url { flex: 1; min-width: 0; max-width: none; }
-  .pa-c-info { color: var(--text3); font-size: 12px; justify-content: space-between; flex-wrap: wrap; gap: 4px 10px; }
-  .pa-c-ops {
-    display: flex;
-    gap: 6px;
-    margin-top: 10px;
-    flex-wrap: wrap;
-  }
-  .pa-c-ops .pa-op { flex: 1 1 auto; justify-content: center; height: 32px; }
-  .pa-c-empty { padding: 40px 16px; text-align: center; color: var(--text3); font-size: 13px; }
-}
-</style>

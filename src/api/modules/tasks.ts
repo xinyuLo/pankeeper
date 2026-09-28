@@ -98,6 +98,19 @@ export async function savePaTask(task: PaTask, extras: PaExtras): Promise<PaTask
   return savedRow || saved
 }
 
+/** 「查看」弹窗：实时解析分享内文件树（每次现拉，不落缓存） */
+export interface ShareFileNode {
+  name: string
+  is_dir: boolean
+  size: number
+  kids: ShareFileNode[]
+}
+
+export function getShareFiles(taskId: number): Promise<{ total: number; tree: ShareFileNode[] }> {
+  if (USE_MOCK) return Promise.resolve({ total: 0, tree: [] })
+  return get<{ total: number; tree: ShareFileNode[] }>(`/pa/tasks/${taskId}/share-files`)
+}
+
 /* ===================== 任务弹窗的扩展配置 =====================
  * 正则规则（可多条）/ 下钻勾选 / QMS·STRM 目录 id——这些在弹窗里配置，
  * 但 PaTask 接口契约（docs/02）没有对应字段；先按任务 id 存内存 map，
