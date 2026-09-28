@@ -23,7 +23,7 @@ npm run build
 2. `vite.config.ts` 的 `/api` proxy target 改成后端地址
 3. 按 `src/api/modules/*.ts` 里各函数的 `TODO 后端: GET/POST /api/...` 注释逐个实现真实接口（字段契约 = `src/types/model.ts`）
 
-页面代码不用动。
+页面代码不用动。**后端开发按 [docs/api-contract.md](docs/api-contract.md)（接口需求文档）实现**：通用约定（认证/响应格式/错误码/时间格式）+ 全部端点的请求响应形状与行为要求。
 
 ## 目录速览
 
