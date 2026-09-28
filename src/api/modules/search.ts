@@ -1,42 +1,50 @@
 /**
- * 搜索转存领域 API —— mock 先行。
- * 真实场景里搜索请求由后端代理转发 PanSou（前端不直连，避免 TG 频道配置与地址暴露）。
- * 后端就绪后：把 mockDelay(...) 换成 http 调用（端点写在 TODO 注释里），页面代码不动。
+ * 搜索转存领域 API —— 双模式。
+ * 真实模式：后端代理 pansou（前端不直连，频道配置与地址不暴露）。
+ * 真实结果行带 url/share_code/source（入队真实转存的必要字段）。
  */
-import { mockDelay } from '../http'
+import { get, mockDelay, USE_MOCK } from '../http'
 import { searchStore, searchStoreChannels, PANSOU_ADDR, type SearchChannel } from '../mock/search'
 import type { SearchResultItem } from '@/types/model'
 
 export type { SearchChannel }
 
+/** mock 结果补上假链接：让「入队带 url」的链路在 mock 模式也可走通（类型对齐真实模式） */
+function mockRows(): SearchResultItem[] {
+  return searchStore.results.map((r, i) => ({
+    ...r,
+    url: `https://pan.${r.t === 'ali' ? 'alipan' : r.t}.example.com/s/mock${i}`,
+    share_code: i % 3 === 0 ? 'ab12' : '',
+    source: 'mock',
+  }))
+}
+
 /**
  * 按关键词检索聚合结果。
- * 延迟故意拉到 900ms+：给「正在检索 / 骨架屏 / 扫源计数」动效留出演出的时间。
+ * mock 模式延迟故意拉长：给「正在检索 / 骨架屏 / 扫源计数」动效留出演出的时间。
  */
 export function getSearchResults(keyword: string): Promise<SearchResultItem[]> {
-  // TODO 后端: GET /api/search/results?kw=
-  void keyword
-  const dur = 900 + Math.round(Math.random() * 500)
-  return mockDelay(searchStore.results, dur)
+  if (USE_MOCK) {
+    const dur = 900 + Math.round(Math.random() * 500)
+    return mockDelay(mockRows(), dur)
+  }
+  return get<SearchResultItem[]>('/search/results', { params: { kw: keyword } })
 }
 
-/**
- * 首屏结果集：不走检索动效（等价原型 window.results 页面打开时已在场）。
- * 真实场景对应「上次检索的缓存结果」；点搜索才走 getSearchResults 的完整动效。
- */
+/** 首屏结果集：mock 直接给缓存结果；真实模式返回 []（等用户搜索） */
 export function getInitialResults(): Promise<SearchResultItem[]> {
-  // TODO 后端: GET /api/search/results?kw=&cached=1
-  return mockDelay(searchStore.results)
+  if (USE_MOCK) return mockDelay(mockRows())
+  return Promise.resolve([])
 }
 
-/** 搜索源频道列表（筛选条勾选项） */
 export function getSearchChannels(): Promise<SearchChannel[]> {
-  // TODO 后端: GET /api/search/channels
-  return mockDelay(searchStoreChannels)
+  if (USE_MOCK) return mockDelay(searchStoreChannels)
+  return get<{ name: string; on: boolean }[]>('/search/channels').then((list) =>
+    list.map((x) => ({ name: x.name, on: x.on })),
+  )
 }
 
-/** PanSou 聚合源地址 */
 export function getPanSouAddr(): Promise<string> {
-  // TODO 后端: GET /api/search/pansou-addr
-  return mockDelay(PANSOU_ADDR)
+  if (USE_MOCK) return mockDelay(PANSOU_ADDR)
+  return get<string>('/search/pansou-addr')
 }

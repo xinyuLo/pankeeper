@@ -10,6 +10,7 @@ import LogBox from '@/components/LogBox.vue'
 import TaskModal from './TaskModal.vue'
 import RunModal from './RunModal.vue'
 import ExclModal from './ExclModal.vue'
+import { useIsMobile } from '@/composables/useIsMobile'
 import { DRIVE_META } from '@/api/mock/meta'
 import {
   cronHuman,
@@ -24,6 +25,8 @@ import type { MainDriveType, PaTask, QueueLogLine } from '@/types/model'
 const route = useRoute()
 const type = computed(() => (route.params.type as MainDriveType) || 'baidu')
 const meta = computed(() => DRIVE_META[type.value])
+/* 手机（<768px）8 列任务表换卡片列表，动作按钮一行铺开 */
+const isMobile = useIsMobile()
 
 /* ===== 任务列表：随路由参数切网盘 ===== */
 const tasks = ref<PaTask[]>([])
@@ -150,9 +153,9 @@ function detailCron(c: string): string {
       </div>
     </div>
 
-    <!-- 任务表 -->
+    <!-- 任务表：PC 表格 / 手机卡片列表互斥 -->
     <div class="pa-card">
-      <table class="pa-table">
+      <table v-if="!isMobile" class="pa-table">
         <thead>
           <tr>
             <th class="pa-th">任务名</th>
@@ -215,6 +218,55 @@ function detailCron(c: string): string {
           </tr>
         </tbody>
       </table>
+
+      <!-- 手机端：一任务一卡（名称+开关 / 状态+定时 / 链接+复制 / 执行信息 / 五动作铺开） -->
+      <div v-else class="pa-cards">
+        <div v-for="t in tasks" :key="t.id" class="pa-carditem" :style="{ borderLeft: '3px solid ' + meta.color }">
+          <div class="pa-c-top">
+            <span class="pa-c-name">{{ t.name }}</span>
+            <span
+              class="pa-switch"
+              :class="{ 'pa-on': t.enabled }"
+              role="switch"
+              :aria-checked="t.enabled"
+              @click="onToggle(t)"
+            ><span class="pa-knob"></span></span>
+          </div>
+          <div class="pa-c-meta">
+            <span class="pa-tag" :class="'pa-st-' + t.last_status">
+              {{ STATUS_TEXT[t.last_status] }}<template v-if="t.last_result"> · {{ t.last_result }}</template>
+            </span>
+            <span class="small muted">{{ cronText(t.cron) }}</span>
+          </div>
+          <div class="pa-c-row">
+            <span class="pa-url" :title="t.share_url">{{ linkTrunc(t.share_url) }}</span>
+            <span v-if="t.share_code" class="pa-code">{{ t.share_code }}</span>
+            <button class="pa-copy" @click="onCopy(t)">复制</button>
+          </div>
+          <div class="pa-c-row pa-c-info">
+            <span>上次执行 {{ t.last_run || '—' }}</span>
+            <span>已排除 {{ t.exclude_count ? t.exclude_count + ' 项' : '—' }}</span>
+          </div>
+          <div class="pa-c-ops">
+            <button class="pa-op pa-op-run" @click="openRun(t)">执行</button>
+            <button class="pa-op pa-op-edit" @click="openEdit(t)">编辑</button>
+            <button class="pa-op pa-op-excl" @click="openExcl(t)">
+              排除<i v-if="t.exclude_count" class="pa-op-num">{{ t.exclude_count }}</i>
+            </button>
+            <button class="pa-op pa-op-detail" @click="openDetail(t)">详情</button>
+            <a-popconfirm
+              :title="`确认删除任务「${t.name}」？此操作不可恢复。`"
+              ok-text="删除"
+              cancel-text="取消"
+              :ok-button-props="{ danger: true }"
+              @confirm="onDel(t)"
+            >
+              <button class="pa-op pa-op-del">删除</button>
+            </a-popconfirm>
+          </div>
+        </div>
+        <div v-if="!tasks.length" class="pa-c-empty">当前网盘暂无自动转存任务</div>
+      </div>
     </div>
 
     <!-- 设计说明 -->
@@ -462,4 +514,59 @@ html[data-theme='dark'] .pa-op-del:hover { background: #2b1314; border-color: #f
 .pa-snap dd { min-width: 0; overflow-wrap: anywhere; }
 .pa-mono { font-family: var(--font-mono); }
 .pa-sect { font-size: 13px; font-weight: 600; margin-bottom: 10px; color: var(--text2); }
+
+/* ---- 移动端（<768px）：任务卡片列表；PC 一条不动 ---- */
+.pa-cards { display: none; }
+@media (max-width: 767px) {
+  .pa-toolbar { margin-bottom: 12px; }
+  .pa-title { font-size: 16.5px; }
+  /* 新增任务按钮宽出来，主操作好按 */
+  .pa-right { width: 100%; }
+  .pa-right .pa-btn { flex: 1; }
+
+  .pa-cards { display: block; }
+  .pa-carditem {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--split);
+  }
+  .pa-carditem:last-child { border-bottom: none; }
+  .pa-c-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .pa-c-name {
+    flex: 1;
+    min-width: 0;
+    font-weight: 500;
+    font-size: 14px;
+    line-height: 1.45;
+    word-break: break-all;
+  }
+  .pa-c-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+  }
+  .pa-c-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+    min-width: 0;
+  }
+  .pa-c-row .pa-url { flex: 1; min-width: 0; max-width: none; }
+  .pa-c-info { color: var(--text3); font-size: 12px; justify-content: space-between; flex-wrap: wrap; gap: 4px 10px; }
+  .pa-c-ops {
+    display: flex;
+    gap: 6px;
+    margin-top: 10px;
+    flex-wrap: wrap;
+  }
+  .pa-c-ops .pa-op { flex: 1 1 auto; justify-content: center; height: 32px; }
+  .pa-c-empty { padding: 40px 16px; text-align: center; color: var(--text3); font-size: 13px; }
+}
 </style>

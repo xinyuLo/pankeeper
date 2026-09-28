@@ -4,6 +4,9 @@ export interface TransferTarget {
   type: 'baidu' | 'quark' | '115' | '123' | 'ali' | 'xunlei' | 'uc'
   name: string
   size: string
+  /** 真实转存需要：分享链接与提取码 */
+  url?: string
+  share_code?: string
 }
 </script>
 
@@ -118,7 +121,15 @@ function start() {
   const t = props.target
   if (!t) return
   const files = parseInt((sumMeta.value.match(/(\d+)\s*项/) || [])[1] || '', 10) || 12
-  const pos = pkQueue.enqueue({ name: t.name, type: t.type, path: selectedDir.value, files, size: t.size })
+  const pos = pkQueue.enqueue({
+    name: t.name,
+    type: t.type,
+    path: selectedDir.value,
+    files,
+    size: t.size,
+    share_url: t.url,
+    share_code: t.share_code,
+  })
   message.success(`已加入转存队列 · 当前第 ${pos} 位，完成后去「转存记录 → 队列」看日志`)
   close()
 }
@@ -201,4 +212,12 @@ function start() {
   border-top: 1px solid var(--split);
 }
 .tm-foot .small { flex: none; }
+
+/* 移动端（<768px）：底部操作区改两行（说明一行 + 按钮铺满） */
+@media (max-width: 767px) {
+  .tm-body { max-height: 56dvh; }
+  .tm-foot { flex-wrap: wrap; }
+  .tm-foot .small { flex: 1 1 100%; margin-bottom: 2px; }
+  .tm-foot :deep(.ant-btn) { flex: 1; }
+}
 </style>

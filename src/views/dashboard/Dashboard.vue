@@ -664,4 +664,38 @@ html[data-theme='dark'] .db-tasks-ft b.bad { color: #ff7875; }
 @media (max-width: 860px) {
   .db-pans { grid-template-columns: 1fr; }
 }
+
+/* ---------- 手机（<768px）：总览两列、任务表竖排成卡片观感 ----------
+   任务表只有一行数据，竖排堆叠就是天然的手机卡片，不用 JS 换结构。 */
+@media (max-width: 767px) {
+  .db-wrap { gap: 14px; }
+  .db-stats { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .db-stat { padding: 12px 14px 12px 20px; }
+  .db-stat b { font-size: 20px; }
+  .db-stat.is-text b { font-size: 17px; }
+  .db-stat-sub { display: none; } /* 两列下副行挤成两三字一行，干脆收掉（数据下有完整卡） */
+  .db-sec-hd { flex-direction: column; gap: 2px; }
+
+  .db-pan-hd { padding: 13px 14px 10px; }
+  .db-pan-body { padding: 0 14px 12px; }
+  .db-pan-ft { padding: 9px 14px; }
+
+  /* 任务卡头部：说明文字放开折行 */
+  .db-tasks-hd { padding: 13px 14px 0; }
+  .db-tasks-desc { white-space: normal; }
+  .db-tabsbar { padding: 8px 10px 0; }
+  .db-tasks-ft { padding: 10px 14px; gap: 8px 14px; }
+
+  /* 表格竖排：隐藏表头，每格变成整行块（inline width 一并作废） */
+  .db-table { table-layout: auto; }
+  .db-table thead { display: none; }
+  .db-table, .db-table tbody, .db-table tr, .db-table td {
+    display: block;
+    width: auto !important;
+  }
+  .db-td { padding: 10px 14px; border-bottom: 1px dashed var(--split); }
+  .db-row .db-td:last-child { border-bottom: none; }
+  .db-name, .db-dir { white-space: normal; word-break: break-all; }
+  .db-empty-cell .db-empty { min-height: 120px; }
+}
 </style>

@@ -8,7 +8,7 @@ import { computed, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { accountStore, ACCOUNT_STATUS_VIEW, type AccountRow } from '@/api/mock/accounts'
 import { MAIN_ORDER, DRIVE_META } from '@/api/mock/meta'
-import { checkAccount, clearAccount, configAccount } from '@/api/modules/accounts'
+import { checkAccount, clearAccount, saveCredential } from '@/api/modules/accounts'
 import type { MainDriveType } from '@/types/model'
 
 /** 卡片按 baidu/quark/115 固定顺序（MAIN_ORDER）铺开，store 变了视图自动跟 */
@@ -36,10 +36,40 @@ async function onCheck(a: AccountRow) {
   }
 }
 
-async function onConfig(a: AccountRow) {
-  await configAccount(a.type)
-  // 原型占位：真实实现里凭据表单只写不读，接口永远不回明文
-  message.info(`（原型）弹出「${DRIVE_META[a.type].full}」凭据配置`)
+/* 凭据表单：从浏览器 F12 复制整串 Cookie 粘贴；后端保存即验证，永远不回填明文 */
+const credOpen = ref(false)
+const credType = ref<MainDriveType>('quark')
+const credTitle = computed(() => `配置凭据 · ${DRIVE_META[credType.value]?.full || credType.value}`)
+const credCookies = ref('')
+const credSaving = ref(false)
+
+function onConfig(a: AccountRow) {
+  credType.value = a.type
+  credCookies.value = ''
+  credOpen.value = true
+}
+
+async function onCredSave() {
+  if (!credCookies.value.trim()) {
+    message.warning('请先粘贴 Cookie')
+    return
+  }
+  credSaving.value = true
+  try {
+    const { nickname } = await saveCredential(credType.value, credCookies.value.trim())
+    const row = accountStore.accounts[credType.value]
+    if (row) {
+      row.status = 'connected'
+      row.last_check = new Date().toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+    }
+    credOpen.value = false
+    message.success(`凭据已保存并验证通过（${nickname}）`)
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '凭据验证失败')
+  } finally {
+    credSaving.value = false
+  }
 }
 
 async function onClear(a: AccountRow) {
@@ -90,6 +120,25 @@ async function onClear(a: AccountRow) {
         <li>115 因为有 p115client 的自动续 cookie 能力，可以做成扫码登录而不是手填。</li>
       </ul>
     </div>
+
+    <!-- 凭据配置弹窗：粘贴整串 Cookie，后端保存即验证 -->
+    <a-modal
+      v-model:open="credOpen"
+      :title="credTitle"
+      :confirm-loading="credSaving"
+      ok-text="保存并验证"
+      @ok="onCredSave"
+    >
+      <p class="small" style="color: var(--text3); margin-bottom: 10px">
+        到对应网盘网页版按 F12 → 网络 → 任一请求的请求头里复制整串 Cookie 粘贴到下面。
+        凭据加密存储，任何接口都不会回填明文。
+      </p>
+      <a-textarea
+        v-model:value="credCookies"
+        :rows="5"
+        placeholder="粘贴整串 Cookie，例如：UID=...; CID=...; SEID=...; __pus=...; __puus=..."
+      />
+    </a-modal>
   </div>
 </template>
 

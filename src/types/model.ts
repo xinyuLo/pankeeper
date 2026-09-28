@@ -152,6 +152,10 @@ export interface SearchResultItem {
   d: string
   ok: boolean
   hot?: boolean
+  /** 真实模式：分享链接与提取码（入队真实转存的必要字段；mock 模式为演示假链接） */
+  url?: string
+  share_code?: string
+  source?: string
 }
 
 /** ===== 通用树节点（目录树/分享树 mock） ===== */

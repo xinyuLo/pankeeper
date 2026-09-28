@@ -234,11 +234,6 @@ html[data-theme='dark'] .mt-switch-slider { background: var(--border); }
 .mt-section-title { font-weight: 600; font-size: 14px; }
 .mt-section-tip { font-size: 12px; color: var(--text3); }
 
-/* ===== 正则规则行 ===== */
-.mt-regex-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
-.mt-regex-row .mt-input { flex: 1 1 0; min-width: 0; }
-.mt-regex-sep { color: var(--text3); }
-
 /* ===== 复选列表（排除清单 / 下钻子目录） ===== */
 .mt-check-list {
   max-height: 168px;
@@ -354,3 +349,46 @@ html[data-theme='dark'] .mt-dir-bar { color: #ffc069; }
 .mt-stat-excl .mt-stat-num { color: var(--warning); }
 .mt-runlog { height: 230px; max-height: none; }
 .mt-run-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; font-size: 13px; color: var(--text2); }
+
+/* =====================================================================
+ * 移动端（<768px）：弹窗改为近全屏卡片，表单从「左标签右控件」叠成上下结构
+ * ===================================================================== */
+@media (max-width: 767px) {
+  .mt-mask { align-items: flex-end; } /* 底部滑入更像 iOS 弹窗 */
+  .mt-dialog {
+    width: 100vw !important; /* 覆盖四个弹窗各自内联的 width:xxx */
+    max-width: 100vw;
+    max-height: 94dvh;
+    border-radius: 16px 16px 0 0;
+  }
+  .mt-dialog-head { padding: 13px 16px; }
+  .mt-dialog-title { font-size: 15px; }
+  .mt-dialog-sub { display: none; } /* 窄屏省空间，标题色点已能区分 */
+  .mt-dialog-body { padding: 14px 14px 18px; }
+  .mt-dialog-foot { padding: 10px 14px calc(var(--sab, 0px) + 10px); }
+
+  /* 标签行改上下结构：130px 右对齐标签在窄屏太浪费 */
+  .mt-form-row { display: block; margin-bottom: 14px; }
+  .mt-label { width: auto; flex: none; text-align: left; padding-right: 0; line-height: 1.6; margin-bottom: 6px; display: block; }
+
+  /* 焦点输入框 ≥16px 防 iOS 聚焦缩放（请假项目同款坑） */
+  .mt-input,
+  .mt-select { font-size: 16px; height: 38px; }
+
+  .mt-btn { height: 38px; }
+  .mt-btn-inline { height: 38px; }
+  .mt-icon-btn { width: 38px; height: 38px; flex: 0 0 38px; }
+
+  /* 正则两段输入窄屏改竖排（并排每个只剩 120px 没法用） */
+  .mt-regex-row { flex-wrap: wrap; }
+  .mt-regex-row .mt-input { flex: 1 1 100%; }
+  .mt-regex-sep { display: none; }
+
+  /* 执行监控统计四卡 → 两列 */
+  .mt-stats { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .mt-stat-card { padding: 10px; }
+  .mt-runlog { height: 180px; }
+
+  /* 排除清单缓存状态条允许换行 */
+  .mt-listcache { flex-wrap: wrap; }
+}

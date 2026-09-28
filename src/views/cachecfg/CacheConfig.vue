@@ -208,7 +208,7 @@ async function onClearAll() {
 
       <!-- ===== 段三：已缓存目录 ===== -->
       <div class="cc-sect">已缓存目录<span class="cc-secttip">{{ countTip }}</span></div>
-      <div class="cc-tablewrap">
+      <div class="cc-tablewrap pk-hscroll">
         <table class="cc-table">
           <thead>
             <tr>
@@ -457,5 +457,21 @@ html[data-theme='dark'] .cc-ttl.fresh {
   padding: 0 22px 16px;
   font-size: 12px;
   color: var(--text3);
+}
+
+/* ---- 移动端（<768px）：卡头堆叠、操作按钮占满整行；PC 一条不动 ---- */
+@media (max-width: 767px) {
+  .cc-cardhd {
+    flex-direction: column;
+    gap: 12px;
+    padding: 14px 14px 12px;
+  }
+  .cc-headact { width: 100%; }
+  .cc-headact :deep(.ant-btn) { flex: 1; }
+  .cc-sect { padding: 14px 14px 4px; }
+  .cc-memrow { padding: 2px 14px 0; flex-wrap: wrap; }
+  .cc-membar { flex: 1 1 100%; max-width: none; }
+  .cc-tablewrap { padding: 10px 8px 14px; }
+  .cc-foot { padding: 0 14px 14px; }
 }
 </style>

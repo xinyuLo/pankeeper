@@ -13,6 +13,7 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    host: true, // 监听 0.0.0.0：手机连同一 WiFi 用 http://<电脑IP>:5173 真机联调
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:8000',

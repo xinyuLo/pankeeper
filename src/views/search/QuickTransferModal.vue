@@ -16,7 +16,9 @@ const props = defineProps<{
   type: DriveType | null
   /** 分享顶层目录名（用于预览与入队命名） */
   shareName: string
-}>()
+ shareUrl?: string
+    shareCode?: string
+  }>()
 
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>()
 
@@ -107,6 +109,8 @@ function onOk() {
     type: it.type,
     path: it.path,
     size: '—',
+    share_url: props.shareUrl,
+    share_code: props.shareCode,
   })
   message.success(`已加入转存队列 · 当前第 ${pos} 位，完成后去「转存记录 → 队列」看日志`)
   close()
@@ -254,4 +258,11 @@ function onOk() {
 /* 暗色：高亮是硬编码浅色底，深色上几乎看不见，必须单独换（原型实测踩坑） */
 html[data-theme='dark'] .qs-pv-new { background: rgba(64, 150, 255, 0.2); color: #91caff; }
 html[data-theme='dark'] .qs-preview.is-renamed { border-color: rgba(64, 150, 255, 0.34); }
+
+/* 移动端（<768px）：行内字段（文件夹更名）改上下结构 */
+@media (max-width: 767px) {
+  .qs-body { padding-top: 12px; }
+  .dd-inline { display: block; }
+  .dd-inline .dd-label { margin-bottom: 6px !important; }
+}
 </style>
