@@ -344,7 +344,14 @@ onUnmounted(() => {
     </div>
 
     <!-- 结果表 + 分页同一张白卡（padding:0 的卡里表尾不夹灰缝）；手机端换卡片列表 -->
-    <div class="card st-flush st-res" :class="{ enter: rowEpoch > 0 }">
+    <div class="card st-flush st-res" :class="{ enter: rowEpoch > 0, 'is-empty': !busy && !paged.length }">
+      <!-- 空态：居中插画式，撑起卡片高度 -->
+      <div v-if="!busy && !paged.length" class="pk-empty-state">
+        <div class="pk-es-ico">🔍</div>
+        <div class="pk-es-title">暂无搜索结果</div>
+        <div class="pk-es-sub">输入关键词开始检索，或切换上方网盘筛选试试</div>
+      </div>
+      <template v-else>
       <table v-if="!isMobile">
         <thead>
           <tr>
@@ -389,13 +396,7 @@ onUnmounted(() => {
               </div>
             </td>
           </tr>
-          <tr v-if="!paged.length">
-            <td colspan="5">
-              <div class="pk-empty">
-                <b>该网盘暂无命中结果</b>换个网盘 tab 或调整关键词试试
-              </div>
-            </td>
-          </tr>
+
         </tbody>
       </table>
 
@@ -431,12 +432,11 @@ onUnmounted(() => {
               <button class="btn btn-jump" @click="onJump(r)">跳转</button>
             </div>
           </div>
-          <div v-if="!paged.length" class="pk-empty">
-            <b>该网盘暂无命中结果</b>换个网盘 tab 或调整关键词试试
-          </div>
+
         </template>
       </div>
-      <PkPager v-model:current="page" v-model:pageSize="size" :total="filtered.length" />
+      <PkPager v-if="paged.length" v-model:current="page" v-model:pageSize="size" :total="filtered.length" />
+      </template>
     </div>
 
 
