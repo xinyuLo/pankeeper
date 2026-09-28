@@ -93,7 +93,7 @@ class DirTreeCache:
             return n
 
     def _max_bytes(self) -> int:
-        return max(16, int(self._cfg().get("maxSizeMb") or 800)) * 1024 * 1024
+        return max(1, int(self._cfg().get("maxSizeMb") or 800)) * 1024 * 1024
 
     def _evict_if_needed(self) -> None:
         """双上限 LRU 逐出：缓存大小（maxSizeMb）优先，条目数做硬顶。"""
