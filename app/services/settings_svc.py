@@ -10,6 +10,10 @@ from typing import Any
 
 from ..db import SessionLocal
 from ..models import Setting
+from ..security import decrypt_credential, encrypt_credential
+
+# 落库加密的敏感字段：密文加 fernet: 前缀，get_group 读取时自动解密
+_SENSITIVE_FIELDS = ("sendkey", "apikey", "webhook")
 
 DEFAULTS: dict[str, dict[str, Any]] = {
     "settings": {
@@ -71,7 +75,21 @@ def get_group(key: str) -> dict[str, Any]:
     with SessionLocal() as s:
         row = s.get(Setting, key)
         stored = json.loads(row.value_json) if row else {}
-    return _merge(merged, stored) if isinstance(stored, dict) else merged
+    data = _merge(merged, stored) if isinstance(stored, dict) else merged
+
+    def _decrypt(group: dict) -> None:
+        for f in _SENSITIVE_FIELDS:
+            v = group.get(f)
+            if isinstance(v, str) and v.startswith("fernet:"):
+                try:
+                    group[f] = decrypt_credential(v[len("fernet:"):])
+                except Exception:
+                    group[f] = ""
+
+    if key == "settings":
+        _decrypt(data.get("notify", {}))
+        _decrypt(data.get("qms", {}))
+    return data
 
 
 def save_group(key: str, value: dict[str, Any]) -> None:
@@ -83,6 +101,15 @@ def save_group(key: str, value: dict[str, Any]) -> None:
                 new_val = (value.get(group, {}) or {}).get(field, "")
                 if isinstance(new_val, str) and new_val.startswith("****"):
                     value.setdefault(group, {})[field] = old.get(group, {}).get(field, "")
+
+        def _encrypt(group: dict) -> None:
+            for f in _SENSITIVE_FIELDS:
+                v = group.get(f)
+                if isinstance(v, str) and v and not v.startswith("fernet:"):
+                    group[f] = "fernet:" + encrypt_credential(v)
+
+        _encrypt(value.get("notify", {}))
+        _encrypt(value.get("qms", {}))
     with SessionLocal() as s:
         row = s.get(Setting, key)
         if row:
