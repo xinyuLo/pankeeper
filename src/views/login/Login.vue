@@ -13,9 +13,9 @@ const router = useRouter()
 const auth = useAuthStore()
 const theme = useThemeStore()
 
-/* 默认账号与原型一致（admin / 12345678），真实系统由后端校验 */
+/* 默认账号 admin / admin#123（首启由后端生成，登录后请修改） */
 const username = ref('admin')
-const password = ref('12345678')
+const password = ref('admin#123')
 const loading = ref(false)
 
 async function onLogin() {
