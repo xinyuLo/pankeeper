@@ -907,7 +907,19 @@ button,
   margin-bottom: 18px;
 }
 .searchwrap .kw-input { flex: 1 1 auto; min-width: 0; }
-.searchwrap .btn-search { flex: 0 0 104px; height: 44px; font-size: 15px; border-radius: 10px; }
+/* 输入框与按钮严格等高（44px）、同圆角，视觉配平 */
+.searchwrap .kw-input.ant-input,
+.searchwrap .kw-input.ant-input-affix-wrapper,
+.searchwrap .ant-input {
+  height: 44px;
+  border-radius: 10px;
+}
+.searchwrap .btn-search {
+  flex: 0 0 104px;
+  height: 44px;
+  font-size: 15px;
+  border-radius: 10px;
+}
 @media (max-width: 767px) {
   /* 手机保持堆叠：输入框整行，按钮下一行 */
   .searchwrap { flex-direction: column; align-items: stretch; max-width: none; }
