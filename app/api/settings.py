@@ -26,9 +26,38 @@ def get_settings(_user: str = ""):
     return data
 
 
+class SecurityBody(BaseModel):
+    username: str
+    old_password: str = ""
+    new_password: str = ""
+    session_days: int | None = None
+
+
+@router.put("/settings/security")
+def put_security(body: SecurityBody, _user: str = ""):
+    """⚠️ 必须注册在 /settings/{group} 之前，否则会被通配路由吃掉（已按顺序排放）。"""
+    current = get_group("settings")
+    current["security"]["username"] = body.username or "admin"
+    if body.session_days:
+        current["security"]["session_days"] = body.session_days
+    save_group("settings", current)
+    if body.new_password:
+        if len(body.new_password) < 8:
+            raise HTTPException(status_code=400, detail="新密码至少 8 位")
+        with SessionLocal() as s:
+            row = s.get(Setting, "admin")
+            stored = json.loads(row.value_json) if row else {}
+            if not verify_password(body.old_password, stored.get("pwd_hash", "")):
+                raise HTTPException(status_code=400, detail="当前密码错误")
+            stored["pwd_hash"] = hash_password(body.new_password)
+            row.value_json = json.dumps(stored)
+            s.commit()
+    return {"ok": True}
+
+
 @router.put("/settings/{group}")
 def put_settings(group: str, body: dict, _user: str = ""):
-    if group not in GROUPS:
+    if group not in GROUPS or group == "security":  # security 走上面的专属端点
         raise HTTPException(status_code=404, detail="未知配置组")
     current = get_group("settings")
     current[group] = body
@@ -68,26 +97,3 @@ def push_history(_user: str = ""):
     return {"delivered": 0, "failed": 0}
 
 
-class SecurityBody(BaseModel):
-    username: str
-    old_password: str = ""
-    new_password: str = ""
-
-
-@router.put("/settings/security")
-def put_security(body: SecurityBody, _user: str = ""):
-    current = get_group("settings")
-    current["security"]["username"] = body.username or "admin"
-    save_group("settings", current)
-    if body.new_password:
-        if len(body.new_password) < 8:
-            raise HTTPException(status_code=400, detail="新密码至少 8 位")
-        with SessionLocal() as s:
-            row = s.get(Setting, "admin")
-            stored = json.loads(row.value_json) if row else {}
-            if not verify_password(body.old_password, stored.get("pwd_hash", "")):
-                raise HTTPException(status_code=400, detail="当前密码错误")
-            stored["pwd_hash"] = hash_password(body.new_password)
-            row.value_json = json.dumps(stored)
-            s.commit()
-    return {"ok": True}
