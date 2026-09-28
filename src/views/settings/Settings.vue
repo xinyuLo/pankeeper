@@ -342,16 +342,7 @@ async function onSaveSecurity() {
       </div>
     </div>
 
-    <div class="note-box">
-      <b>设计说明</b>
-      <ul>
-        <li>
-          QMS 这一页就是把在 bdsavepro 里跑通的 <code>trigger_after_transfer</code> 搬过来：
-          延迟 10 秒 → 触发刮削 → 轮询状态 → 触发 STRM → 通知 Emby。
-        </li>
-        <li>每个带「测试」按钮的配置项都真发一次请求并回显结果，比写一堆前端校验管用。</li>
-      </ul>
-    </div>
+
   </div>
 </template>
 
