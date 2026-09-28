@@ -290,16 +290,18 @@ onUnmounted(() => {
     <!-- 筛选条 + 网盘 tab 合在一张卡里：两者都是收窄结果范围的控制项，分两块白卡会显得零碎 -->
     <div class="card st-flush st-mb">
       <div class="filterbar">
-        <span class="muted">搜索源频道</span>
-        <!-- 频道摘要 + 设置弹窗入口（90 个频道不能平铺在筛选条上） -->
-        <template v-if="selectedChannels.length === 0">
-          <span class="ch-summary">全部频道（{{ channels.length }}）</span>
-        </template>
-        <template v-else>
-          <span v-for="c in selectedChannels.slice(0, 3)" :key="c" class="ch-summary">{{ c }}</span>
-          <span v-if="selectedChannels.length > 3" class="ch-summary">等 {{ selectedChannels.length }} 个</span>
-        </template>
-        <a-button size="small" @click="openChannelCfg">频道设置</a-button>
+        <!-- 频道摘要胶囊条：整条可点击 = 打开频道设置（与上方 tab 同款交互） -->
+        <div class="ch-strip" title="点击管理搜索频道" @click="openChannelCfg">
+          <span class="muted">搜索源频道</span>
+          <template v-if="selectedChannels.length === 0">
+            <span class="ch-chip ch-all">全部频道 · {{ channels.length }}</span>
+          </template>
+          <template v-else>
+            <span v-for="c in selectedChannels.slice(0, 3)" :key="c" class="ch-chip">{{ c }}</span>
+            <span v-if="selectedChannels.length > 3" class="ch-chip ch-more">+{{ selectedChannels.length - 3 }}</span>
+          </template>
+          <span class="ch-edit">✎ 管理</span>
+        </div>
         <span class="st-flex1"></span>
         <span class="small muted">来源 PanSou · {{ addr }}</span>
       </div>
