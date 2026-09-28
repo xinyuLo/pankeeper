@@ -1,0 +1,356 @@
+/* =====================================================================
+ * 自动转存四个弹窗（mt-）的共享外观 —— 原型 parts/modal-task.html 移植。
+ * 原型里弹窗自带 --mt-* 变量，这里按约定简化成全局令牌（--text/--border/…），
+ * 浅/暗两套自动生效；被四个弹窗组件各自 `<style scoped src="./mt-modal.css">`
+ * 引入，避免每个组件复制一份。
+ * ===================================================================== */
+
+/* ===== 遮罩 + 弹窗外壳 ===== */
+.mt-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.44);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: mtFade 0.16s ease;
+  color: var(--text);
+  font-size: 14px;
+}
+@keyframes mtFade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.mt-dialog {
+  background: var(--card);
+  border-radius: 14px;
+  box-shadow: var(--shadow-lg);
+  width: 720px;
+  max-width: 94vw;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: mtPop 0.18s ease;
+}
+@keyframes mtPop {
+  from { opacity: 0; transform: translateY(10px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+.mt-dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 22px;
+  border-bottom: 1px solid var(--split);
+  flex: 0 0 auto;
+}
+.mt-color-dot { width: 12px; height: 12px; border-radius: 3px; flex: 0 0 auto; }
+.mt-dialog-title { font-size: 16px; font-weight: 600; flex: 1 1 auto; }
+.mt-dialog-sub { font-size: 12px; color: var(--text3); font-weight: 400; margin-left: 6px; }
+.mt-close {
+  border: none;
+  background: transparent;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--text3);
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+}
+.mt-close:hover { background: var(--split); color: var(--text); }
+.mt-dialog-body { padding: 18px 22px; overflow: auto; flex: 1 1 auto; }
+.mt-dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 22px;
+  border-top: 1px solid var(--split);
+  flex: 0 0 auto;
+  background: var(--surface-2);
+}
+
+/* ===== 表单行 ===== */
+.mt-form-row { display: flex; align-items: flex-start; margin-bottom: 14px; }
+.mt-label {
+  width: 130px;
+  flex: 0 0 130px;
+  text-align: right;
+  padding-right: 14px;
+  line-height: 34px;
+  color: var(--text2);
+}
+.mt-control { flex: 1 1 auto; min-width: 0; }
+.mt-input,
+.mt-select {
+  width: 100%;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--card);
+  outline: none;
+  font-family: inherit;
+}
+.mt-input:focus,
+.mt-select:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.12); }
+.mt-input[readonly] { cursor: pointer; }
+.mt-row-inline { display: flex; gap: 8px; align-items: center; }
+.mt-row-inline .mt-input { flex: 1 1 auto; }
+.mt-hint { font-size: 12px; color: var(--text3); margin-top: 5px; line-height: 1.5; }
+.mt-hint code {
+  font-family: var(--font-mono);
+  background: var(--split);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+.mt-hint-strong { color: var(--primary); }
+
+/* ===== 按钮（行内解析/浏览必须与 34px 输入框等高，别用 mt-btn-sm 挤成两行） ===== */
+.mt-btn {
+  height: 34px;
+  padding: 0 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.15s;
+}
+.mt-btn:hover { border-color: var(--primary); color: var(--primary); }
+.mt-btn-primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+.mt-btn-primary:hover { background: var(--primary-h); border-color: var(--primary-h); color: #fff; }
+.mt-btn-sm { height: 30px; padding: 0 12px; font-size: 13px; }
+.mt-btn-inline {
+  height: 34px;
+  padding: 0 16px;
+  font-size: 13.5px;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  min-width: 64px;
+  justify-content: center;
+}
+.mt-btn-link { border: none; background: transparent; color: var(--primary); height: 30px; padding: 0 6px; }
+.mt-btn-link:hover { text-decoration: underline; }
+.mt-icon-btn {
+  border: 1px solid var(--border);
+  background: var(--card);
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--error);
+  font-size: 16px;
+  flex: 0 0 auto;
+  line-height: 1;
+}
+.mt-icon-btn:hover { border-color: var(--error); }
+.mt-icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ===== 开关（下钻/QMS 总控） ===== */
+.mt-switch { position: relative; display: inline-block; width: 42px; height: 22px; cursor: pointer; flex: 0 0 auto; }
+.mt-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.mt-switch-slider { position: absolute; inset: 0; background: #ccc; border-radius: 22px; transition: 0.2s; }
+html[data-theme='dark'] .mt-switch-slider { background: var(--border); }
+.mt-switch-slider::before {
+  content: '';
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  left: 2px;
+  top: 2px;
+  background: #fff;
+  border-radius: 50%;
+  transition: 0.2s;
+}
+.mt-switch input:checked + .mt-switch-slider { background: var(--primary); }
+.mt-switch input:checked + .mt-switch-slider::before { transform: translateX(20px); }
+.mt-switch-row { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; }
+.mt-switch-row .mt-switch-label { line-height: 1; font-size: 13.5px; }
+
+/* ===== 横向勾选条（选项/完成后动作一行收完） ===== */
+.mt-opts {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  padding: 10px 14px;
+  border: 1px solid var(--split);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.mt-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13.5px;
+  color: var(--text);
+  line-height: 1.2;
+  position: relative;
+}
+.mt-opt input { position: absolute; opacity: 0; width: 0; height: 0; }
+/* 自绘勾选框：不同内核/主题下原生 checkbox 长相不一致，统一画 16px 圆角方块 */
+.mt-opt .mt-box {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--card);
+  transition: background 0.15s, border-color 0.15s;
+}
+.mt-opt:hover .mt-box { border-color: var(--primary); }
+.mt-opt .mt-box::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 1.5px;
+  width: 4px;
+  height: 9px;
+  border: 2px solid #fff;
+  border-top: 0;
+  border-left: 0;
+  transform: rotate(45deg) scale(0.4);
+  opacity: 0;
+  transition: opacity 0.12s, transform 0.12s;
+}
+.mt-opt input:checked + .mt-box { background: var(--primary); border-color: var(--primary); }
+.mt-opt input:checked + .mt-box::after { opacity: 1; transform: rotate(45deg) scale(1); }
+
+/* ===== 分区块 ===== */
+.mt-section { border: 1px solid var(--split); border-radius: 10px; padding: 14px 16px; margin-top: 6px; }
+.mt-section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.mt-section-title { font-weight: 600; font-size: 14px; }
+.mt-section-tip { font-size: 12px; color: var(--text3); }
+
+/* ===== 正则规则行 ===== */
+.mt-regex-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.mt-regex-row .mt-input { flex: 1 1 0; min-width: 0; }
+.mt-regex-sep { color: var(--text3); }
+
+/* ===== 复选列表（排除清单 / 下钻子目录） ===== */
+.mt-check-list {
+  max-height: 168px;
+  overflow: auto;
+  border: 1px solid var(--split);
+  border-radius: 8px;
+  padding: 6px 4px;
+}
+.mt-check-item { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-radius: 6px; cursor: pointer; user-select: none; }
+.mt-check-item:hover { background: var(--primary-bg); }
+.mt-check-item input { width: 15px; height: 15px; accent-color: var(--primary); cursor: pointer; }
+.mt-check-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mt-tag {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: rgba(250, 173, 20, 0.12);
+  color: var(--warning);
+  white-space: nowrap;
+}
+html[data-theme='dark'] .mt-tag { background: rgba(250, 173, 20, 0.16); color: #ffc53d; }
+.mt-list-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-size: 13px; color: var(--text2); }
+.mt-dt-size { font-size: 12px; color: var(--text3); flex: 0 0 auto; }
+
+/* ===== 清单缓存状态条：左状态 + 右「刷新」死守一行 =====
+   文字 flex:0 1 auto + min-width:0（可压缩打省略号），按钮 flex:none 不被挤走。 */
+.mt-listcache { display: flex; align-items: center; gap: 10px; margin: 8px 0 6px; flex-wrap: nowrap; }
+.mt-listcache-txt {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--text3);
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mt-listcache > .mt-btn { flex: 0 0 auto; }
+.mt-listcache-txt.hit { color: #389e0d; }
+.mt-listcache-txt.cold { color: #fa8c16; }
+.mt-listcache.busy .mt-btn { opacity: 0.6; pointer-events: none; }
+html[data-theme='dark'] .mt-listcache-txt.hit { color: #95de64; }
+html[data-theme='dark'] .mt-listcache-txt.cold { color: #ffc069; }
+.mt-spin {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid rgba(0, 0, 0, 0.15);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: mtSpin 0.7s linear infinite;
+  vertical-align: -1px;
+  margin-right: 5px;
+}
+html[data-theme='dark'] .mt-spin { border-color: rgba(255, 255, 255, 0.2); }
+@keyframes mtSpin { to { transform: rotate(360deg); } }
+
+/* ===== 下钻工具条 ===== */
+.mt-tree-toolbar { display: flex; align-items: center; gap: 8px; margin: 10px 0 6px; }
+
+/* ===== 目录树选择器（单选） ===== */
+.mt-tree { max-height: 300px; overflow: auto; border: 1px solid var(--split); border-radius: 8px; padding: 6px 4px; }
+.mt-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13.5px;
+}
+.mt-tree-row:hover { background: var(--primary-bg); }
+.mt-tree-toggle {
+  width: 16px;
+  text-align: center;
+  color: var(--text3);
+  font-size: 11px;
+  transition: transform 0.15s;
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+.mt-tree-toggle.mt-open { transform: rotate(90deg); }
+.mt-tree-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mt-tree-row.mt-selected { background: rgba(22, 119, 255, 0.1); color: var(--primary); font-weight: 600; }
+html[data-theme='dark'] .mt-tree-row.mt-selected { background: rgba(22, 119, 255, 0.2); }
+.mt-tree-children { margin-left: 18px; }
+.mt-dir-bar { font-size: 12.5px; color: #fa8c16; margin-bottom: 8px; }
+html[data-theme='dark'] .mt-dir-bar { color: #ffc069; }
+.mt-dir-path {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  background: var(--surface-2);
+  border: 1px solid var(--split);
+  border-radius: 8px;
+  padding: 9px 12px;
+  margin-bottom: 10px;
+  color: var(--primary);
+  overflow-wrap: anywhere;
+}
+
+/* ===== 执行监控 ===== */
+.mt-progress { height: 8px; background: var(--split); border-radius: 8px; overflow: hidden; margin: 4px 0 8px; }
+.mt-progress-bar { height: 100%; width: 0; background: linear-gradient(90deg, var(--primary), var(--primary-h)); transition: width 0.4s; }
+.mt-progress-text { font-size: 12px; color: var(--text3); }
+.mt-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px; }
+.mt-stat-card { border: 1px solid var(--split); border-radius: 10px; padding: 12px; text-align: center; }
+.mt-stat-num { font-size: 24px; font-weight: 700; line-height: 1.1; }
+.mt-stat-label { font-size: 12px; color: var(--text3); margin-top: 4px; }
+.mt-stat-add .mt-stat-num { color: var(--success); }
+.mt-stat-skip .mt-stat-num { color: var(--text2); }
+.mt-stat-fail .mt-stat-num { color: var(--error); }
+.mt-stat-excl .mt-stat-num { color: var(--warning); }
+.mt-runlog { height: 230px; max-height: none; }
+.mt-run-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; font-size: 13px; color: var(--text2); }
