@@ -30,6 +30,8 @@ class ShareFile:
     name: str = ""
     is_dir: bool = False
     size: int = 0
+    # 分享内完整路径（/目录/子目录/文件名），文件树展示用
+    path: str = "" 
     # 目标名（正则/重命名后），None 表示沿用原名
     target_name: str | None = None
 

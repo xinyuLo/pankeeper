@@ -120,6 +120,64 @@ def update_task(task_id: int, body: PaBody, _user=CurrentUser):
         return _row(t)
 
 
+@router.get("/tasks/{task_id}/share-files")
+def task_share_files(task_id: int, _user=CurrentUser):
+    """实时解析分享链接内的文件树（「查看」按钮数据源，每次现拉不落缓存）。"""
+    from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, TaskSpec
+    from ..deps import make_adapter_for
+
+    db = SessionLocal()
+    try:
+        t = db.get(PaTask, task_id)
+        if t is None:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        if not t.share_url:
+            raise HTTPException(status_code=400, detail="任务没有分享链接")
+        try:
+            adapter = make_adapter_for(db, t.type)
+        except HTTPException:
+            db.close()
+            raise
+        task_url, task_code = t.share_url, t.share_code
+
+        try:
+            files = adapter.list_share(TaskSpec(share_url=task_url, share_code=task_code, include_subdirs=True))
+        except ShareBanned as e:
+            db.close()
+            raise HTTPException(status_code=410, detail=f"分享已失效：{e}")
+        except CredentialExpired as e:
+            db.close()
+            raise HTTPException(status_code=401, detail=str(e))
+        except AdapterError as e:
+            db.close()
+            raise HTTPException(status_code=502, detail=str(e))
+    finally:
+        pass
+
+    def node(path: str, name: str, is_dir: bool, size: int) -> dict:
+        return {"name": name, "is_dir": is_dir, "size": size, "path": path, "kids": []}
+
+    nodes: dict[str, dict] = {}
+    root: list[dict] = []
+    total = 0
+    for f in sorted(files, key=lambda x: (x.path.count("/"), x.path)):
+        parent = f.path.rsplit("/", 1)[0] or "/"
+        name = f.path.rsplit("/", 1)[-1]
+        n = node(f.path, name, f.is_dir, f.size)
+        if not f.is_dir:
+            total += 1
+        nodes[f.path] = n
+        pnode = nodes.get(parent)
+        (pnode["kids"] if pnode else root).append(n)
+
+    def sort_kids(ns: list[dict]) -> None:
+        ns.sort(key=lambda x: (not x["is_dir"], x["name"]))
+        for n in ns:
+            sort_kids(n["kids"])
+    sort_kids(root)
+    return {"total": total, "tree": root}
+
+
 @router.delete("/tasks/{task_id}")
 def delete_task(task_id: int, _user=CurrentUser):
     with SessionLocal() as db:

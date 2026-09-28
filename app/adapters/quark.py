@@ -147,7 +147,7 @@ class QuarkAdapter(CloudAdapter):
             files = [f for f in files if f.name not in spec.exclude_names]
         return files
 
-    def _walk_share(self, stoken: str, pwd_id: str, pdir_fid: str, include_subdirs: bool, depth: int) -> list[ShareFile]:
+    def _walk_share(self, stoken: str, pwd_id: str, pdir_fid: str, include_subdirs: bool, depth: int, base: str = "/") -> list[ShareFile]:
         out: list[ShareFile] = []
         page = 1
         while True:
@@ -167,13 +167,15 @@ class QuarkAdapter(CloudAdapter):
             d = data.get("data") or {}
             items = d.get("list") or []
             for it in items:
+                name = str(it.get("file_name", ""))
                 out.append(
                     ShareFile(
                         fid=str(it.get("fid", "")),
                         fid_token=str(it.get("share_fid_token", "")),
-                        name=str(it.get("file_name", "")),
+                        name=name,
                         is_dir=bool(it.get("dir")),
                         size=int(it.get("size") or 0),
+                        path=(base.rstrip("/") + "/" + name) if base != "/" else "/" + name,
                     )
                 )
             total = (d.get("metadata") or {}).get("_total")
@@ -182,7 +184,7 @@ class QuarkAdapter(CloudAdapter):
             page += 1
         if include_subdirs and depth < 8:
             for f in [x for x in out if x.is_dir]:
-                out.extend(self._walk_share(stoken, pwd_id, f.fid, True, depth + 1))
+                out.extend(self._walk_share(stoken, pwd_id, f.fid, True, depth + 1, base=f.path))
         return out
 
     # ---------- 目标盘操作 ----------
