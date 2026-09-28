@@ -18,7 +18,6 @@ import {
   savePaTask,
   type PaDrillDir,
   type PaExtras,
-  type PaRegexRule,
 } from '@/api/modules/tasks'
 import type { DdQmsPath, DdStrmPath, MainDriveType, PaTask } from '@/types/model'
 
@@ -40,7 +39,10 @@ const postNotify = ref(false)
 const qmsId = ref<number | null>(null)
 const strmId = ref<number | null>(null)
 const cron = ref('0 3 * * *')
-const regex = ref<PaRegexRule[]>([{ pat: '', rep: '' }])
+/* 正则过滤：产品定为一组（匹配模式 + 替换名）。存储仍是数组形状（后端契约），
+ * 空规则保存时忽略 → 空数组。 */
+const regPat = ref('')
+const regRep = ref('')
 const drillOn = ref(false)
 const drill = ref<string[]>([])
 
@@ -106,7 +108,9 @@ watch(
     postQms.value = !!t?.post_qms
     postNotify.value = !!t?.post_notify
     cron.value = t ? t.cron || '' : '0 3 * * *' // 新任务给个常用默认，编辑带原值（空=仅手动）
-    regex.value = ex.regex.length ? ex.regex.map((r) => ({ ...r })) : [{ pat: '', rep: '' }]
+    const firstRule = ex.regex[0]
+    regPat.value = firstRule?.pat || ''
+    regRep.value = firstRule?.rep || ''
     drillOn.value = ex.drill_on
     drill.value = [...ex.drill]
     qmsId.value = ex.qms_id
@@ -121,14 +125,6 @@ watch(
     if (!drillDirs.value.length) drillDirs.value = await getDrillDirs()
   },
 )
-
-/* ===== 正则规则行：可添加多条，至少保留一条（空规则保存时忽略） ===== */
-function addRegex() {
-  regex.value.push({ pat: '', rep: '' })
-}
-function delRegex(i: number) {
-  if (regex.value.length > 1) regex.value.splice(i, 1)
-}
 
 /* ===== 下钻勾选 ===== */
 function toggleDrill(nm: string, e: Event) {
@@ -164,9 +160,9 @@ async function onSave() {
     post_qms: postQms.value,
     post_notify: postNotify.value,
   }
-  // 空的正则行不保存；STRM 只在联动开着时才有意义
+  // 正则过滤：一组规则，pat/rep 都空就忽略；STRM 只在联动开着时才有意义
   const extras: PaExtras = {
-    regex: regex.value.filter((r) => r.pat.trim() || r.rep.trim()).map((r) => ({ pat: r.pat.trim(), rep: r.rep.trim() })),
+    regex: regPat.value.trim() || regRep.value.trim() ? [{ pat: regPat.value.trim(), rep: regRep.value.trim() }] : [],
     drill_on: drillOn.value,
     drill: [...drill.value],
     qms_id: postQms.value ? qmsId.value : null,
@@ -301,20 +297,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
             </div>
           </div>
 
-          <!-- 正则过滤：动态行，可添加多条 -->
+          <!-- 正则过滤：固定一组（模式 → 替换名），都留空 = 不过滤 -->
           <div class="mt-form-row" style="align-items: flex-start">
-            <label class="mt-label">正则过滤规则</label>
+            <label class="mt-label">正则过滤</label>
             <div class="mt-control">
-              <div class="mt-section">
-                <div v-for="(r, i) in regex" :key="i" class="mt-regex-row">
-                  <input v-model="r.pat" class="mt-input" placeholder="匹配模式（正则），如 \.mkv$" />
-                  <span class="mt-regex-sep">→</span>
-                  <input v-model="r.rep" class="mt-input" placeholder="替换 / 重命名，如 [1080P]" />
-                  <button class="mt-icon-btn" title="删除该规则" :disabled="regex.length === 1" @click="delRegex(i)">×</button>
-                </div>
-                <button class="mt-btn mt-btn-link" @click="addRegex">＋ 添加一条规则</button>
-                <div class="mt-hint">留空的规则会被忽略；匹配的文件按规则重命名后转存。</div>
-              </div>
+              <input v-model="regPat" class="mt-input" placeholder="匹配模式（正则），如 \.mkv$" style="margin-bottom: 8px" />
+              <input v-model="regRep" class="mt-input" placeholder="替换 / 重命名，如 [1080P]；留空 = 只匹配过滤" />
+              <div class="mt-hint">两项都留空 = 不启用过滤；填了模式，转存时按规则处理文件名。</div>
             </div>
           </div>
 

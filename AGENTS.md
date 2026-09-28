@@ -58,6 +58,19 @@ src/
 - **例外**：队列状态（`pkq_v2`）与队列配置（`pkq_cfg`）存 localStorage（跨页面/刷新持久，原型如此）。
 - localStorage 键名沿用原型：`pkq_v2` / `pkq_cfg` / `pk-theme` / `pk-nav` / `pk-auth`。
 
+## 移动端适配约定（2026-09-28 起）
+
+- **断点**：`<768px` = 手机布局；常量 `MOBILE_MAX` 在 `src/composables/useIsMobile.ts`，与所有 CSS
+  媒体查询 `(max-width: 767px)` 必须同步改。**PC（≥768px）观感零变化是铁律**：手机样式只能写在
+  媒体查询里，或放进 PC 上 `display:none` 的 `.m-*` 移动专用组件（底栏/更多面板在 BasicLayout）。
+- **移动层分布**：全局规则在 `pk.css` 末尾移动段（antd Modal/Drawer 收口、输入框 16px 防 iOS 聚焦缩放、
+  横滑容器 `.pk-hscroll`、安全区变量 `--sat/--sab`）；自动转存四弹窗在 `mt-modal.css` 移动段；
+  页面私有覆盖在自己视图的 scoped 移动段。
+- **表格页双形态**：高频列表（搜索/记录/自动任务）用 `useIsMobile()` v-if 切卡片列表（动作 handler 复用同一批）；
+  低频管理表格（转存配置/缓存配置）包 `.pk-hscroll` 横滑。
+- **PWA**：`public/manifest.webmanifest` + `public/icons/`（PIL 生成）+ index.html 的 apple meta；
+  `viewport-fit=cover` 是 `env(safe-area-*)` 有值的前提，别删。主题色 meta 由 theme store 同步。
+
 ## 验证
 
 ```

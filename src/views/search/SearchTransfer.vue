@@ -9,16 +9,15 @@ import { message } from 'ant-design-vue'
 import PkPager from '@/components/PkPager.vue'
 import QuickTransferModal from './QuickTransferModal.vue'
 import TransferModal, { type TransferTarget } from './TransferModal.vue'
-import {
-  getInitialResults,
-  getPanSouAddr,
-  getSearchChannels,
-  getSearchResults,
-  type SearchChannel,
-} from '@/api/modules/search'
+import { useIsMobile } from '@/composables/useIsMobile'
+import { getInitialResults, getPanSouAddr, getSearchChannels, getSearchResults, type SearchChannel } from '@/api/modules/search'
+import { getSettings, saveSearchSrc } from '@/api/modules/settings'
 import { listDdItems } from '@/api/modules/dd'
 import { DRIVE_META } from '@/api/mock/meta'
 import type { DriveType, SearchResultItem } from '@/types/model'
+
+/* 手机（<768px）渲染卡片列表代替结果表——393px 宽塞不下 5 列表格 */
+const isMobile = useIsMobile()
 
 /** tab 固定顺序 = DRIVE_META 的键序（全部/百度/夸克/115/123/阿里/迅雷/UC，与原型一致） */
 const DRIVE_ORDER = Object.keys(DRIVE_META) as DriveType[]
@@ -49,6 +48,51 @@ onMounted(async () => {
   ddTypes.value = new Set<DriveType>(dds.map((x) => x.type))
   renderStats()
 })
+
+/* ===== 频道设置弹窗：白名单存后端 settings.search.channels，空 = 用全部 ===== */
+const chCfgOpen = ref(false)
+const chFilter = ref('')
+const chDraft = ref<string[]>([])
+
+const selectedChannels = computed(() => channels.value.filter((c) => c.on).map((c) => c.name))
+
+function openChannelCfg() {
+  chDraft.value = [...selectedChannels.value]
+  chFilter.value = ''
+  chCfgOpen.value = true
+}
+
+const chFiltered = computed(() => {
+  const kwTrim = chFilter.value.trim().toLowerCase()
+  return channels.value.filter((c) => !kwTrim || c.name.toLowerCase().includes(kwTrim))
+})
+
+function chSetAll(on: boolean) {
+  for (const c of channels.value) c.on = on
+  chDraft.value = channels.value.filter((c) => c.on).map((c) => c.name)
+}
+
+/** 草稿与列表勾选双向：勾选变化时同步 draft */
+function chToggle(name: string, on: boolean) {
+  const set = new Set(chDraft.value)
+  if (on) set.add(name)
+  else set.delete(name)
+  chDraft.value = [...set]
+}
+
+async function chSave() {
+  const draft = new Set(chDraft.value)
+  for (const c of channels.value) c.on = draft.has(c.name)
+  try {
+    const all = await getSettings()
+    all.search.channels = [...draft]
+    await saveSearchSrc(all.search)
+    chCfgOpen.value = false
+    message.success(draft.size ? `已保存：搜索时使用 ${draft.size} 个频道` : '已保存：使用全部频道')
+  } catch {
+    message.error('保存频道设置失败')
+  }
+}
 
 /* ===== 网盘 tab ===== */
 type TabKey = 'all' | DriveType
@@ -201,6 +245,8 @@ function quickTitle(r: SearchResultItem) {
 const qsOpen = ref(false)
 const qsType = ref<DriveType | null>(null)
 const qsName = ref('')
+const qsUrl = ref('')
+const qsCode = ref('')
 const tmOpen = ref(false)
 const tmTarget = ref<TransferTarget | null>(null)
 
@@ -209,12 +255,14 @@ function openQuick(r: SearchResultItem) {
   tmOpen.value = false
   qsType.value = r.t
   qsName.value = r.n
+  qsUrl.value = r.url || ''
+  qsCode.value = r.share_code || ''
   qsOpen.value = true
 }
 function openTransfer(r: SearchResultItem) {
   if (!r.ok) return
   qsOpen.value = false
-  tmTarget.value = { type: r.t, name: r.n, size: r.s }
+  tmTarget.value = { type: r.t, name: r.n, size: r.s, url: r.url || '', share_code: r.share_code || '' }
   tmOpen.value = true
 }
 /** 跳转：真实系统新开分享链接；mock 没有链接，给个反馈（原型同款 toast） */
@@ -243,8 +291,15 @@ onUnmounted(() => {
     <div class="card st-flush st-mb">
       <div class="filterbar">
         <span class="muted">搜索源频道</span>
-        <!-- 频道勾选记录检索范围（mock 不改变结果集，与原型一致） -->
-        <a-checkbox v-for="c in channels" :key="c.name" v-model:checked="c.on">{{ c.name }}</a-checkbox>
+        <!-- 频道摘要 + 设置弹窗入口（90 个频道不能平铺在筛选条上） -->
+        <template v-if="selectedChannels.length === 0">
+          <span class="ch-summary">全部频道（{{ channels.length }}）</span>
+        </template>
+        <template v-else>
+          <span v-for="c in selectedChannels.slice(0, 3)" :key="c" class="ch-summary">{{ c }}</span>
+          <span v-if="selectedChannels.length > 3" class="ch-summary">等 {{ selectedChannels.length }} 个</span>
+        </template>
+        <a-button size="small" @click="openChannelCfg">频道设置</a-button>
         <span class="st-flex1"></span>
         <span class="small muted">来源 PanSou · {{ addr }}</span>
       </div>
@@ -282,9 +337,9 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- 结果表 + 分页同一张白卡（padding:0 的卡里表尾不夹灰缝） -->
+    <!-- 结果表 + 分页同一张白卡（padding:0 的卡里表尾不夹灰缝）；手机端换卡片列表 -->
     <div class="card st-flush st-res" :class="{ enter: rowEpoch > 0 }">
-      <table>
+      <table v-if="!isMobile">
         <thead>
           <tr>
             <th style="width: 50%">资源名称</th>
@@ -337,6 +392,44 @@ onUnmounted(() => {
           </tr>
         </tbody>
       </table>
+
+      <!-- 手机端：单条结果一张卡（名称两行 + 来源/大小/时间 + 三按钮），动作与表格版同一批 handler -->
+      <div v-else class="st-cards" :key="'mrows' + rowEpoch">
+        <template v-if="busy">
+          <div v-for="(w, i) in [7, 6, 8, 5, 7, 6, 8]" :key="i" class="st-card-item">
+            <div class="st-card-name"><span class="skel" :style="{ width: w * 10 + '%' }"></span></div>
+            <div class="st-card-meta"><span class="skel" style="width: 52px"></span><span class="skel" style="width: 44px"></span></div>
+          </div>
+        </template>
+        <template v-else>
+          <div
+            v-for="(r, i) in paged"
+            :key="r.t + '-' + r.n"
+            class="st-card-item"
+            :style="{ animationDelay: 0.03 * i + 's' }"
+          >
+            <div class="st-card-name">
+              <span class="srcbar" :style="{ background: DRIVE_META[r.t].color }"></span>
+              <span class="st-card-title">{{ r.n }}</span>
+              <span v-if="r.hot" class="tag t-123 st-hot">极速</span>
+            </div>
+            <div class="st-card-meta">
+              <span class="tag" :class="DRIVE_META[r.t].tag">{{ DRIVE_META[r.t].full }}</span>
+              <span class="small muted">{{ r.s }}</span>
+              <span class="small muted st-card-date">{{ r.d }}</span>
+            </div>
+            <div class="rowbtns st-card-ops">
+              <button class="btn btn-quick" :disabled="quickDisabled(r)" :title="quickTitle(r)" @click="openQuick(r)">快速转存</button>
+              <button class="btn btn-trans" :disabled="!r.ok" :title="T_NO_CRED" @click="openTransfer(r)">转存</button>
+              <span class="rb-sep"></span>
+              <button class="btn btn-jump" @click="onJump(r)">跳转</button>
+            </div>
+          </div>
+          <div v-if="!paged.length" class="pk-empty">
+            <b>该网盘暂无命中结果</b>换个网盘 tab 或调整关键词试试
+          </div>
+        </template>
+      </div>
       <PkPager v-model:current="page" v-model:pageSize="size" :total="filtered.length" />
     </div>
 
@@ -350,290 +443,31 @@ onUnmounted(() => {
     </div>
 
     <!-- 快速转存弹窗（qsMask）：凭转存配置直入队列 -->
-    <QuickTransferModal v-model:open="qsOpen" :type="qsType" :share-name="qsName" />
+    <QuickTransferModal v-model:open="qsOpen" :type="qsType" :share-name="qsName" :share-url="qsUrl" :share-code="qsCode" />
     <!-- 转存弹窗（transferMask）：分享树勾选 + 目标目录树 -->
     <TransferModal v-model:open="tmOpen" :target="tmTarget" />
   </div>
+  <!-- 频道设置弹窗：白名单为空 = 使用全部频道 -->
+  <a-modal v-model:open="chCfgOpen" title="搜索频道设置" :width="520" @ok="chSave">
+    <div style="display: flex; gap: 8px; margin-bottom: 10px">
+      <a-input v-model:value="chFilter" placeholder="按频道名过滤" allow-clear />
+      <a-button @click="chSetAll(true)">全选</a-button>
+      <a-button @click="chSetAll(false)">清空</a-button>
+    </div>
+    <div style="max-height: 320px; overflow: auto; border: 1px solid var(--split); border-radius: 8px; padding: 8px 12px">
+      <a-checkbox
+        v-for="c in chFiltered"
+        :key="c.name"
+        :checked="chDraft.includes(c.name)"
+        style="display: flex; padding: 4px 0"
+        @change="(e: any) => chToggle(c.name, e.target.checked)"
+      >{{ c.name }}</a-checkbox>
+      <div v-if="chFiltered.length === 0" class="small muted" style="text-align: center; padding: 16px 0">
+        没有匹配的频道
+      </div>
+    </div>
+    <p class="small" style="color: var(--text3); margin: 10px 0 0">
+      不勾任何频道 = 每次搜索使用 PanSou 的全部频道（{{ channels.length }} 个）。白名单保存在后端设置里。
+    </p>
+  </a-modal>
 </template>
-
-<style scoped>
-/* 卡片去内边距：筛选条接 tab、表格接分页，连成完整卡（原型 padding:0;overflow:hidden） */
-.st-flush {
-  padding: 0;
-  overflow: hidden;
-}
-/* 只有筛选卡需要下间距（.view 是 flex 容器，子项 margin 不折叠，结果卡不要再加） */
-.st-mb {
-  margin-bottom: 16px;
-}
-.st-flex1 {
-  flex: 1;
-}
-
-/* ---- 搜索框：比常规输入高一档，是全页最显眼的操作 ---- */
-.searchwrap {
-  display: flex;
-  gap: 12px;
-  margin-bottom: 18px;
-}
-.kw-input {
-  height: 44px;
-  font-size: 15px;
-  border-radius: 10px;
-}
-.btn-search {
-  width: 104px;
-  height: 44px;
-  font-size: 15px;
-  border-radius: 10px;
-}
-
-/* ---- 顶部不确定进度条：搜索时出现，完成拉满再淡出 ---- */
-.pk-topbar {
-  position: fixed;
-  left: 212px; /* 侧栏宽，进度条从内容区起画 */
-  right: 0;
-  top: 0;
-  height: 2px;
-  z-index: 60;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.25s;
-}
-.pk-topbar.on {
-  opacity: 1;
-}
-.pk-topbar i {
-  display: block;
-  height: 100%;
-  width: 40%;
-  border-radius: 2px;
-  background: linear-gradient(90deg, rgba(22, 119, 255, 0), #1677ff 45%, #69c0ff 60%, rgba(22, 119, 255, 0));
-  animation: pkSlide 1.15s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
-}
-@keyframes pkSlide {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(320%); }
-}
-/* 收束：数据到位后拉满再淡出 */
-.pk-topbar.done i {
-  width: 100%;
-  transform: none;
-  animation: none;
-  background: #1677ff;
-  transition: width 0.2s;
-}
-
-/* ---- 横向网盘 tab（胶囊分段，包在筛选卡里所以不再有白底/阴影） ---- */
-.pktabs {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  flex-wrap: wrap;
-  background: transparent;
-  padding: 12px 14px 13px;
-}
-.pktab {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 13px;
-  cursor: pointer;
-  user-select: none;
-  border-radius: 8px;
-  font-size: 13.5px;
-  color: var(--text2);
-  background: transparent;
-  transition: background 0.16s, color 0.16s, box-shadow 0.16s;
-  white-space: nowrap;
-}
-.pktab:hover {
-  background: var(--split);
-  color: var(--text);
-}
-.pktab.on {
-  color: #fff;
-  font-weight: 500;
-  background: var(--primary);
-  box-shadow: 0 2px 8px rgba(22, 119, 255, 0.28);
-}
-.pktab.on:hover {
-  background: var(--primary-h);
-  color: #fff;
-}
-/* 小圆点：有结果的网盘用网盘色标识 */
-.pktab .pkdot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  opacity: 0.85;
-}
-.pktab.on .pkdot {
-  background: #fff !important;
-  opacity: 0.9;
-}
-.pktab .pknum {
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
-  padding: 2px 7px;
-  border-radius: 999px;
-  background: var(--split);
-  color: var(--text2);
-  transition: background 0.16s, color 0.16s;
-}
-.pktab.on .pknum {
-  background: rgba(255, 255, 255, 0.24);
-  color: #fff;
-}
-.pktab.dim {
-  opacity: 0.4;
-}
-.pktab.dim .pknum {
-  background: transparent;
-}
-/* tab 行右侧的扫描状态 */
-.pktabs .pk-tab-scan {
-  margin-left: auto;
-  font-size: 12.5px;
-  color: var(--text3);
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.pkdot-live {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #52c41a;
-  flex-shrink: 0;
-  box-shadow: 0 0 0 0 rgba(82, 196, 26, 0.5);
-  animation: pkPulse 1.8s ease-out infinite;
-}
-@keyframes pkPulse {
-  0% { box-shadow: 0 0 0 0 rgba(82, 196, 26, 0.45); }
-  70% { box-shadow: 0 0 0 6px rgba(82, 196, 26, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(82, 196, 26, 0); }
-}
-.pkspin {
-  width: 12px;
-  height: 12px;
-  border: 2px solid rgba(22, 119, 255, 0.25);
-  border-top-color: #1677ff;
-  border-radius: 50%;
-  display: inline-block;
-  animation: pkSpin 0.7s linear infinite;
-}
-@keyframes pkSpin {
-  to { transform: rotate(360deg); }
-}
-
-/* ---- 统计卡：出场动画 + 单网盘态 ---- */
-.statline.enter .stat {
-  animation: pkStatIn 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-.statline.enter .stat:nth-child(1) { animation-delay: 0s; }
-.statline.enter .stat:nth-child(2) { animation-delay: 0.04s; }
-.statline.enter .stat:nth-child(3) { animation-delay: 0.08s; }
-.statline.enter .stat:nth-child(4) { animation-delay: 0.12s; }
-.statline.enter .stat:nth-child(5) { animation-delay: 0.16s; }
-.statline.enter .stat:nth-child(6) { animation-delay: 0.2s; }
-.statline.enter .stat:nth-child(7) { animation-delay: 0.24s; }
-.statline.enter .stat:nth-child(8) { animation-delay: 0.28s; }
-@keyframes pkStatIn {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: none; }
-}
-.stat.wide {
-  flex: 0 0 auto;
-  min-width: 210px;
-}
-.statline.single {
-  justify-content: flex-start;
-}
-
-/* ---- 结果表逐行入场 ---- */
-.st-res.enter tbody tr {
-  animation: pkRowIn 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-@keyframes pkRowIn {
-  from { opacity: 0; transform: translateY(5px); }
-  to { opacity: 1; transform: none; }
-}
-
-/* 资源名称格：品牌色条 + 名称 + 「极速」标 */
-.st-namecell {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-}
-.srcbar {
-  width: 3px;
-  height: 30px;
-  border-radius: 2px;
-  flex: none;
-  margin-right: 10px;
-}
-.resname {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.st-hot {
-  margin-left: 8px;
-  margin-right: 0;
-  flex: none;
-}
-
-/* ---- 骨架屏 ---- */
-.skel {
-  height: 13px;
-  border-radius: 4px;
-  display: inline-block;
-  vertical-align: middle;
-  background: linear-gradient(90deg, #eef1f5 25%, #e2e7ee 37%, #eef1f5 63%);
-  background-size: 400% 100%;
-  animation: pkShim 1.25s ease-in-out infinite;
-}
-@keyframes pkShim {
-  0% { background-position: 100% 50%; }
-  100% { background-position: 0 50%; }
-}
-.skel-tr td {
-  padding: 14px 16px;
-}
-
-/* 结果为空 */
-.pk-empty {
-  padding: 52px 20px;
-  text-align: center;
-  color: var(--text3);
-}
-.pk-empty b {
-  display: block;
-  font-size: 15px;
-  color: var(--text2);
-  margin-bottom: 6px;
-  font-weight: 500;
-}
-
-/* ---- 暗色适配：硬编码浅色在这里翻面 ---- */
-html[data-theme='dark'] .pktab:hover {
-  background: rgba(255, 255, 255, 0.07);
-}
-html[data-theme='dark'] .pktab .pknum {
-  background: rgba(255, 255, 255, 0.09);
-}
-html[data-theme='dark'] .skel {
-  background: linear-gradient(90deg, #20242c 25%, #2a3038 37%, #20242c 63%);
-  background-size: 400% 100%;
-}
-html[data-theme='dark'] .pk-topbar i {
-  background: linear-gradient(90deg, rgba(64, 150, 255, 0), #4096ff 45%, #91caff 60%, rgba(64, 150, 255, 0));
-}
-html[data-theme='dark'] .pk-topbar.done i {
-  background: #4096ff;
-}
-</style>

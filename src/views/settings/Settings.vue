@@ -39,6 +39,7 @@ const search = reactive<SearchSrcCfg>({
   cache_mode: 'on',
   def_dir_baidu: '',
   def_dir_quark: '',
+  channels: [],
 })
 const notify = reactive<NotifyCfg>({
   enabled: false,
@@ -380,5 +381,14 @@ async function onSaveSecurity() {
 /* 推送契约警示（⚠️ 手动转存不推送）——warning 变量浅暗同色，无需另补 dark 覆盖 */
 .st-warn {
   color: var(--warning);
+}
+
+/* ---- 移动端（<768px）：inline 宽度的输入框不许撑破屏；PC 一条不动 ---- */
+@media (max-width: 767px) {
+  .st-card :deep(.ctl > *) {
+    max-width: 100%;
+  }
+  /* 两格输入（默认目标目录）改竖排铺满 */
+  .st-card :deep(.ctl) { width: 100%; }
 }
 </style>

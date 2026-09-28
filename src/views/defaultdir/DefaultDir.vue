@@ -247,45 +247,47 @@ async function confirmEditor() {
         </div>
       </div>
 
-      <!-- 表格：排序 / 名称+路径同格 / 所属账号 / 默认 / 操作 -->
-      <table v-if="rows.length" class="dd-table">
-        <thead>
-          <tr>
-            <th class="dd-th" style="width: 52px">排序</th>
-            <th class="dd-th">名称 / 网盘路径</th>
-            <th class="dd-th" style="width: 170px">所属账号</th>
-            <th class="dd-th" style="width: 110px">默认</th>
-            <th class="dd-th" style="width: 150px; text-align: right">操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="it in rows" :key="it.id" class="dd-row">
-            <td class="dd-td"><span class="dd-sort">{{ it.sort }}</span></td>
-            <td class="dd-td">
-              <span class="dd-name">{{ it.name }}</span>
-              <span class="dd-path" :title="it.path">{{ it.path }}</span>
-            </td>
-            <td class="dd-td"><span class="dd-acc">{{ accLabel(it.account) }}</span></td>
-            <td class="dd-td">
-              <span v-if="it.is_default" class="dd-default-tag">默认</span>
-              <button v-else class="dd-setdefault" type="button" @click="setDefault(it)">设为默认</button>
-            </td>
-            <td class="dd-td">
-              <div class="dd-ops">
-                <button class="dd-op" type="button" @click="openEditor(it.id)">编辑</button>
-                <a-popconfirm
-                  :title="`确定删除「${it.name}」？删除后「快速转存」将不再显示它。`"
-                  ok-text="删除"
-                  cancel-text="取消"
-                  @confirm="doDelete(it)"
-                >
-                  <button class="dd-op dd-op-del" type="button">删除</button>
-                </a-popconfirm>
-              </div>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <!-- 表格：排序 / 名称+路径同格 / 所属账号 / 默认 / 操作（手机包横滑容器保列宽） -->
+      <div v-if="rows.length" class="pk-hscroll">
+        <table class="dd-table">
+          <thead>
+            <tr>
+              <th class="dd-th" style="width: 52px">排序</th>
+              <th class="dd-th">名称 / 网盘路径</th>
+              <th class="dd-th" style="width: 170px">所属账号</th>
+              <th class="dd-th" style="width: 110px">默认</th>
+              <th class="dd-th" style="width: 150px; text-align: right">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="it in rows" :key="it.id" class="dd-row">
+              <td class="dd-td"><span class="dd-sort">{{ it.sort }}</span></td>
+              <td class="dd-td">
+                <span class="dd-name">{{ it.name }}</span>
+                <span class="dd-path" :title="it.path">{{ it.path }}</span>
+              </td>
+              <td class="dd-td"><span class="dd-acc">{{ accLabel(it.account) }}</span></td>
+              <td class="dd-td">
+                <span v-if="it.is_default" class="dd-default-tag">默认</span>
+                <button v-else class="dd-setdefault" type="button" @click="setDefault(it)">设为默认</button>
+              </td>
+              <td class="dd-td">
+                <div class="dd-ops">
+                  <button class="dd-op" type="button" @click="openEditor(it.id)">编辑</button>
+                  <a-popconfirm
+                    :title="`确定删除「${it.name}」？删除后「快速转存」将不再显示它。`"
+                    ok-text="删除"
+                    cancel-text="取消"
+                    @confirm="doDelete(it)"
+                  >
+                    <button class="dd-op dd-op-del" type="button">删除</button>
+                  </a-popconfirm>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
       <div v-else class="dd-empty">
         <b>还没有配置转存目录</b>
         给 {{ DRIVE_META[active].full }} 添加一个别名（如「电视剧」）并绑定路径，<br />
@@ -690,6 +692,23 @@ html[data-theme='dark'] .dd-tnode.on {
   background: rgba(64, 150, 255, 0.2);
   color: #91caff;
 }
+
+/* ===== 移动端（<768px）：卡头上下堆叠、弹窗双列改单列；PC 一条不动 ===== */
+@media (max-width: 767px) {
+  .dd-cardhd {
+    flex-direction: column;
+    gap: 12px;
+    padding: 14px 14px 12px;
+  }
+  /* 新增目录按钮占满整行（本页主操作） */
+  .dd-headact { width: 100%; }
+  .dd-headact :deep(.ant-btn) { width: 100%; }
+  .dd-tabsbar { padding: 8px 10px 0; }
+
+  /* 弹窗里「网盘 + 所属账号」双列改单列 */
+  .dd-row2 { display: block; }
+  .dd-row2 > * + * { margin-top: 12px; }
+}
 </style>
 
 <style>
@@ -728,5 +747,12 @@ html[data-theme='dark'] .dd-tnode.on {
   padding: 14px 20px;
   border-top: 1px solid var(--split);
   background: var(--surface-3);
+}
+
+/* 手机：限高跟着 dvh 走 + 底部贴边（全局移动层在 pk.css，这里只补本弹窗的 flex 高度） */
+@media (max-width: 767px) {
+  .dd-modal-wrap .ant-modal-content { max-height: calc(100dvh - 24px); }
+  .dd-modal-wrap .ant-modal-body { padding: 14px 16px; }
+  .dd-modal-wrap .ant-modal-footer { padding: 12px 16px; }
 }
 </style>

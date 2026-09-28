@@ -1,37 +1,34 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><defs>
-    <!-- 大容器渐变：亮蓝 → 主蓝 -->
-    <linearGradient id="pkBody" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#4096ff"/>
-      <stop offset="1" stop-color="#1677ff"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- PanKeeper 图标：靛蓝玻璃皮 + P 字标（B2+G1 定稿，2026-09-28）
+       favicon 用自带圆角（rx=115 ≈ 苹果 squircle 比例）+ 透明四角；
+       主屏 PNG 由 rasterize 页栅格化：apple-touch/maskable 用满幅版，any 用圆角版 -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7c5cf6"/>
+      <stop offset=".5" stop-color="#3b6ef6"/>
+      <stop offset="1" stop-color="#1d3ad8"/>
     </linearGradient>
-    <!-- 小容器渐变：主蓝 → 深蓝，与容器拉开层次 -->
-    <linearGradient id="pkCap" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#1677ff"/>
-      <stop offset="1" stop-color="#0958d9"/>
+    <radialGradient id="sheen" cx=".2" cy=".1" r="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".4"/>
+      <stop offset=".5" stop-color="#ffffff" stop-opacity=".07"/>
+      <stop offset="1" stop-color="#000000" stop-opacity=".2"/>
+    </radialGradient>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#d9e4ff"/>
     </linearGradient>
-    <clipPath id="pkClipBody">
-      <rect x="1.6" y="3.2" width="14.2" height="17.6" rx="4.6"/>
-    </clipPath>
-  </defs><!-- 大容器（P 的竖干 + 容器本体） -->
-  <rect x="1.6" y="3.2" width="14.2" height="17.6" rx="4.6" fill="url(#pkBody)"/>
-  <!-- 容器内的「盘位」刻线，暗示这是收纳容器而非普通方块 -->
-  <g clip-path="url(#pkClipBody)" opacity=".44">
-    <rect x="1.6" y="12.1" width="14.2" height="1.5" fill="#fff"/>
-    <rect x="1.6" y="16.1" width="14.2" height="1.5" fill="#fff"/>
-  </g>
-
-  <!-- 汇聚点：三枚圆点 + 连接线，斜向汇入容器右下角 -->
-  <g>
-    <path d="M20.1 6.1L16.4 9.5" stroke="#1677ff" stroke-width="1.25" stroke-linecap="round" opacity=".62"/>
-    <path d="M20.4 11.6L16.5 12.9" stroke="#13c2c2" stroke-width="1.25" stroke-linecap="round" opacity=".62"/>
-    <path d="M20.1 17.1L16.6 16.2" stroke="#722ed1" stroke-width="1.25" stroke-linecap="round" opacity=".62"/>
-    <circle cx="20.9" cy="5.5" r="1.75" fill="#1677ff"/>
-    <circle cx="21.4" cy="12.0" r="1.75" fill="#13c2c2"/>
-    <circle cx="20.9" cy="18.5" r="1.75" fill="#722ed1"/>
-  </g>
-
-  <!-- 覆层的 P 碗 + 与主竖干相交出的 K 横臂（同色，读作一个整体） -->
-  <g fill="url(#pkCap)">
-    <rect x="8.1" y="6.0" width="7.2" height="8.3" rx="3.3"/>
-    <rect x="9.4" y="8.9" width="7.3" height="2.5" rx="1.25"/>
-  </g></svg>
+    <linearGradient id="pg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b6ef6"/>
+      <stop offset="1" stop-color="#7c5cf6"/>
+    </linearGradient>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#0a146e" flood-opacity=".4"/>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="115" fill="url(#bg)"/>
+  <rect width="512" height="512" rx="115" fill="url(#sheen)"/>
+  <rect x="118" y="120" width="276" height="278" rx="78" fill="url(#tile)" filter="url(#soft)"/>
+  <path d="M196 334 L196 184 L252 184 A56 56 0 0 1 252 296 L196 296"
+        fill="none" stroke="url(#pg)" stroke-width="54"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

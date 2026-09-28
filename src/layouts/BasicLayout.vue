@@ -16,6 +16,7 @@ import {
   FolderOpenOutlined,
   FieldTimeOutlined,
   SettingOutlined,
+  AppstoreOutlined,
 } from '@ant-design/icons-vue'
 import { useAuthStore } from '@/store/auth'
 import { useThemeStore } from '@/store/theme'
@@ -121,6 +122,75 @@ function logout() {
   auth.logout()
   router.push('/login')
 }
+
+/* ===== 移动端（<768px）：底部标签栏 + 「更多」面板 =====
+ * PC 上这两个组件 display:none，桌面布局一根毛都不动。
+ * 高频页（首页/搜索/记录/自动）进底栏，低频页收进「更多」底部面板。 */
+const moreOpen = ref(false)
+interface TabItem {
+  key: string
+  label: string
+  icon: any
+  to?: string
+}
+const tabs: TabItem[] = [
+  { key: 'dashboard', label: '首页', icon: HomeOutlined, to: '/dashboard' },
+  { key: 'search', label: '搜索', icon: SearchOutlined, to: '/search' },
+  { key: 'records', label: '记录', icon: FileTextOutlined, to: '/records' },
+  // 自动转存三网盘共用一个 tab：落到 /auto/baidu，另外两家从「更多」进
+  { key: 'auto', label: '自动', icon: ClockCircleOutlined, to: '/auto/baidu' },
+  { key: 'more', label: '更多', icon: AppstoreOutlined },
+]
+const activeTab = computed(() => {
+  if (moreOpen.value) return 'more'
+  if (route.name === 'auto') return 'auto'
+  return (route.name as string) || 'dashboard'
+})
+
+function tapTab(t: TabItem) {
+  if (t.key === 'more') {
+    moreOpen.value = !moreOpen.value
+    return
+  }
+  moreOpen.value = false
+  if (route.name !== t.key) router.push(t.to!)
+}
+
+/* 「更多」面板只收底栏没有的入口（转存配置/三网盘自动/系统管理四页），跳转复用 go() */
+const moreMenu: { key: string; label: string; items: MenuItem[] }[] = [
+  {
+    key: 'transfer',
+    label: '转存中心',
+    items: [{ key: 'default-dir', label: '转存配置', icon: FolderOutlined }],
+  },
+  {
+    key: 'auto',
+    label: '自动转存',
+    items: [
+      { key: 'auto-baidu', label: '百度网盘', icon: CloudOutlined, color: '#1677ff' },
+      { key: 'auto-quark', label: '夸克网盘', icon: CloudOutlined, color: '#13c2c2' },
+      { key: 'auto-115', label: '115 网盘', icon: CloudOutlined, color: '#722ed1' },
+    ],
+  },
+  {
+    key: 'sys',
+    label: '系统管理',
+    items: [
+      { key: 'accounts', label: '网盘连接', icon: DatabaseOutlined },
+      { key: 'cache-config', label: '缓存配置', icon: FolderOpenOutlined },
+      { key: 'queue-config', label: '队列配置', icon: FieldTimeOutlined },
+      { key: 'settings', label: '系统设置', icon: SettingOutlined },
+    ],
+  },
+]
+
+// 路由一变就收面板（从面板跳页后面板不能盖在新页面上）
+watch(
+  () => route.fullPath,
+  () => {
+    moreOpen.value = false
+  },
+)
 </script>
 
 <template>
@@ -172,7 +242,7 @@ function logout() {
         >
           {{ theme.isDark ? '☀ 日间' : '☾ 夜间' }}
         </button>
-        <span class="small muted">v0.1.0</span>
+        <span class="small muted pc-ver">v0.1.0</span>
       </div>
     </div>
 
@@ -183,6 +253,45 @@ function logout() {
     </div>
 
     <QueueBadge />
+
+    <!-- ===== 以下为移动端专用（<768px 才显示，PC display:none） ===== -->
+    <nav class="m-tabbar">
+      <button
+        v-for="t in tabs"
+        :key="t.key"
+        type="button"
+        class="m-tab"
+        :class="{ on: activeTab === t.key }"
+        @click="tapTab(t)"
+      >
+        <component :is="t.icon" class="m-tab-ico" />
+        <span>{{ t.label }}</span>
+      </button>
+    </nav>
+
+    <Transition name="msheet">
+      <div v-if="moreOpen" class="m-mask" @click.self="moreOpen = false">
+        <div class="m-sheet">
+          <div class="m-sheet-grab"></div>
+          <div class="m-user">
+            <div class="avatar">管</div>
+            <div style="flex: 1; min-width: 0">
+              <div style="font-size: 13.5px; font-weight: 500">{{ auth.username }}</div>
+              <div class="small muted">已登录</div>
+            </div>
+            <button class="m-logout" type="button" @click="logout">退出登录</button>
+          </div>
+          <div v-for="g in moreMenu" :key="g.key" class="m-group">
+            <div class="m-group-hd">{{ g.label }}</div>
+            <button v-for="c in g.items" :key="c.key" type="button" class="m-item" @click="go(c)">
+              <component :is="c.icon" class="m-item-ico" :style="c.color ? { color: c.color } : undefined" />
+              {{ c.label }}
+              <svg class="m-item-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6" /></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -215,18 +324,20 @@ function logout() {
   width: 26px;
   height: 26px;
   border-radius: 7px;
-  background: var(--primary);
+  /* 与新图标（靛蓝玻璃 + P 字标）同一套品牌语言 */
+  background: linear-gradient(135deg, #7c5cf6, #3b6ef6);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
 }
 .logo i::after {
-  content: '';
-  width: 11px;
-  height: 11px;
-  border: 2.5px solid #fff;
-  border-radius: 3px;
+  content: 'P';
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  font-family: -apple-system, 'Segoe UI', 'PingFang SC', sans-serif;
 }
 
 .menu { padding: 10px; flex: 1; overflow: auto; }
@@ -331,5 +442,152 @@ html[data-theme='dark'] .pagehead { background: rgba(23, 26, 33, 0.9); }
 }
 @media (min-width: 2400px) {
   .content { padding-left: 56px; padding-right: 56px; }
+}
+
+/* =====================================================================
+ * 移动端（<768px）—— iPhone 15 Pro / Pro Max 主战场
+ * 原则：只在这里覆盖，桌面规则一条不改（页面 ≥768px 时观感与原来 1:1）。
+ * 安全区：PWA 全屏下灵动岛/底部横条占位用 env(safe-area-*) 垫开；
+ *        Safari 浏览器模式这些值为 0，不受影响。
+ * ===================================================================== */
+
+/* 移动组件的「隐藏基态」：PC 不渲染观感 */
+.m-tabbar,
+.m-mask { display: none; }
+
+@media (max-width: 767px) {
+  /* dvh：Safari 地址栏伸缩时按可视高度算，别让底栏被地址栏顶出屏 */
+  .layout { height: 100dvh; }
+
+  /* 侧栏让位给底部标签栏 */
+  .sidebar { display: none; }
+
+  /* 顶栏变成移动顶栏：垫开灵动岛安全区，标题 + 夜间切换 */
+  .pagehead {
+    left: 0;
+    height: calc(env(safe-area-inset-top, 0px) + 50px);
+    padding: env(safe-area-inset-top, 0px) 14px 0;
+  }
+  .pagehead h2 { font-size: 15.5px; }
+  .pc-ver { display: none; }
+  .theme-btn { height: 32px; }
+
+  /* 内容区：上让顶栏、下让标签栏（56px 内容高 + 安全区），左右收窄 */
+  .content {
+    margin-left: 0;
+    height: 100dvh;
+    padding: calc(env(safe-area-inset-top, 0px) + 60px) 13px calc(env(safe-area-inset-bottom, 0px) + 80px);
+  }
+
+  /* ---- 底部标签栏 ---- */
+  .m-tabbar {
+    display: flex;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 55;
+    background: rgba(255, 255, 255, 0.92);
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
+    border-top: 0.5px solid var(--split);
+    padding: 5px 4px calc(env(safe-area-inset-bottom, 0px) + 5px);
+  }
+  html[data-theme='dark'] .m-tabbar { background: rgba(23, 26, 33, 0.94); }
+  .m-tab {
+    flex: 1;
+    height: 46px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    color: var(--text3);
+    font-size: 10.5px;
+    font-family: inherit;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .m-tab .m-tab-ico { font-size: 20px; line-height: 1; }
+  .m-tab.on { color: var(--primary); font-weight: 500; }
+
+  /* ---- 「更多」底部面板 ---- */
+  .m-mask {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    background: rgba(0, 0, 0, 0.45);
+  }
+  .m-sheet {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    max-height: 76dvh;
+    overflow: auto;
+    background: var(--card);
+    border-radius: 18px 18px 0 0;
+    padding: 8px 16px calc(env(safe-area-inset-bottom, 0px) + 14px);
+    box-shadow: var(--shadow-lg);
+  }
+  .m-sheet-grab {
+    width: 38px;
+    height: 4.5px;
+    border-radius: 3px;
+    background: var(--border);
+    margin: 4px auto 12px;
+  }
+  .m-user {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 2px 2px 12px;
+    border-bottom: 1px solid var(--split);
+  }
+  .m-logout {
+    border: none;
+    background: none;
+    color: var(--error);
+    font-size: 13px;
+    cursor: pointer;
+    font-family: inherit;
+    padding: 8px 4px;
+  }
+  .m-group { padding-top: 10px; }
+  .m-group-hd { font-size: 12px; color: var(--text3); padding: 4px 2px 6px; }
+  .m-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    height: 46px;
+    padding: 0 6px;
+    border: none;
+    background: none;
+    cursor: pointer;
+    color: var(--text);
+    font-size: 14.5px;
+    font-family: inherit;
+    text-align: left;
+    border-radius: 10px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .m-item:active { background: var(--hover); }
+  .m-item-ico { font-size: 17px; color: var(--text2); }
+  .m-item-chev { margin-left: auto; width: 14px; height: 14px; color: var(--text4); }
+
+  /* 面板出场：遮罩淡入 + 面板从底部滑上（iOS 手感） */
+  .msheet-enter-active,
+  .msheet-leave-active { transition: opacity 0.2s ease; }
+  .msheet-enter-active .m-sheet,
+  .msheet-leave-active .m-sheet { transition: transform 0.26s cubic-bezier(0.32, 0.72, 0.3, 1); }
+  .msheet-enter-from,
+  .msheet-leave-to { opacity: 0; }
+  .msheet-enter-from .m-sheet,
+  .msheet-leave-to .m-sheet { transform: translateY(60%); }
 }
 </style>

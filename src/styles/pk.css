@@ -602,3 +602,223 @@ html[data-theme='dark'] .pkq-st-done { color: #73d13d; }
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
+/* =====================================================================
+ * 移动端适配层（<768px）—— iPhone 15 Pro(393×852) / Pro Max(430×932) 主战场
+ * 铁律：PC（≥768px）观感零变化，所有覆盖都在媒体查询里。
+ * 安全区变量：PWA 全屏下灵动岛/底部横条的占位（Safari 浏览器模式为 0）。
+ * ===================================================================== */
+:root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+}
+
+/* 触屏手感基础：任何宽度都无副作用（PC 无 tap 高亮，text-size-adjust 桌面不生效） */
+html {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+/* 双击快快点按钮不再等待缩放判定（iOS Safari 仍有双击缩放） */
+button,
+.tabs > div,
+.pktab,
+.tnode,
+.dd-tnode,
+.pg-it,
+.m-tab,
+.m-item {
+  touch-action: manipulation;
+}
+
+@media (max-width: 767px) {
+  /* ---- 通用卡片/表格密度 ---- */
+  .card { padding: 16px; }
+  th { padding: 10px 12px; }
+  td { padding: 11px 12px; font-size: 13px; }
+  .note-box { padding: 10px 12px; margin-top: 12px; }
+
+  /* ---- 胶囊 tab：超宽横滑（保持胶囊观感，不折行挤爆） ---- */
+  .tabs {
+    display: flex;
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tabs > div { flex: 0 0 auto; }
+
+  /* ---- 统计卡：一行放不下 → 自动换行两列 ---- */
+  .statline { flex-wrap: wrap; }
+  .stat { flex: 1 1 42%; padding: 12px 14px 12px 20px; min-width: 0; }
+  .stat b { font-size: 20px; }
+
+  /* ---- 设置页式表单行（formrow 是全局共享类）：标签挪到控件上方 ---- */
+  .formrow { grid-template-columns: 1fr; gap: 8px; padding: 12px 0; }
+  .formrow > label { text-align: left; }
+
+  /* ---- 筛选条：间距收紧，antd 控件不允许撑破容器 ---- */
+  .filterbar { gap: 10px; padding: 10px 12px; }
+  .filterbar .ant-select,
+  .filterbar .ant-input { max-width: 100%; }
+
+  /* ---- iOS 聚焦防缩放：焦点输入框字号必须 ≥16px，否则 Safari 强制放大页面 ----
+     （请假项目同款坑。antd Input/InputNumber 与分页跳页框都是真实 <input>） */
+  .ant-input,
+  .ant-input-number-input,
+  .pager .pg-jump input {
+    font-size: 16px !important;
+  }
+
+  /* ---- antd Modal：宽弹窗按屏宽收口，内容限高滚动 ---- */
+  .ant-modal { max-width: calc(100vw - 16px); }
+  .ant-modal .ant-modal-content { max-height: calc(100dvh - 32px); }
+  .ant-modal .ant-modal-body { overflow-y: auto; }
+  .ant-modal .ant-modal-header { padding-top: 0; }
+
+  /* ---- antd Drawer：660px 详情抽屉直接全宽 ---- */
+  .ant-drawer-content-wrapper { max-width: 100vw !important; }
+  .ant-drawer-body { padding: 16px; }
+
+  /* ---- antd 全局浮层：长 toast / 长下拉选项不允许横向溢出 ---- */
+  .ant-message-notice-content,
+  .ant-select-dropdown { max-width: calc(100vw - 20px); }
+
+  /* ---- 分页条：手机上砍掉「跳至 N 页」，每页条数留着 ---- */
+  .pager { gap: 10px; padding: 10px 12px; }
+  .pager .pg-jump { display: none; }
+  .pg-list { flex-wrap: wrap; justify-content: center; }
+
+  /* ---- 网盘连接卡 ---- */
+  .accgrid { grid-template-columns: 1fr; gap: 14px; }
+  .acc { padding: 16px; }
+
+  /* ---- 队列看板条目（QueueBoard，类名在全局共享段） ---- */
+  .pq-item { padding: 12px 14px; gap: 10px; }
+  .pq-path { word-break: break-all; white-space: normal; }
+  .pq-log { height: 200px; }
+
+  /* ---- 右下角队列浮标：抬到标签栏上方，别让拇指和底栏挡住 ---- */
+  .pkq-badge {
+    right: 14px;
+    bottom: calc(var(--sab) + 68px);
+  }
+
+  /* ---- 通用横滑表格容器（低频管理页的宽表格保横滑方案） ----
+     用法：表格外套 .pk-hscroll（卡片层 overflow 放开），表格 min-width 保列宽 */
+  .pk-hscroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .pk-hscroll > table { min-width: 660px; }
+}
+
+/* ===== 搜索页网盘胶囊 tab（2026-09-29 从 git 原版恢复：视图重构时样式丢失，
+     桌面/手机都退化为竖排素 div；767px 以下改横滑不折行） ===== */
+.pktabs {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  background: transparent;
+  padding: 12px 14px 13px;
+}
+.pktab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 13px;
+  cursor: pointer;
+  user-select: none;
+  border-radius: 8px;
+  font-size: 13.5px;
+  color: var(--text2);
+  background: transparent;
+  transition: background 0.16s, color 0.16s, box-shadow 0.16s;
+  white-space: nowrap;
+}
+.pktab:hover {
+  background: var(--split);
+  color: var(--text);
+}
+.pktab.on {
+  color: #fff;
+  font-weight: 500;
+  background: var(--primary);
+  box-shadow: 0 2px 8px rgba(22, 119, 255, 0.28);
+}
+.pktab.on:hover {
+  background: var(--primary-h);
+  color: #fff;
+}
+/* 小圆点：有结果的网盘用网盘色标识 */
+.pktab .pkdot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+.pktab.on .pkdot {
+  background: #fff !important;
+  opacity: 0.9;
+}
+.pktab .pknum {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--split);
+  color: var(--text2);
+  transition: background 0.16s, color 0.16s;
+}
+.pktab.on .pknum {
+  background: rgba(255, 255, 255, 0.24);
+  color: #fff;
+}
+.pktab.dim {
+  opacity: 0.4;
+}
+.pktab.dim .pknum {
+  background: transparent;
+}
+/* tab 行右侧的扫描状态 */
+.pktabs .pk-tab-scan {
+  margin-left: auto;
+  font-size: 12.5px;
+  color: var(--text3);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.pkdot-live {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #52c41a;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 0 rgba(82, 196, 26, 0.5);
+  animation: pkPulse 1.8s ease-out infinite;
+}
+@keyframes pkPulse {
+  0% { box-shadow: 0 0 0 0 rgba(82, 196, 26, 0.45); }
+  70% { box-shadow: 0 0 0 6px rgba(82, 196, 26, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(82, 196, 26, 0); }
+}
+.pkspin {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(22, 119, 255, 0.25);
+  border-top-color: #1677ff;
+  border-radius: 50%;
+  display: inline-block;
+  animation: pkSpin 0.7s linear infinite;
+}
+@keyframes pkSpin {
+  to { transform: rotate(360deg); }
+
+/* 手机：胶囊超宽横滑 */
+@media (max-width: 767px) {
+  .pktabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .pktabs::-webkit-scrollbar { display: none; }
+  .pktab { flex: 0 0 auto; }
+}
