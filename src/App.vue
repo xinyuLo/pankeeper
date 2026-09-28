@@ -6,6 +6,7 @@ import { useThemeStore } from '@/store/theme'
 import { USE_MOCK } from '@/api/http'
 import { listDdItems } from '@/api/modules/dd'
 import { listAccounts } from '@/api/modules/accounts'
+import { listPaTasks } from '@/api/modules/tasks'
 import { pkQueueCfgGet } from '@/queue/engine'
 
 const themeStore = useThemeStore()
@@ -16,6 +17,7 @@ onMounted(() => {
   if (USE_MOCK) return
   listDdItems().catch(() => {})
   listAccounts().catch(() => {})
+  listPaTasks().catch(() => {})
   pkQueueCfgGet()
 })
 

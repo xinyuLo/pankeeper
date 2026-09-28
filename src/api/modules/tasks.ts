@@ -8,46 +8,94 @@
  *  - 任务详情抽屉的执行日志快照
  */
 import { reactive } from 'vue'
-import { mockDelay } from '../http'
+import { get, mockDelay, post, put, del, USE_MOCK } from '../http'
 import { paStore, paByType } from '../mock/tasks'
 import type { MainDriveType, PaTask, QueueLogLine, TreeNode } from '@/types/model'
 
 /* ===================== 任务 CRUD ===================== */
 
-export function listPaTasks(type: MainDriveType): Promise<PaTask[]> {
-  // TODO 后端: GET /api/pa/tasks?type=
-  return mockDelay(paByType(type))
+/** 后端行 → PaTask + 扩展配置回填 extrasMap（真实模式唯一事实源在后端） */
+function hydrate(rows: Record<string, unknown>[]): PaTask[] {
+  const tasks: PaTask[] = []
+  for (const r of rows) {
+    tasks.push({ ...(r as unknown as PaTask), exclIdx: Array.isArray(r.exclIdx) ? (r.exclIdx as number[]) : [] })
+    const raw = r as Record<string, unknown>
+    const regex: PaRegexRule[] = raw.regex_pattern
+      ? [{ pat: String(raw.regex_pattern), rep: String(raw.regex_replace || '') }]
+      : []
+    extrasMap[Number(raw.id)] = cloneExtras({
+      regex,
+      drill_on: Boolean(raw.drill_on),
+      drill: (raw.drill as string[]) || [],
+      qms_id: (raw.qms_id as number | null) ?? null,
+      strm_id: (raw.strm_id as number | null) ?? null,
+    })
+  }
+  paStore.tasks.splice(0, paStore.tasks.length, ...tasks)
+  paStore.seq = Math.max(paStore.seq, ...tasks.map((t) => t.id), 0)
+  return tasks
+}
+
+export function listPaTasks(type?: MainDriveType | ''): Promise<PaTask[]> {
+  if (USE_MOCK) return mockDelay(type ? paByType(type) : [...paStore.tasks])
+  return get<Record<string, unknown>[]>('/pa/tasks', { params: type ? { type } : {} }).then(hydrate)
 }
 
 /** 启用/停用开关（原型 paToggle）：翻转并返回翻转后的状态 */
-export function togglePaTask(id: number): Promise<boolean> {
-  // TODO 后端: PUT /api/pa/tasks/:id/enabled
+export async function togglePaTask(id: number): Promise<boolean> {
+  if (USE_MOCK) {
+    const t = paStore.tasks.find((x) => x.id === id)
+    if (t) t.enabled = !t.enabled
+    return mockDelay(!!t && t.enabled)
+  }
+  const { enabled } = await put<{ enabled: boolean }>(`/pa/tasks/${id}/enabled`)
   const t = paStore.tasks.find((x) => x.id === id)
-  if (t) t.enabled = !t.enabled
-  return mockDelay(!!t && t.enabled)
+  if (t) t.enabled = enabled
+  return enabled
 }
 
-export function deletePaTask(id: number): Promise<void> {
-  // TODO 后端: DELETE /api/pa/tasks/:id
+export async function deletePaTask(id: number): Promise<void> {
+  if (USE_MOCK) {
+    paStore.tasks = paStore.tasks.filter((x) => x.id !== id)
+    delete extrasMap[id]
+    return mockDelay(undefined)
+  }
+  await del(`/pa/tasks/${id}`)
   paStore.tasks = paStore.tasks.filter((x) => x.id !== id)
   delete extrasMap[id]
-  return mockDelay(undefined)
 }
 
 /** 保存（新增或编辑）：返回落库后的任务（新增时 id 在这里才真正分配） */
-export function savePaTask(task: PaTask, extras: PaExtras): Promise<PaTask> {
-  // TODO 后端: POST /api/pa/tasks | PUT /api/pa/tasks/:id
-  const idx = paStore.tasks.findIndex((x) => x.id === task.id)
-  let saved: PaTask
-  if (idx >= 0) {
-    saved = { ...task }
-    paStore.tasks[idx] = saved
-  } else {
-    saved = { ...task, id: ++paStore.seq }
-    paStore.tasks.push(saved)
+export async function savePaTask(task: PaTask, extras: PaExtras): Promise<PaTask> {
+  if (USE_MOCK) {
+    const idx = paStore.tasks.findIndex((x) => x.id === task.id)
+    let saved: PaTask
+    if (idx >= 0) {
+      saved = { ...task }
+      paStore.tasks[idx] = saved
+    } else {
+      saved = { ...task, id: ++paStore.seq }
+      paStore.tasks.push(saved)
+    }
+    extrasMap[saved.id] = cloneExtras(extras)
+    return mockDelay(saved)
   }
-  extrasMap[saved.id] = cloneExtras(extras)
-  return mockDelay(saved)
+  // 扩展字段并进请求体（后端并表存储）；正则取第一条（前端契约 pattern→replace）
+  const body = {
+    ...task,
+    regex_pattern: extras.regex?.[0]?.pat || '',
+    regex_replace: extras.regex?.[0]?.rep || '',
+    qms_id: extras.qms_id,
+    strm_id: extras.strm_id,
+    drill_on: extras.drill_on,
+    drill: extras.drill,
+  }
+  const saved = task.id
+    ? await put<PaTask>(`/pa/tasks/${task.id}`, body)
+    : await post<PaTask>('/pa/tasks', body)
+  await listPaTasks() // 写后回读，store 与后端对齐（含真实 id）
+  const savedRow = paStore.tasks.find((x) => x.name === saved.name && x.share_url === saved.share_url)
+  return savedRow || saved
 }
 
 /* ===================== 任务弹窗的扩展配置 =====================
