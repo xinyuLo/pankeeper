@@ -64,6 +64,15 @@ def create_app() -> FastAPI:
         if icons.is_dir():
             app.mount("/icons", StaticFiles(directory=icons), name="icons")
 
+        # history 路由 SPA 回退：/login、/dashboard 等前端路径刷新时返回 index.html
+        @app.get("/{full_path:path}", include_in_schema=False)
+        def _spa_fallback(full_path: str):
+            # 只服务 web 目录内真实存在的文件；其余全部回 index.html（前端路由接管）
+            candidate = (WEB_DIR / full_path).resolve() if full_path else None
+            if candidate and candidate.is_file() and str(candidate).startswith(str(WEB_DIR.resolve())):
+                return FileResponse(candidate)
+            return FileResponse(WEB_DIR / "index.html")
+
     @app.on_event("startup")
     def _startup():
         init_db()

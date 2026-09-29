@@ -7,6 +7,8 @@ from pydantic import BaseModel
 from ..db import SessionLocal
 from ..deps import CurrentUser, make_adapter_for
 from ..models import Account, now_str
+from ..services.dircache import dir_cache
+from ..services.settings_svc import get_group, save_group
 from ..security import encrypt_credential
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
@@ -30,6 +32,7 @@ def list_accounts(_user=CurrentUser):
             out.append(
                 {
                     "type": t,
+                    "base_dir": get_group("base_dir").get(t, ""),
                     "short": meta["short"],
                     "color": meta["color"],
                     "cred_kind": meta["cred_kind"],
@@ -119,6 +122,46 @@ def account_summary(drive_type: str, _user=CurrentUser):
         return adapter.summary()
     except Exception:
         return {"capacity": None, "vip": None}
+
+
+class BaseDirBody(BaseModel):
+    path: str = ""
+
+
+@router.put("/{drive_type}/base-dir")
+def set_base_dir(drive_type: str, body: BaseDirBody, _user=CurrentUser):
+    """填写默认目标目录；保存后自动预热该目录的目录树缓存（凭据已配时）。"""
+    if drive_type not in ORDER:
+        raise HTTPException(status_code=404, detail="未知网盘")
+    path = body.path.strip()
+    cfg = get_group("base_dir")
+    cfg[drive_type] = path
+    save_group("base_dir", cfg)
+
+    if not path:
+        return {"ok": True, "primed": False, "message": "已保存"}
+    with SessionLocal() as db:
+        acc = db.get(Account, drive_type)
+        if acc is None or not acc.cookies_enc:
+            return {"ok": True, "primed": False, "message": "已保存；配置凭据后首次打开转存弹窗将自动加载缓存"}
+        try:
+            adapter = make_adapter_for(db, drive_type)
+        except HTTPException:
+            return {"ok": True, "primed": False, "message": "已保存"}
+
+    # 预热：路径解析到 fid → 拉一次目录列表进 dircache
+    if drive_type != "quark":
+        return {"ok": True, "primed": False, "message": "已保存（该网盘预热将在适配器就绪后支持）"}
+    from ..api.cache_api import _resolve_path
+
+    try:
+        fid = _resolve_path(adapter, path)
+        dir_cache.get_or_load((drive_type, "main", fid), lambda: adapter._list_dir(fid))
+    except HTTPException as e:
+        return {"ok": True, "primed": False, "message": f"已保存，但预热失败：{e.detail}"}
+    except Exception as e:
+        return {"ok": True, "primed": False, "message": f"已保存，但预热失败：{e}"}
+    return {"ok": True, "primed": True, "message": "已保存并预热目录缓存"}
 
 
 @router.post("/{drive_type}/check")
