@@ -55,11 +55,17 @@ python -m venv .venv
 - 前端队列引擎（本地 600ms tick 模拟）切到消费后端：轮询 `GET /api/queue/state` 或订阅 SSE
   `GET /api/queue/events`，`QueueBoard/QueueBadge` 渲染层不用动。
 
-## Docker 部署（NAS）
+## Docker 部署（NAS，单容器全家桶）
+
+**前后端打成一个镜像**：多阶段构建（node 编译前端 → python 运行后端 + 托管前端静态包），单端口 8000，无 nginx 无反代。
 
 ```bash
-docker compose up -d --build     # 构建并启动，数据落在 pankeeper-data volume
-# 访问 http://<NAS_IP>:8000/docs
+# NAS 上两个仓库同级克隆：
+#   /vol2/1001/disk2/workspace/pankeeper-backend
+#   /vol2/1001/disk2/workspace/pankeeper-vue3
+cd pankeeper-backend
+docker compose up -d --build
+# 前台：http://<NAS_IP>:8000/   API 文档：http://<NAS_IP>:8000/docs
 ```
 
 **持久化说明（重要）**：

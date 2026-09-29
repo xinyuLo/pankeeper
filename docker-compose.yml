@@ -1,25 +1,20 @@
 services:
   pankeeper:
-    build: .
+    build:
+      context: .
+      # 前端仓库与本仓库同级克隆（workspace/pankeeper-vue3）
+      additional_contexts:
+        frontend: ../pankeeper-vue3
     container_name: pankeeper
     restart: unless-stopped
     ports:
       - "8000:8000"
     volumes:
       # 一切配置与数据的持久化位置：SQLite + 加密密钥。
-      # 备份这个 volume = 备份整个系统；换镜像/升级不丢配置。
+      # 备份这个 volume = 备份整个系统；升级镜像不丢配置。
       - pankeeper-data:/app/data
     environment:
       TZ: Asia/Shanghai
-
-  # 前端静态包：前端仓库 npm run build 后把 dist 挂进来即可，
-  # 或用 nginx 单独起（/api 反代到 pankeeper:8000）。后期整合再调。
-  # nginx:
-  #   image: nginx:alpine
-  #   ports: ["80:80"]
-  #   volumes:
-  #     - ../PanKeeper-vue3/dist:/usr/share/nginx/html:ro
-  #     - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
 
 volumes:
   pankeeper-data:
