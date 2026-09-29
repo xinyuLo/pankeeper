@@ -94,6 +94,22 @@ def list_files(type: str = "quark", parent: str = "0", path: str = "", force_ref
             # 目录 ID→路径映射（稳定，无 TTL）
             _remember_paths(type, parent, path, out)
             return out
+        if type == "baidu":
+            # 百度没有 quark 那种 fid 概念，直接用**完整路径**当目录标识：
+            # 根层前端传 parent='0' + path='/'；展开子层时 parent 就是上一层的 path。
+            directory = path if (path and parent in ("0", "")) else parent
+            if not directory or directory == "0":
+                directory = "/"
+            items = adapter.list_dir(directory)
+            return [
+                {
+                    "fid": str(it.get("path") or ""),
+                    "name": str(it.get("server_filename") or ""),
+                    "is_dir": bool(it.get("isdir")),
+                    "size": int(it.get("size") or 0),
+                }
+                for it in items
+            ]
         raise HTTPException(status_code=400, detail=f"网盘 {type} 适配器尚未实现")
 
     return dir_cache.get_or_load((type, "main", parent), load, force=force_refresh)

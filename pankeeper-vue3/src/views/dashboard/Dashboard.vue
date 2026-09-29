@@ -9,11 +9,14 @@ import { useRouter } from 'vue-router'
 import type { CSSProperties } from 'vue'
 import type { AccountStatus, MainDriveType, PaTask } from '@/types/model'
 import { paStore } from '@/api/mock/tasks'
-import { accountStore } from '@/api/mock/accounts'
+import { accountStore, firstAccountOf } from '@/api/mock/accounts'
+import { getDriveLogs, type DriveLogData } from '@/api/modules/driveLogs'
 import { useThemeStore } from '@/store/theme'
+import { useAuthStore } from '@/store/auth'
 
 const router = useRouter()
 const theme = useThemeStore()
+const auth = useAuthStore()
 
 const DB_TYPES: MainDriveType[] = ['baidu', 'quark', '115']
 
@@ -170,11 +173,15 @@ interface PanView {
   latest: PaTask | null
   pill: { cls: string; text: string } | null
   res: { plain: string; segs: ResSeg[] } | null
+  /** 容量（后端缓存，可能为 null） */
+  cap: { total: number; used: number } | null
+  /** 会员（后端缓存，可能为 null） */
+  vip: { name: string; expires: string | null } | null
 }
 
 const pans = computed<PanView[]>(() =>
   DB_TYPES.map((type) => {
-    const acct = accountStore.accounts[type]
+    const acct = firstAccountOf(type) ?? { short: type, color: "", status: "unset", last_check: "从未配置" }
     const s = summaryOf(type)
     const lt = s.latest
     return {
@@ -193,6 +200,9 @@ const pans = computed<PanView[]>(() =>
       latest: lt,
       pill: lt ? pillOf(lt) : null,
       res: lt ? resultSegs(lt) : null,
+      // 容量/会员复用「网盘连接」页缓存下来的那份摘要（刷新不丢，见后端 account_summary）
+      cap: acct.summary?.capacity || null,
+      vip: acct.summary?.vip || null,
     }
   }),
 )
@@ -211,7 +221,7 @@ const tabViews = computed<TabView[]>(() =>
     const s = summaryOf(type)
     return {
       type,
-      label: accountStore.accounts[type].short,
+      label: firstAccountOf(type)?.short || type,
       on: s.on,
       fail: s.fail,
     }
@@ -235,6 +245,8 @@ function goManage(type: MainDriveType) {
 
 const curList = computed(() => tasksOf(curTab.value))
 const curSummary = computed(() => summaryOf(curTab.value))
+/** 空状态文案用：当前 tab 对应的网盘名 */
+const curTabName = computed(() => (firstAccountOf(curTab.value)?.alias || firstAccountOf(curTab.value)?.short || curTab.value) + '网盘')
 
 /* 排序后第一个启用项 = 这个网盘最近一条要触发的任务（首页不摆全量表格） */
 const curRow = computed(() => {
@@ -244,33 +256,108 @@ const curRow = computed(() => {
   return { t, n, pill: pillOf(t), res: resultSegs(t) }
 })
 
-/* ---------- 内联样式助手：CSS 变量经 style 传给伪元素（色标条/品牌色细条） ---------- */
-const accent = (c: string): CSSProperties => ({ '--db-accent': c })
+/* ---------- 顶部横幅：问候 + 一句话现状 + 快捷入口 ----------
+ * 原来这里是四个等宽大白格，数据没跑起来时满屏都是 0，像坏了的仪表盘。
+ * 换成一条横幅：左边报平安/报警，右边直接给下一步动作。 */
+const greeting = computed(() => {
+  const h = new Date().getHours()
+  if (h < 6) return '凌晨好'
+  if (h < 12) return '早上好'
+  if (h < 14) return '中午好'
+  if (h < 18) return '下午好'
+  return '晚上好'
+})
+
+const heroSummary = computed(() => {
+  const total = pans.value.length
+  const conn = pans.value.filter((p) => p.status === 'connected').length
+  const unset = pans.value.filter((p) => p.status === 'unset').length
+  const parts: string[] = [`${conn}/${total} 个网盘已连接`]
+  if (overview.value.fails > 0) parts.push(`${overview.value.fails} 个任务最近失败，建议看一眼`)
+  else if (overview.value.ok > 0) parts.push(`${overview.value.ok} 个任务最近跑成功`)
+  else if (overview.value.enabled > 0) parts.push(`${overview.value.enabled} 个定时任务在跑`)
+  else parts.push('还没有启用的定时任务')
+  if (unset > 0) parts.push(`${unset} 个待配置`)
+  return parts.join(' · ')
+})
+
+/* ---------- 容量显示助手 ---------- */
+function gb(bytes: number): string {
+  return (bytes / 1024 ** 3).toFixed(0)
+}
+function usedPct(cap: { total: number; used: number } | null): number {
+  if (!cap || !cap.total) return 0
+  return Math.min(100, Math.round((cap.used / cap.total) * 100))
+}
+
+/* ---------- 横幅快捷入口 ---------- */
+function goSearch() {
+  router.push('/search')
+}
+function goNewTask() {
+  router.push('/auto/' + curTab.value)
+}
+
+/* ---------- 内联样式助手：品牌色经 CSS 变量传给伪元素（卡片顶条 / 容量条） ---------- */
 const brand = (c: string): CSSProperties => ({ '--db-c': c })
 
+/* ---------- 今日请求量：把「网盘日志」的数据在首页露一眼 ----------
+ * 没任务的时候首页也得有点「活」的数字，否则永远是一排 0。 */
+const logs = ref<DriveLogData | null>(null)
+
+const todayReq = computed(() => logs.value?.today.total ?? null)
+const todayLevel = computed(() => {
+  const th = logs.value?.thresholds
+  const n = todayReq.value
+  if (!th || n === null) return ''
+  if (n >= th.danger) return 'm-bad'
+  if (n >= th.warn) return 'm-warn'
+  return 'm-ok'
+})
+
 /* 持久化主题没有统一应用入口，驾驶舱作为登录后的首页兜底同步一次（幂等） */
-onMounted(() => theme.apply())
+onMounted(async () => {
+  theme.apply()
+  try {
+    logs.value = await getDriveLogs(7)
+  } catch {
+    logs.value = null // 拉不到就不显示这一项，别让首页跟着挂
+  }
+})
 </script>
 
 <template>
   <div class="db-wrap">
-    <!-- ===== 1. 总览数字条 ===== -->
-    <div class="db-stats">
-      <div class="db-stat" :style="accent('var(--primary)')">
-        <b>{{ overview.enabled }}</b><span>启用中的任务</span>
-        <div class="db-stat-sub">共 {{ overview.total }} 个，{{ overview.paused }} 个已停用</div>
+    <!-- ===== 1. 顶部横幅（问候 + 一句话现状 + 指标 + 快捷入口） ===== -->
+    <div class="db-hero">
+      <div class="db-hero-top">
+        <div class="db-hero-hi">
+          <h2>{{ greeting }}，{{ auth.username || '欢迎回来' }}</h2>
+          <p>{{ heroSummary }}</p>
+        </div>
+        <div class="db-hero-act">
+          <button type="button" class="db-btn" @click="goSearch">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></svg>
+            搜索转存
+          </button>
+          <button type="button" class="db-btn is-primary" @click="goNewTask">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
+            新建定时任务
+          </button>
+        </div>
       </div>
-      <div class="db-stat" :style="accent('var(--success)')">
-        <b>{{ overview.ok }}</b><span>最近执行成功</span>
-      </div>
-      <div class="db-stat" :style="accent('var(--error)')">
-        <b>{{ overview.fails }}</b><span>最近执行失败</span>
-        <div v-if="overview.fails" class="db-stat-sub">建议到对应网盘页查看</div>
-      </div>
-      <!-- 第 4 格是「今天 03:00」这类文本，is-text 单独降字号让四格齐平 -->
-      <div class="db-stat is-text" :style="accent('var(--warning)')">
-        <b>{{ overview.nextTxt }}</b><span>下一次触发</span>
-        <div class="db-stat-sub">{{ overview.nextSub }}</div>
+      <div class="db-hero-metrics">
+        <div><b>{{ overview.total }}</b><span>任务总数</span></div>
+        <div><b>{{ overview.enabled }}</b><span>启用中</span></div>
+        <div><b class="m-ok">{{ overview.ok }}</b><span>最近成功</span></div>
+        <div><b :class="{ 'm-bad': overview.fails > 0 }">{{ overview.fails }}</b><span>最近失败</span></div>
+        <div v-if="todayReq !== null">
+          <b :class="todayLevel">{{ todayReq }}</b><span>今日请求</span>
+        </div>
+        <div class="is-wide">
+          <b>{{ overview.nextTxt }}</b>
+          <span>下次触发<i v-if="overview.nextSub"> · {{ overview.nextSub }}</i></span>
+        </div>
       </div>
     </div>
 
@@ -308,6 +395,14 @@ onMounted(() => theme.apply())
             </div>
           </div>
           <div class="db-pan-body">
+            <!-- 容量 + 会员：复用「网盘连接」页缓存下来的摘要，有数据才显示 -->
+            <div v-if="p.cap || p.vip" class="db-pan-meta">
+              <span v-if="p.vip" class="db-vip">{{ p.vip.name }}<i v-if="p.vip.expires"> · {{ p.vip.expires }}</i></span>
+              <span v-if="p.cap" class="db-cap-txt">{{ gb(p.cap.used) }} / {{ gb(p.cap.total) }} GB</span>
+            </div>
+            <div v-if="p.cap" class="db-cap-bar" :title="usedPct(p.cap) + '% 已使用'">
+              <i :style="{ width: usedPct(p.cap) + '%' }"></i>
+            </div>
             <!-- 最近一条任务的简报 -->
             <div v-if="p.latest && p.pill && p.res" class="db-last">
               <div class="db-last-hd">
@@ -371,7 +466,16 @@ onMounted(() => theme.apply())
           </div>
         </div>
       </div>
-      <div class="db-tablewrap">
+      <!-- 空态：不摆一张空表格，直接给引导 -->
+      <div v-if="!curList.length" class="db-blank">
+        <div class="db-blank-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="13" r="8" /><path d="M12 9v4l2.5 2M9 3h6" /></svg>
+        </div>
+        <h4>{{ curTabName }}还没有定时任务</h4>
+        <p>建一条，PanKeeper 就按你设的时间自动转存 —— 不用天天手动点。</p>
+        <button type="button" class="db-btn is-primary" @click="goNewTask">新建一条</button>
+      </div>
+      <div v-else class="db-tablewrap">
         <table class="db-table">
           <thead>
             <tr>
@@ -383,11 +487,8 @@ onMounted(() => theme.apply())
             </tr>
           </thead>
           <tbody>
-            <!-- 空态两种：无任务 / 全停用 -->
-            <tr v-if="!curList.length">
-              <td class="db-td db-empty-cell" colspan="5"><div class="db-empty">这个网盘还没有定时任务</div></td>
-            </tr>
-            <tr v-else-if="!curRow">
+            <!-- 全停用：有任务，但没一个在跑 -->
+            <tr v-if="!curRow">
               <td class="db-td db-empty-cell" colspan="5"><div class="db-empty">任务都在停用中 · 启用后这里显示最近一条要触发的</div></td>
             </tr>
             <tr v-else class="db-row">
@@ -421,7 +522,8 @@ onMounted(() => theme.apply())
         </table>
       </div>
       <!-- 卡脚：当前 tab 的任务汇总，大屏下正好填住任务卡撑高的余量 -->
-      <div class="db-tasks-ft">
+      <!-- 页脚只在真有任务时出现：空态下「共 0 个任务」纯属噪音 -->
+      <div v-if="curSummary.total" class="db-tasks-ft">
         <span>共 <b>{{ curSummary.total }}</b> 个任务，<b>{{ curSummary.on }}</b> 个启用中</span>
         <span>最近成功 <b class="ok">{{ curSummary.ok }}</b> · 失败 <b :class="{ bad: curSummary.fail > 0 }">{{ curSummary.fail }}</b></span>
         <span v-if="curSummary.total > 1" class="db-tasks-next">其余 <b>{{ curSummary.total - 1 }}</b> 个任务在「自动转存」页管理</span>
@@ -441,39 +543,68 @@ onMounted(() => theme.apply())
    min-height:0 是让内部滚动生效的关键（flex 子项默认 min-height:auto 会拒绝收缩）。 */
 .db-wrap { display: flex; flex-direction: column; gap: 16px; flex: 1 1 auto; min-height: 0; }
 
-/* ---------- 1. 总览数字条 ---------- */
-.db-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; flex: none; }
-.db-stat {
-  position: relative; background: var(--card); border-radius: var(--r);
-  box-shadow: var(--shadow); padding: 13px 18px 13px 26px; overflow: hidden;
-  transition: transform 0.18s, box-shadow 0.18s;
+/* ---------- 1. 顶部横幅 ----------
+ * 原来是四个等宽白格，数据没跑起来时满屏都是 0。换成一条会说话的横幅：
+ * 左问候 + 现状摘要，右快捷入口，底部压一条指标。 */
+.db-hero {
+  position: relative; flex: none; overflow: hidden;
+  border-radius: var(--r);
+  padding: 18px 22px 15px;
+  color: #fff;
+  /* 与侧栏 logo / 登录页同一套紫蓝品牌渐变（浅一档，别压得住整页） */
+  background: linear-gradient(120deg, #8b8be8 0%, #7d94fa 48%, #5cb8e8 100%);
+  box-shadow: 0 6px 22px rgba(74, 108, 247, 0.16);
 }
-.db-stat:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
-/* 底部流动色带：细线沿底边循环流动（颜色随 --db-accent） */
-.db-stat::after {
-  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
-  background: linear-gradient(90deg, transparent, var(--db-accent, var(--db-c)), transparent);
-  background-size: 200% 100%;
-  animation: dbStatFlow 3.2s linear infinite;
-  opacity: 0.55;
+/* 右上角柔光：免得整块纯渐变显得板 */
+.db-hero::after {
+  content: ''; position: absolute; right: -60px; top: -90px; width: 260px; height: 260px;
+  border-radius: 50%; background: radial-gradient(circle, rgba(255, 255, 255, 0.22), transparent 68%);
+  pointer-events: none;
 }
-@keyframes dbStatFlow {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+.db-hero-top {
+  position: relative; z-index: 1;
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap;
 }
-/* 左侧内缩色标，跟项目里 .stat 保持同一套视觉语言（颜色经 --db-accent 传入） */
-.db-stat::before {
-  content: ''; position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
-  width: 4px; height: 36px; border-radius: 2px; background: var(--db-accent, #dfe2e8);
+.db-hero-hi h2 { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: 0.2px; }
+.db-hero-hi p { margin: 6px 0 0; font-size: 13px; color: rgba(255, 255, 255, 0.92); }
+.db-hero-act { display: flex; gap: 8px; flex: none; }
+
+/* 横幅上的按钮：玻璃感（白底 .is-primary 反过来做高亮） */
+.db-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 32px; padding: 0 14px; border-radius: 8px; cursor: pointer;
+  font-size: 13px; font-family: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  transition: background 0.16s, transform 0.12s;
 }
-.db-stat b {
-  display: block; font-size: 24px; font-weight: 600; line-height: 1.2; letter-spacing: -0.02em;
+.db-btn svg { width: 14px; height: 14px; flex: none; }
+.db-btn:hover { background: rgba(255, 255, 255, 0.24); }
+.db-btn:active { transform: scale(0.97); }
+.db-btn.is-primary { background: #fff; color: #3b5bdb; border-color: #fff; font-weight: 500; }
+.db-btn.is-primary:hover { background: #eff3ff; }
+
+/* 横幅底部指标条 */
+.db-hero-metrics {
+  position: relative; z-index: 1;
+  display: flex; align-items: flex-end; gap: 26px; flex-wrap: wrap;
+  margin-top: 16px; padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.18);
+}
+.db-hero-metrics > div { display: flex; flex-direction: column; gap: 2px; }
+.db-hero-metrics b {
+  font-size: 20px; font-weight: 600; line-height: 1.1; letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
 }
-/* 「今天 03:00」这类文本 24px 会撑得比前三格高一截，单独降到 20px 并去掉负字距 */
-.db-stat.is-text b { font-size: 20px; letter-spacing: 0; }
-.db-stat span { display: block; font-size: 12.5px; color: var(--text3); margin-top: 3px; }
-.db-stat .db-stat-sub { font-size: 12px; color: var(--text3); margin-top: 6px; display: flex; align-items: center; gap: 5px; }
+.db-hero-metrics span { font-size: 11.5px; color: rgba(255, 255, 255, 0.88); }
+.db-hero-metrics span i { font-style: normal; }
+.db-hero-metrics .is-wide { margin-left: auto; text-align: right; }
+.db-hero-metrics .is-wide b { font-size: 17px; }
+/* 底色变浅后，语义数字跟着加深一档，不然浅绿浅红会糊进背景 */
+.db-hero-metrics b.m-ok { color: #aef0a0; }
+.db-hero-metrics b.m-warn { color: #ffd97e; }
+.db-hero-metrics b.m-bad { color: #ffb0b0; }
 
 /* ---------- 2. 网盘卡片 ---------- */
 .db-sec-hd { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 2px; }
@@ -488,23 +619,16 @@ onMounted(() => theme.apply())
 }
 .db-pan:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); border-color: var(--db-c); }
 .db-pan:focus-visible { outline: 2px solid var(--db-c); outline-offset: 2px; }
-/* 顶部品牌色光晕细条：一眼区分是哪家网盘（颜色经 --db-c 传入） */
+/* 品牌色光条沿卡片边框缓慢转圈：
+ * conic-gradient 的角度用 @property 注册后可参与动画，mask 抠出 3px 边框环，
+ * 中间镂空露出卡片本体。亮段 ~65°，其余透明，转起来就是一段光沿边跑。 */
+/* 卡片顶部的品牌色静态细条（动态转圈/扫描线按需求移除，保留一眼区分平台的标识） */
 .db-pan::before {
   content: ''; position: absolute; left: 0; right: 0; top: 0; height: 3px;
   background: linear-gradient(90deg, transparent, var(--db-c) 35%, var(--db-c) 65%, transparent);
-  box-shadow: 0 0 10px var(--db-c);
 }
-/* 扫描线：自上而下缓缓掠过（呼应参考稿的 console 质感） */
-.db-pan::after {
-  content: ''; position: absolute; left: 0; right: 0; height: 40px; top: -46px;
-  background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--db-c) 7%, transparent), transparent);
-  animation: dbPanScan 5.5s linear infinite;
-  pointer-events: none;
-}
-@keyframes dbPanScan { 0% { top: -46px; } 70%, 100% { top: 105%; } }
-.db-pan:hover { transform: translateY(-4px); box-shadow: var(--shadow-lg), 0 0 22px color-mix(in srgb, var(--db-c) 16%, transparent); }
+.db-pan:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); border-color: var(--db-c); }
 .db-pan.is-off { opacity: 0.72; }
-.db-pan.is-off::after { animation-play-state: paused; opacity: 0; }
 
 /* ---- 光环核心：双环旋转 + 品牌色发光核心（参考稿 holo-ring 融合版） ---- */
 .db-pan-ic {
@@ -583,6 +707,31 @@ onMounted(() => theme.apply())
 /* 总数用次级色同字号，别缩成看不清的小字（原型踩过：/3 缩到 11px 几乎读不出） */
 .db-mini b i { font-style: normal; font-size: 13px; font-weight: 400; color: var(--text3); }
 .db-mini span { display: block; font-size: 11.5px; color: var(--text3); margin-top: 1px; }
+
+/* ---------- 网盘卡：容量 + 会员（原来这页只有三个 0，把已有数据搬上来） ---------- */
+.db-pan-meta {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-bottom: 6px; font-size: 12px; min-width: 0;
+}
+.db-vip {
+  display: inline-block; min-width: 0;
+  color: #b8860b; background: rgba(250, 173, 20, 0.14);
+  border: 1px solid rgba(250, 173, 20, 0.3);
+  border-radius: 5px; padding: 1px 7px; font-weight: 500;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.db-vip i { font-style: normal; color: var(--text3); font-weight: 400; }
+.db-cap-txt { flex: none; color: var(--text3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.db-cap-bar {
+  height: 5px; border-radius: 3px; overflow: hidden;
+  background: var(--split); margin-bottom: 10px;
+}
+.db-cap-bar i {
+  display: block; height: 100%; border-radius: 3px;
+  background: var(--db-c, #1677ff); opacity: 0.85;
+  transition: width 0.4s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+html[data-theme='dark'] .db-vip { color: #ffc069; }
 /* 迷你统计的成功/失败数（原型是内联 style，这里收成类并补暗色覆盖） */
 .db-mini b.m-ok { color: #389e0d; }
 .db-mini b.m-bad { color: #cf1322; }
@@ -697,6 +846,30 @@ html[data-theme='dark'] .db-mini b.m-bad { color: #ff7875; }
 .db-result .r-fail { color: #cf1322; font-weight: 500; }
 
 /* 空态：表体撑高后，文字要落在中间而不是贴着顶部 */
+/* ---------- 任务区空状态：不放空表格，给一个能直接走下去的引导 ---------- */
+.db-blank {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 7px; padding: 46px 20px 54px; text-align: center;
+}
+.db-blank-ic {
+  width: 54px; height: 54px; border-radius: 50%; margin-bottom: 5px;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, rgba(91, 91, 214, 0.13), rgba(74, 108, 247, 0.13));
+  color: var(--primary);
+}
+.db-blank-ic svg { width: 27px; height: 27px; }
+.db-blank h4 { margin: 0; font-size: 14.5px; font-weight: 600; }
+.db-blank p { margin: 0; font-size: 12.5px; color: var(--text3); max-width: 380px; line-height: 1.7; }
+/* 空状态里的按钮脱离横幅的玻璃底，换成实心品牌渐变。
+ * ⚠️ 必须连 color 一起覆盖：模板用的是 .db-btn.is-primary，那条规则把字设成了深蓝，
+ *    只改背景会让蓝字压在蓝底上看不见。 */
+.db-blank .db-btn {
+  margin-top: 11px; border-color: transparent;
+  color: #fff;
+  background: linear-gradient(120deg, #5b5bd6, #4a6cf7);
+}
+.db-blank .db-btn:hover { filter: brightness(1.08); background: linear-gradient(120deg, #5b5bd6, #4a6cf7); }
+
 .db-empty { padding: 48px 20px; text-align: center; color: var(--text3); font-size: 13px; }
 .db-tablewrap > .db-table tbody td[colspan] { height: 100%; }
 .db-empty-cell { padding: 0; }
@@ -723,7 +896,6 @@ html[data-theme='dark'] .db-tasks-ft b.bad { color: #ff7875; }
    窄屏下内容本来就比一屏高，不需要「撑满」——把 flex 撑高和内部滚动撤掉，
    让整页正常纵向滚动（否则任务卡被压到 320px、表格挤成一条）。 */
 @media (max-width: 1180px) {
-  .db-stats { grid-template-columns: repeat(2, 1fr); }
   .db-pans { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 1024px) {
@@ -740,11 +912,16 @@ html[data-theme='dark'] .db-tasks-ft b.bad { color: #ff7875; }
    任务表只有一行数据，竖排堆叠就是天然的手机卡片，不用 JS 换结构。 */
 @media (max-width: 767px) {
   .db-wrap { gap: 14px; }
-  .db-stats { grid-template-columns: repeat(2, 1fr); gap: 10px; }
-  .db-stat { padding: 12px 14px 12px 20px; }
-  .db-stat b { font-size: 20px; }
-  .db-stat.is-text b { font-size: 17px; }
-  .db-stat-sub { display: none; } /* 两列下副行挤成两三字一行，干脆收掉（数据下有完整卡） */
+  /* 横幅：手机上按钮摊平、指标收拢，别挤成一坨 */
+  .db-hero { padding: 15px 16px 13px; }
+  .db-hero-hi h2 { font-size: 17px; }
+  .db-hero-act { width: 100%; }
+  .db-hero-act .db-btn { flex: 1; justify-content: center; }
+  .db-hero-metrics { gap: 13px 20px; margin-top: 13px; }
+  .db-hero-metrics b { font-size: 17px; }
+  .db-hero-metrics .is-wide { margin-left: 0; text-align: left; flex-basis: 100%; }
+  .db-hero-metrics .is-wide b { font-size: 15px; }
+  .db-blank { padding: 34px 16px 40px; }
   .db-sec-hd { flex-direction: column; gap: 2px; }
 
   .db-pan-hd { padding: 13px 14px 10px; }

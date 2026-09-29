@@ -60,6 +60,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '网盘连接' },
       },
       {
+        path: 'drive-logs',
+        name: 'drive-logs',
+        component: () => import('@/views/logs/DriveLogs.vue'),
+        meta: { title: '网盘日志' },
+      },
+      {
         path: 'cache-config',
         name: 'cache-config',
         component: () => import('@/views/cachecfg/CacheConfig.vue'),

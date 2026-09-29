@@ -1,37 +1,43 @@
 /**
- * 网盘连接领域 API —— 双模式。
+ * 网盘连接领域 API —— 多账号版（每平台可多行，同时在线）。
  * 设计红线（docs/03 accounts-settings）：凭据加密存储，接口只回状态、绝不回填明文。
  */
 import { del, get, mockDelay, post, put, USE_MOCK } from '../http'
 import { accountStore, type AccountRow } from '../mock/accounts'
-import { MAIN_ORDER } from '../mock/meta'
-import type { AccountStatus, MainDriveType } from '@/types/model'
+import type { AccountStatus, AccountSummary, MainDriveType } from '@/types/model'
 
-/** 容量 + 会员摘要（卡片容量条数据源）；拿不到的字段为 null */
-export interface AccountSummary {
-  capacity: { total: number; used: number } | null
-  vip: { name: string; expires: string | null } | null
-}
+/** 容量 + 会员摘要（类型定义在 types/model.ts，这里 re-export 保持既有引用可用） */
+export type { AccountSummary }
 
-export function getSummary(type: MainDriveType): Promise<AccountSummary> {
+export function getSummary(accId: number): Promise<AccountSummary> {
   if (USE_MOCK) {
     return mockDelay({ capacity: null, vip: null })
   }
-  return get<AccountSummary>(`/accounts/${type}/summary`)
+  return get<AccountSummary>(`/accounts/${accId}/summary`)
 }
 
 export function listAccounts(): Promise<AccountRow[]> {
-  if (USE_MOCK) return mockDelay(MAIN_ORDER.map((t) => accountStore.accounts[t]))
-  // 真实模式：后端状态灌进 store（保留前端的品牌元信息），视图照旧读 store
+  if (USE_MOCK) return mockDelay(accountStore.accounts)
+  // 真实模式：后端数组整体替换 store（保留 mock 里的品牌元信息补齐）
   return get<AccountRow[]>('/accounts').then((rows) => {
-    for (const r of rows) {
-      const row = accountStore.accounts[r.type as MainDriveType]
-      if (!row) continue
-      row.status = r.status
-      row.last_check = r.last_check
-      if (r.base_dir !== undefined) row.base = (r.base_dir as string) || '/'
-    }
-    return MAIN_ORDER.map((t) => accountStore.accounts[t])
+    accountStore.accounts.splice(
+      0,
+      accountStore.accounts.length,
+      ...rows.map((r) => ({
+        ...r,
+        // 后端没有的展示字段用 mock 元信息兜底（type 变了也安全）
+        ...(accountStore.accounts.find((x) => x.type === r.type && x.short === r.short) || {}),
+        id: r.id,
+        type: r.type as MainDriveType,
+        alias: r.alias || '',
+        status: r.status,
+        nickname: r.nickname,
+        last_check: r.last_check,
+        notify: !!r.notify,
+        summary: r.summary,
+      })),
+    )
+    return accountStore.accounts
   })
 }
 
@@ -45,46 +51,64 @@ export interface CheckResult {
   last_check: string
 }
 
-/** 保存默认目标目录；后端凭据已配时会顺手预热该目录的目录树缓存 */
-export function saveBaseDir(type: MainDriveType, path: string): Promise<{ ok: boolean; primed: boolean; message: string }> {
-  if (USE_MOCK) return mockDelay({ ok: true, primed: false, message: 'mock 已保存' })
-  return put<{ ok: boolean; primed: boolean; message: string }>(`/accounts/${type}/base-dir`, { path })
-}
-
-export function checkAccount(type: MainDriveType): Promise<CheckResult> {
+export function checkAccount(accId: number): Promise<CheckResult> {
   if (USE_MOCK) {
-    const row = accountStore.accounts[type]
-    if (row.status === 'unset') {
-      return mockDelay({ ok: false, kind: 'warning', message: '尚未配置凭据，请先「配置凭据」', status: row.status, last_check: row.last_check })
+    const row = accountStore.accounts.find((a) => a.id === accId)
+    if (!row || row.status === 'unset') {
+      return mockDelay({ ok: false, kind: 'warning', message: '尚未配置凭据，请先「配置凭据」', status: 'unset', last_check: '从未配置' })
     }
-    const last = row.last_check
     if (row.status === 'expired') {
-      return mockDelay({ ok: false, kind: 'error', message: '检测失败：Cookie 已过期，请重新配置', status: 'expired', last_check: last })
+      return mockDelay({ ok: false, kind: 'error', message: '检测失败：Cookie 已过期，请重新配置', status: 'expired', last_check: row.last_check })
     }
-    return mockDelay({ ok: true, kind: 'success', message: '连通正常', status: 'connected', last_check: last })
+    return mockDelay({ ok: true, kind: 'success', message: '连通正常', status: 'connected', last_check: row.last_check })
   }
-  return post<CheckResult>(`/accounts/${type}/check`)
+  return post<CheckResult>(`/accounts/${accId}/check`)
 }
 
 /** 清空凭据：状态置回未配置（等同删除密文，不可恢复） */
-export async function clearAccount(type: MainDriveType): Promise<void> {
+export async function clearAccount(accId: number): Promise<void> {
   if (USE_MOCK) {
-    const row = accountStore.accounts[type]
-    row.status = 'unset'
-    row.last_check = '从未配置'
+    const row = accountStore.accounts.find((a) => a.id === accId)
+    if (row) {
+      row.status = 'unset'
+      row.last_check = '从未配置'
+    }
     return mockDelay(undefined)
   }
-  await del(`/accounts/${type}/credential`)
+  await del(`/accounts/${accId}/credential`)
 }
 
-/** 保存并验证凭据（粘贴整串 Cookie）：后端保存即验证，失败会带原因抛错 */
-export async function saveCredential(type: MainDriveType, cookies: string): Promise<{ nickname: string }> {
-  const { nickname } = await post<{ ok: boolean; nickname: string }>(`/accounts/${type}/credential`, { cookies })
+/** 删除整个账号（卡片随之消失） */
+export async function deleteAccount(accId: number): Promise<void> {
+  if (USE_MOCK) {
+    accountStore.accounts = accountStore.accounts.filter((a) => a.id !== accId)
+    return mockDelay(undefined)
+  }
+  await del(`/accounts/${accId}`)
+  await listAccounts()
+}
+
+/** 新增账号（选平台 + 粘贴 Cookie + 可选别名）：后端保存即验证，失败带原因抛错 */
+export async function addAccount(type: MainDriveType, cookies: string, alias: string): Promise<{ nickname: string }> {
+  const { nickname } = await post<{ ok: boolean; nickname: string }>(`/accounts/${type}`, { cookies, alias })
+  await listAccounts()
   return { nickname }
 }
 
-/** 凭据配置入口：mock 模式占位（真实模式由页面弹 Cookie 表单调 saveCredential） */
-export function configAccount(type: MainDriveType): Promise<void> {
-  void type
-  return mockDelay(undefined)
+/** 保存并验证凭据（粘贴整串 Cookie）：后端保存即验证，失败会带原因抛错 */
+export async function saveCredential(accId: number, cookies: string, alias = ''): Promise<{ nickname: string }> {
+  const { nickname } = await put<{ ok: boolean; nickname: string }>(`/accounts/${accId}/credential`, { cookies, alias })
+  await listAccounts()
+  return { nickname }
+}
+
+/** 账号粒度的「失效通知」开关：探活失败时是否发 Server 酱。
+ *  注意它只是粒度开关，总闸仍在「系统设置 → 推送通知」（enabled + on_cred）。 */
+export async function setDriveNotify(accId: number, enabled: boolean): Promise<void> {
+  if (USE_MOCK) {
+    const row = accountStore.accounts.find((a) => a.id === accId)
+    if (row) row.notify = enabled
+    return mockDelay(undefined, 200)
+  }
+  await put(`/accounts/${accId}/notify`, { enabled })
 }

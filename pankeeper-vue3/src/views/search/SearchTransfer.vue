@@ -5,6 +5,7 @@
  * 检索动效：顶部不确定进度条 → 扫源计数 → 骨架屏 → 结果替换 + 数字滚动。
  * 转存动作一律入队即走（队列引擎在弹窗内调用），本页只负责打开弹窗并保持互斥。 */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import PkPager from '@/components/PkPager.vue'
 import QuickTransferModal from './QuickTransferModal.vue'
@@ -28,9 +29,18 @@ const T_NO_CRED = '请先到「网盘连接」页配置该网盘凭据'
 const T_NO_DD = '请先到「转存配置」页给该网盘添加一个路径'
 
 /* ===== 基础数据 ===== */
+const router = useRouter()
+
 const kw = ref('')
 const channels = ref<SearchChannel[]>([])
+/** PanSou 服务地址（后端下发，不暴露给用户）；空 = 未配置，整个搜索功能不可用 */
 const addr = ref('')
+const pansouMissing = computed(() => !addr.value.trim())
+
+/** 未配置 PanSou 时的引导：带路径说清楚去哪儿填 */
+function goPansouCfg() {
+  router.push({ name: 'settings' })
+}
 /** 引擎状态胶囊（右上角）：不暴露地址，IP 属隐私 */
 const engineOk = ref<boolean | null>(null)
 const results = ref<SearchResultItem[]>([])
@@ -122,7 +132,51 @@ function setTab(k: TabKey) {
 }
 
 /* ===== 筛选 / 分页（假分页：数据全在前端，切片渲染） ===== */
-const filtered = computed(() => (active.value === 'all' ? results.value : results.value.filter((r) => r.t === active.value)))
+/* ===== 排序 ===== */
+/**
+ * 资源质量分（从资源名提取，越高越值得转）：
+ * 分辨率(4K>1080>720) > 片源(原盘/REMUX > WEB-DL > HDTV) > 音轨(杜比全景声/TrueHD > DTS-HD；7.1 > 5.1 > 2.0) > HDR(杜比视界/HDR10+) > 编码(H.265 > H.264)
+ */
+function qualityScore(name: string): number {
+  const n = name.toUpperCase()
+  let s = 0
+  if (/2160P?|4K/.test(n)) s += 400
+  else if (/1080[P】]?|1080/.test(n)) s += 300
+  else if (/720/.test(n)) s += 200
+  if (/REMUX|原盘|BLURAY|BLU-RAY|BDMV|UHD/.test(n)) s += 50
+  else if (/WEB-?DL/.test(n)) s += 30
+  else if (/WEB/.test(n)) s += 20
+  else if (/HDTV/.test(n)) s += 10
+  if (/ATMOS|全景声|TRUEHD|DDP|DD\+|杜比|EAC3|AC3/.test(n)) s += 30
+  else if (/DTS-?HD|DTS/.test(n)) s += 26
+  if (/7\.1/.test(n)) s += 20
+  else if (/5\.1/.test(n)) s += 12
+  else if (/2\.0/.test(n)) s += 4
+  if (/杜比视界|DOLBY.?VISION|\bDV\b/.test(n)) s += 15
+  else if (/HDR10\+|HDR/.test(n)) s += 10
+  if (/H\.?265|HEVC|X265/.test(n)) s += 6
+  else if (/H\.?264|X264|AVC/.test(n)) s += 3
+  return s
+}
+
+/** 网盘分组序（与 tab 顺序一致），全部 tab 下先按盘分组、组内按质量分降序 */
+const driveRank = computed<Record<string, number>>(() => {
+  const r: Record<string, number> = {}
+  DRIVE_ORDER.forEach((t, i) => (r[t] = i))
+  return r
+})
+
+const filtered = computed(() => {
+  const rank = driveRank.value
+  const sorted = [...results.value].sort((a, b) => {
+    if (active.value === 'all') {
+      const d = (rank[a.t] ?? 99) - (rank[b.t] ?? 99)
+      if (d !== 0) return d
+    }
+    return qualityScore(b.n) - qualityScore(a.n)
+  })
+  return active.value === 'all' ? sorted : sorted.filter((r) => r.t === active.value)
+})
 const page = ref(1)
 const size = ref(8)
 const paged = computed(() => filtered.value.slice((page.value - 1) * size.value, page.value * size.value))
@@ -138,8 +192,6 @@ watch(
 
 /* ===== 检索动效 ===== */
 const busy = ref(false)
-const barOn = ref(false) // 顶部不确定进度条：滚动中
-const barDone = ref(false) // 收束态：拉满再淡出
 const scanCount = ref(1) // 「已扫 N 个源」（7 = 七个网盘源）
 const elapsed = ref<string | null>(null) // 上一次检索耗时（首屏未知 → 不渲染耗时卡）
 const rowEpoch = ref(0) // 结果 tbody 的 key：检索完成后整组重挂载，重放逐行入场动画
@@ -148,13 +200,16 @@ const kwRef = ref()
 
 async function doSearch() {
   if (busy.value) return
+  // 没配 PanSou 就发请求只会拿到 502，先把话说明白
+  if (pansouMissing.value) {
+    message.error('还没配置 PanSou 搜索服务，请到「系统设置 → 搜索源」填写 PanSou 地址', 5)
+    return
+  }
   if (!kw.value.trim()) {
     message.warning('请输入搜索关键词')
     return
   }
   busy.value = true
-  barOn.value = true
-  barDone.value = false
   scanCount.value = 1
   elapsed.value = null
   page.value = 1 // 新一次搜索必须回第 1 页
@@ -170,14 +225,15 @@ async function doSearch() {
     results.value = await getSearchResults(kw.value)
     elapsed.value = ((Date.now() - t0) / 1000).toFixed(1) + 's'
     rowEpoch.value++
+  } catch (e: unknown) {
+    // 后端 502（PanSou 地址错 / 连不上 / 返回异常）：原样吐给用户，不要静默
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '检索失败，请检查「系统设置 → 搜索源」里的 PanSou 地址', 5)
+    results.value = []
   } finally {
     window.clearInterval(scanTimer)
     busy.value = false
     renderStats()
-    // 收束：进度条拉满 260ms 后淡出（对齐原型 pkBar(false)）
-    barOn.value = false
-    barDone.value = true
-    window.setTimeout(() => (barDone.value = false), 300)
     if (elapsed.value) message.success(`命中 ${results.value.length} 条结果 · 耗时 ${elapsed.value}`)
   }
 }
@@ -290,8 +346,7 @@ onUnmounted(() => {
 
 <template>
   <div>
-    <!-- 顶部不确定进度条：检索时挂到视口顶部（原型 pk-topbar，left 跟侧栏宽对齐） -->
-    <div class="pk-topbar" :class="{ on: barOn, done: barDone }"><i /></div>
+    <!-- 顶部不确定进度条已按需求移除（动画速度观感差）；检索状态由骨架屏 + 扫源计数承担 -->
 
     <!-- 搜索框：Enter 与按钮同一条路径 -->
     <div class="searchwrap">
@@ -315,9 +370,10 @@ onUnmounted(() => {
           <span class="ch-edit">✎ 管理</span>
         </div>
         <span class="st-flex1"></span>
-        <span class="engine-pill" :class="{ ok: engineOk === true, bad: engineOk === false }">
+        <span class="engine-pill" :class="{ ok: engineOk === true, bad: engineOk === false || pansouMissing }">
           <span class="ep-dot"></span>
-          <template v-if="engineOk === null">引擎状态检测中…</template>
+          <template v-if="pansouMissing">PanSou 未配置</template>
+          <template v-else-if="engineOk === null">引擎状态检测中…</template>
           <template v-else-if="engineOk">PanSou 检索引擎 在线</template>
           <template v-else>PanSou 检索引擎 离线</template>
         </span>
@@ -361,11 +417,19 @@ onUnmounted(() => {
 
     <!-- 结果表 + 分页同一张白卡（padding:0 的卡里表尾不夹灰缝）；手机端换卡片列表 -->
     <div class="card st-flush st-res" :class="{ enter: rowEpoch > 0, 'is-empty': !busy && !paged.length }">
-      <!-- 空态：居中插画式，撑起卡片高度 -->
+      <!-- 空态：居中插画式，撑起卡片高度；未配置 PanSou 时换成配置引导 -->
       <div v-if="!busy && !paged.length" class="pk-empty-state">
-        <div class="pk-es-ico">🔍</div>
-        <div class="pk-es-title">暂无搜索结果</div>
-        <div class="pk-es-sub">输入关键词开始检索，或切换上方网盘筛选试试</div>
+        <template v-if="pansouMissing">
+          <div class="pk-es-ico is-warn">⚙</div>
+          <div class="pk-es-title">还没配置 PanSou 搜索服务</div>
+          <div class="pk-es-sub">PanKeeper 的搜索结果全部来自 PanSou，地址填好之前搜不出任何东西</div>
+          <a-button type="primary" class="pk-es-btn" @click="goPansouCfg">去「系统设置 → 搜索源」配置</a-button>
+        </template>
+        <template v-else>
+          <div class="pk-es-ico">🔍</div>
+          <div class="pk-es-title">暂无搜索结果</div>
+          <div class="pk-es-sub">输入关键词开始检索，或切换上方网盘筛选试试</div>
+        </template>
       </div>
       <template v-else>
       <table v-if="!isMobile">
@@ -486,3 +550,101 @@ onUnmounted(() => {
     </p>
   </a-modal>
 </template>
+
+<style scoped>
+/* =====================================================================
+ * 搜索结果区样式。
+ * 模板里引用的 .st-* / .skel / .enter 等 class 此前在 pk.css 中并不存在，
+ * 导致「骨架屏看不见、结果行瞬间闪出」，这里按项目视觉令牌补齐。
+ * 注：pk.css 只保留跨页公共件；本页私有件按约定放本文件的 scoped 样式。
+ * ===================================================================== */
+
+/* 无内边距卡片：表格/卡片列表自己管留白，避免与卡内 padding 叠加错位 */
+.st-flush { padding: 0; }
+.st-mb { margin-bottom: 16px; }
+.st-flex1 { flex: 1; }
+.st-res { overflow: hidden; }
+
+/* ===== 加载骨架：横向扫光（与 ShareFilesModal 的 sfm-skel 同一套观感） ===== */
+.skel {
+  display: inline-block;
+  height: 14px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, var(--surface-2) 20%, var(--split) 45%, var(--surface-2) 70%);
+  background-size: 220% 100%;
+  animation: pkSkelSweep 1.35s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+@keyframes pkSkelSweep {
+  0% { background-position: 120% 0; }
+  100% { background-position: -80% 0; }
+}
+.skel-tr td { padding-top: 15px; padding-bottom: 15px; }
+
+/* ===== 结果行：来源色条 + 名称省略 ===== */
+.st-namecell { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.srcbar { flex: none; width: 3px; height: 15px; border-radius: 3px; }
+.resname {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.st-hot { flex: none; margin-right: 0; }
+
+/* ===== 入场过渡：卡片整体上浮淡入 + 结果行逐行错峰（配合模板的 animation-delay） ===== */
+.enter { animation: pkEnter 0.3s cubic-bezier(0.22, 0.61, 0.36, 1) both; }
+@keyframes pkEnter {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+.st-res tbody tr { animation: pkRowIn 0.36s cubic-bezier(0.22, 0.61, 0.36, 1) both; }
+@keyframes pkRowIn {
+  from { opacity: 0; transform: translateY(7px); }
+  to { opacity: 1; transform: none; }
+}
+/* 骨架行不参与入场动画，否则会和扫光叠在一起显脏 */
+.st-res .skel-tr { animation: none; }
+
+/* ===== 手机端卡片列表（<768px 用它替代表格） ===== */
+.st-cards { padding: 10px 12px; }
+.st-card-item {
+  padding: 12px 14px;
+  border: 1px solid var(--split);
+  border-radius: 10px;
+  animation: pkRowIn 0.36s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  transition: background 0.15s;
+}
+.st-card-item + .st-card-item { margin-top: 10px; }
+.st-card-item:hover { background: var(--surface-3); }
+.st-card-name { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.st-card-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.st-card-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.st-card-date { margin-left: auto; }
+.st-card-ops { justify-content: flex-end; }
+
+/* ===== 统计卡：单网盘 tab 下只出一张卡，撑满整行 ===== */
+.statline.single .stat { flex: 1 1 auto; }
+.stat.wide { flex: 1 1 100%; }
+
+/* ===== 未配置 PanSou 时的空态引导：图标转警示色 + 去配置按钮 ===== */
+.pk-empty-state .pk-es-ico.is-warn {
+  color: var(--warning);
+  background: linear-gradient(135deg, rgba(250, 173, 20, 0.14), rgba(250, 173, 20, 0.06));
+  box-shadow: inset 0 0 0 1px rgba(250, 173, 20, 0.28);
+}
+.pk-es-btn {
+  margin-top: 16px;
+}
+/* 空态副文案限宽，避免长句在宽屏下拉成一条 */
+.pk-empty-state .pk-es-sub {
+  max-width: 420px;
+  text-align: center;
+  line-height: 1.7;
+}
+
+/* 系统开启「减弱动态效果」时全部关闭 */
+@media (prefers-reduced-motion: reduce) {
+  .skel, .enter, .st-res tbody tr, .st-card-item { animation: none; }
+}
+</style>
