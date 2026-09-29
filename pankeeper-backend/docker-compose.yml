@@ -1,0 +1,21 @@
+services:
+  pankeeper:
+    build:
+      context: .
+      # 前端仓库与本仓库同级克隆（workspace/pankeeper-vue3）
+      additional_contexts:
+        frontend: ../pankeeper-vue3
+    container_name: pankeeper
+    restart: unless-stopped
+    ports:
+      # 按宿主机服务端口顺序分配（8000-8030 已占，8031 起）
+      - "8031:8000"
+    volumes:
+      # 一切配置与数据的持久化位置：SQLite + 加密密钥。
+      # 备份这个 volume = 备份整个系统；升级镜像不丢配置。
+      - pankeeper-data:/app/data
+    environment:
+      TZ: Asia/Shanghai
+
+volumes:
+  pankeeper-data:
