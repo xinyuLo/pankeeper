@@ -9,6 +9,8 @@ import type { AccountInfo, AccountSummary, MainDriveType } from '@/types/model'
 export interface AccountRow extends AccountInfo {
   /** 账号 id（后端主键，凭据/检测/通知/摘要都按它） */
   id: number
+  /** 网盘昵称（探活时后端取回） */
+  nickname: string
   /** 别名（用户起，如「百度-大号」）；空则展示用昵称 */
   alias: string
   short: string
@@ -23,9 +25,9 @@ export const accountStore = reactive<{
   accounts: AccountRow[]
 }>({
   accounts: [
-    { id: 1, type: 'baidu', alias: '', short: '百度', color: '#1677ff', cred_kind: 'Cookie', status: 'connected', last_check: '09-27 01:12', notify: true, note: '复用你在 bdsavepro 里跑通的 storage.py 逻辑' },
-    { id: 2, type: 'quark', alias: '', short: '夸克', color: '#13c2c2', cred_kind: 'Cookie', status: 'expired', last_check: '09-22 18:40', notify: true, note: '接口参考 quark-auto-save 的实现' },
-    { id: 3, type: '115', alias: '', short: '115', color: '#722ed1', cred_kind: 'Cookie / 扫码', status: 'unset', last_check: '从未配置', notify: true, note: 'p115client，支持扫码登录与自动续期' },
+    { id: 1, type: 'baidu', alias: '', short: '百度', color: '#1677ff', cred_kind: 'Cookie', status: 'connected', last_check: '09-27 01:12', notify: true, nickname: '', note: '复用你在 bdsavepro 里跑通的 storage.py 逻辑' },
+    { id: 2, type: 'quark', alias: '', short: '夸克', color: '#13c2c2', cred_kind: 'Cookie', status: 'expired', last_check: '09-22 18:40', notify: true, nickname: '', note: '接口参考 quark-auto-save 的实现' },
+    { id: 3, type: '115', alias: '', short: '115', color: '#722ed1', cred_kind: 'Cookie / 扫码', status: 'unset', last_check: '从未配置', notify: true, nickname: '', note: 'p115client，支持扫码登录与自动续期' },
   ],
 })
 

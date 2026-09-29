@@ -59,6 +59,7 @@ function mockData(days: number): DriveLogData {
   })
   const last = trend[trend.length - 1]
   return {
+    retain_days: 180,
     today: {
       date: last.date,
       total: last.total,
