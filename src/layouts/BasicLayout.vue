@@ -200,7 +200,7 @@ watch(
       <div class="logo"><i></i> PanKeeper</div>
       <nav class="menu">
         <a class="menu-item" :class="{ on: activeKey === 'dashboard' }" @click.prevent="router.push('/dashboard')">
-          <HomeOutlined class="lico" />首页驾驶舱
+          <HomeOutlined class="lico" />首页
         </a>
 
         <div v-for="g in groups" :key="g.key" class="nav-group" :class="{ open: openGroups.has(g.key) }">

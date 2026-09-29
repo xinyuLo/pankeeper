@@ -29,7 +29,7 @@ export function listAccounts(): Promise<AccountRow[]> {
       if (!row) continue
       row.status = r.status
       row.last_check = r.last_check
-      if (r.base_dir !== undefined) row.base = (r.base_dir as string) || '—'
+      if (r.base_dir !== undefined) row.base = (r.base_dir as string) || '/'
     }
     return MAIN_ORDER.map((t) => accountStore.accounts[t])
   })

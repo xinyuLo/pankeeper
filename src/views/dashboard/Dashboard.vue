@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/* 首页驾驶舱 —— 原型 parts/page-dashboard.html 的 Vue 组合式移植（db- 前缀原样保留）。
+/* 首页 —— 原型 parts/page-dashboard.html 的 Vue 组合式移植（db- 前缀原样保留）。
  * 数据源：paStore（自动任务）+ accountStore（网盘连接状态），computed 直读保持响应式，
  * 任务在「自动转存」页改动后回到本页即自动更新——不落 ref 快照、不走一次性异步取数。
  * 关键契约：总览「下一次触发」跨所有网盘取最早；任务区每个网盘只展示最近一条要触发的任务，
@@ -299,7 +299,6 @@ onMounted(() => theme.apply())
           <div class="db-pan-hd">
             <!-- 光环核心：双环旋转（外环虚线慢转 / 内环按连接状态着色快转） -->
             <div class="db-pan-ic">
-              <i class="db-ring-a" aria-hidden="true"></i>
               <i class="db-ring-b" aria-hidden="true"></i>
               <span class="db-pan-ic-core">{{ p.short }}</span>
             </div>
@@ -433,7 +432,7 @@ onMounted(() => theme.apply())
 
 <style scoped>
 /* ============================================================
-   首页驾驶舱（db- 前缀，自 page-dashboard.html 原样移植）
+   首页（db- 前缀，自 page-dashboard.html 原样移植）
    自上而下：总览数字条 → 网盘卡片 → 定时任务 tab 分组
    ============================================================ */
 
@@ -450,6 +449,18 @@ onMounted(() => theme.apply())
   transition: transform 0.18s, box-shadow 0.18s;
 }
 .db-stat:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+/* 底部流动色带：细线沿底边循环流动（颜色随 --db-accent） */
+.db-stat::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
+  background: linear-gradient(90deg, transparent, var(--db-accent, var(--db-c)), transparent);
+  background-size: 200% 100%;
+  animation: dbStatFlow 3.2s linear infinite;
+  opacity: 0.55;
+}
+@keyframes dbStatFlow {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
 /* 左侧内缩色标，跟项目里 .stat 保持同一套视觉语言（颜色经 --db-accent 传入） */
 .db-stat::before {
   content: ''; position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
@@ -503,13 +514,22 @@ onMounted(() => theme.apply())
   color: #fff; font-size: 13px; font-weight: 700;
   background: var(--db-c);
   box-shadow: 0 0 16px color-mix(in srgb, var(--db-c) 45%, transparent);
+  overflow: hidden;
+}
+/* 流动高光：一道柔光沿对角线循环掠过核心 */
+.db-pan-ic::before {
+  content: ''; position: absolute; inset: -40%;
+  background: linear-gradient(115deg, transparent 38%, rgba(255, 255, 255, 0.45) 50%, transparent 62%);
+  animation: dbCoreFlow 2.8s ease-in-out infinite;
+}
+@keyframes dbCoreFlow {
+  0% { transform: translateX(-70%); }
+  55%, 100% { transform: translateX(70%); }
 }
 .db-ring-a, .db-ring-b {
   position: absolute; inset: -7px; border-radius: 50%;
   pointer-events: none;
 }
-/* 外环：虚线慢转 */
-.db-ring-a { border: 1px dashed color-mix(in srgb, var(--db-c) 45%, transparent); animation: dbRingSpin 14s linear infinite; }
 /* 内环：按连接状态着色（connected=绿 / expired=红 / unset=品牌色暗态），快转 */
 .db-ring-b {
   inset: -3px; border: 2px solid transparent;
@@ -524,7 +544,7 @@ onMounted(() => theme.apply())
 .db-pan-ic-core { position: relative; z-index: 1; }
 /* 未配置：环整体降暗，不旋转（没东西可转） */
 .db-pan.is-off .db-ring-b { animation-play-state: paused; border-top-color: var(--text4); border-right-color: transparent; box-shadow: none; }
-.db-pan.is-off .db-ring-a { opacity: 0.4; animation-play-state: paused; }
+
 
 .db-pan-hd { display: flex; align-items: center; gap: 10px; padding: 14px 18px 11px; }
 .db-pan-ic {
