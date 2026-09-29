@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- viewport-fit=cover：全面屏（灵动岛/底部横条）下 env(safe-area-*) 才有值，
+         移动端固定顶栏/底栏用它避让；PC 上无感 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <!-- PWA：添加到主屏幕后全屏运行（无 Safari 地址栏），像原生 App。
+         状态栏用 black-translucent 让内容顶到灵动岛下，顶栏自己垫 safe-area -->
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="PanKeeper" />
+    <!-- 浏览器地址栏/系统 UI 跟随主题：store 切换夜间时会同步改这里 -->
+    <meta name="theme-color" id="meta-theme-color" content="#f5f7fa" />
+    <title>PanKeeper · 网盘转存管理</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
