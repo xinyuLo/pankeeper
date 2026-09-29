@@ -18,7 +18,7 @@ python -m venv .venv
 .venv/Scripts/pip install -r requirements.txt   # Linux/Mac: .venv/bin/pip
 .venv/Scripts/python run.py --port 8000
 # 文档：http://127.0.0.1:8000/docs
-# 默认管理员 admin / admin123456（首启生成，请立即在「系统设置 → 账号安全」修改）
+# 默认管理员 admin / admin#123（首启生成，请立即在「系统设置 → 账号安全」修改）
 ```
 
 数据落在 `data/pankeeper.db`（WAL），密钥自动生成在 `data/*.key`（**记得备份/加入 .gitignore，已忽略**）。
