@@ -1,4 +1,4 @@
-import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router'
+import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { useAuthStore } from '@/store/auth'
 import BasicLayout from '@/layouts/BasicLayout.vue'
 
@@ -83,8 +83,8 @@ const routes: RouteRecordRaw[] = [
 ]
 
 const router = createRouter({
-  // hash 模式：NAS/nginx 静态部署不需要配 history 回退
-  history: createWebHashHistory(),
+  // history 模式（URL 干净无 #）；刷新回退由后端 SPA catch-all 托底
+  history: createWebHistory(),
   routes,
 })
 
