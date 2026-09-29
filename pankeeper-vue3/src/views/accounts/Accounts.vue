@@ -10,7 +10,7 @@ import LazyDirTree from '@/components/LazyDirTree.vue'
 import { accountStore, ACCOUNT_STATUS_VIEW, type AccountRow } from '@/api/mock/accounts'
 import { MAIN_ORDER, DRIVE_META } from '@/api/mock/meta'
 import { ddStore } from '@/api/mock/dd'
-import { checkAccount, clearAccount, getSummary, listAccounts, saveCredential, setDriveNotify, type AccountSummary } from '@/api/modules/accounts'
+import { addAccount, checkAccount, clearAccount, getSummary, listAccounts, saveCredential, setDriveNotify, type AccountSummary } from '@/api/modules/accounts'
 import { listDdItems, saveDdItem, setDefaultDir } from '@/api/modules/dd'
 import type { DdItem, MainDriveType } from '@/types/model'
 
@@ -31,7 +31,7 @@ function view(status: string) {
 /* ===== 失效通知开关（网盘粒度，Server 酱）。
  * 探活发现该网盘凭据失效时，只有这里是开着的才会推送；
  * 总闸在「系统设置 → 推送通知」（enabled + 凭据时机开关）。 ===== */
-const notifySaving = ref<MainDriveType | null>(null)
+const notifySaving = ref<number | null>(null)
 async function onToggleNotify(a: AccountRow, v: boolean) {
   if (notifySaving.value) return
   notifySaving.value = a.id
@@ -127,7 +127,7 @@ async function onConfirmBaseDir() {
       const others = ddStore.items.filter((x) => x.type === bdType.value)
       if (others.length === 0) {
         // 一条都没有：新建即默认（后端对首条自动 is_default）
-        await saveDdItem({ id: 0, type: bdType.value, account: 'main', sort: 1, name: '默认目录', path: bdPath.value, is_default: true, qms_on: false })
+        await saveDdItem({ id: 0, type: bdType.value, account: 'main', sort: 1, name: '默认目录', path: bdPath.value, is_default: true, qms_on: false, qms_id: null, strm_id: null })
       } else {
         // 边缘：有条目但无默认 —— 更新第一条并设为默认
         const first = others[0]

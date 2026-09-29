@@ -181,7 +181,7 @@ interface PanView {
 
 const pans = computed<PanView[]>(() =>
   DB_TYPES.map((type) => {
-    const acct = firstAccountOf(type) ?? { short: type, color: "", status: "unset", last_check: "从未配置" }
+    const acct = firstAccountOf(type) ?? { short: type, color: "", status: "unset", last_check: "从未配置", summary: null }
     const s = summaryOf(type)
     const lt = s.latest
     return {
