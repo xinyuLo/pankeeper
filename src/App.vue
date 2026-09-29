@@ -3,22 +3,18 @@ import { computed, onMounted } from 'vue'
 import { ConfigProvider, theme as antTheme } from 'ant-design-vue'
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
 import { useThemeStore } from '@/store/theme'
-import { USE_MOCK } from '@/api/http'
-import { listDdItems } from '@/api/modules/dd'
-import { listAccounts } from '@/api/modules/accounts'
-import { listPaTasks } from '@/api/modules/tasks'
+import { hydrateAll } from '@/api/bootstrap'
+import { useAuthStore } from '@/store/auth'
 import { pkQueueCfgGet } from '@/queue/engine'
 
 const themeStore = useThemeStore()
+const auth = useAuthStore()
 
 // 真实模式启动时把后端数据灌进各 reactive store（视图层照旧读 store，零改动）
 onMounted(() => {
   themeStore.apply()
-  if (USE_MOCK) return
-  listDdItems().catch(() => {})
-  listAccounts().catch(() => {})
-  listPaTasks().catch(() => {})
   pkQueueCfgGet()
+  if (auth.logged) hydrateAll() // 未登录时不在启动期灌注（会 401），登录成功后再补
 })
 
 // antd 主题 token 对齐原型视觉令牌（src/styles/pk.css 的 :root / dark）

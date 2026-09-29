@@ -8,6 +8,7 @@ import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { useAuthStore } from '@/store/auth'
 import { useThemeStore } from '@/store/theme'
+import { hydrateAll } from '@/api/bootstrap'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -23,6 +24,7 @@ async function onLogin() {
   loading.value = true
   try {
     await auth.login(username.value, password.value)
+    hydrateAll() // 启动期未登录时灌注会 401，登录成功这里必须补一次
     message.success('欢迎回来，' + auth.username)
     router.push('/dashboard')
   } catch (e: unknown) {
