@@ -6,6 +6,8 @@
  * ===================================================================== */
 import { computed, ref } from 'vue'
 import { message } from 'ant-design-vue'
+import { LoadingOutlined } from '@ant-design/icons-vue'
+import LazyDirTree from '@/components/LazyDirTree.vue'
 import { accountStore, ACCOUNT_STATUS_VIEW, type AccountRow } from '@/api/mock/accounts'
 import { MAIN_ORDER, DRIVE_META } from '@/api/mock/meta'
 import { checkAccount, clearAccount, getSummary, saveBaseDir, saveCredential, type AccountSummary } from '@/api/modules/accounts'
@@ -19,33 +21,50 @@ function view(status: string) {
   return ACCOUNT_STATUS_VIEW[status]
 }
 
-/* ===== 默认目标目录：卡片直接填写；保存后后端自动预热该目录的目录树缓存 ===== */
+/* ===== 新增网盘：列出可扩展的网盘（三家已默认在页；其余适配器开发中） ===== */
+const addOpen = ref(false)
+const extendable = [
+  { type: '123', name: '123 云盘', color: '#fa8c16' },
+  { type: 'ali', name: '阿里云盘', color: '#ff6a00' },
+  { type: 'xunlei', name: '迅雷网盘', color: '#2db7f5' },
+  { type: 'uc', name: 'UC 网盘', color: '#597ef7' },
+]
+
+/* ===== 默认目标目录：先配凭据 → 自动缓存文件夹 → 从目录树选位置 ===== */
+const priming = ref<MainDriveType | null>(null)
+const bdPath = ref('')
 const bdOpen = ref(false)
 const bdType = ref<MainDriveType>('quark')
-const bdPath = ref('')
-const bdSaving = ref(false)
 const bdTitle = computed(() => `默认目标目录 · ${DRIVE_META[bdType.value]?.full || bdType.value}`)
 
 function openBaseDir(a: AccountRow) {
   bdType.value = a.type
-  bdPath.value = a.base && a.base !== '—' ? a.base : ''
+  bdPath.value = a.base && a.base !== '—' ? a.base : '/'
   bdOpen.value = true
 }
 
-async function onBaseDirSave() {
-  bdSaving.value = true
+async function onTreePick(path: string) {
   try {
-    const res = await saveBaseDir(bdType.value, bdPath.value.trim())
+    const res = await saveBaseDir(bdType.value, path)
     const row = accountStore.accounts[bdType.value]
-    if (row) row.base = bdPath.value.trim() || '—'
+    if (row) row.base = path
     bdOpen.value = false
-    if (res.primed) message.success(res.message + '（首次打开转存弹窗秒开）')
-    else message.info(res.message)
+    message.success(res.message)
   } catch (e: unknown) {
     const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
     message.error(detail || '保存失败')
+  }
+}
+
+/** 配置凭据成功后：自动缓存文件夹（loading 期间卡片上直接可见） */
+async function primeFolders(type: MainDriveType) {
+  priming.value = type
+  try {
+    const res = await saveBaseDir(type, accountStore.accounts[type]?.base || '')
+  } catch {
+    /* 预热失败不阻塞：首次打开转存弹窗会再加载 */
   } finally {
-    bdSaving.value = false
+    priming.value = null
   }
 }
 
@@ -61,6 +80,7 @@ async function onCheck(a: AccountRow) {
     if (res.kind === 'success') {
       message.success(res.message)
       await loadSummary(a.type)
+      await primeFolders(a.type)
     } else if (res.kind === 'warning') message.warning(res.message)
     else message.error(res.message)
   } finally {
@@ -131,6 +151,7 @@ async function onCredSave() {
     credOpen.value = false
     message.success(`凭据已保存并验证通过（${nickname}）`)
     await loadSummary(credType.value)
+    await primeFolders(credType.value)
   } catch (e: unknown) {
     const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
     message.error(detail || '凭据验证失败')
@@ -148,6 +169,9 @@ async function onClear(a: AccountRow) {
 <template>
   <div>
     <!-- 网盘卡片网格：未配置的卡整体半透明（.off） -->
+    <div style="display: flex; justify-content: flex-end; margin-bottom: 14px">
+      <a-button type="primary" @click="addOpen = true">＋ 新增网盘</a-button>
+    </div>
     <div class="accgrid">
       <div v-for="a in rows" :key="a.type" class="acc" :class="{ off: a.status === 'unset' }" :style="{ '--acc': a.color }">
         <div class="acchead">
@@ -168,9 +192,18 @@ async function onClear(a: AccountRow) {
         <div class="kv"><span>上次检测</span><b>{{ a.last_check }}</b></div>
         <div class="kv">
           <span>默认目标目录</span>
-          <b style="display: inline-flex; align-items: center; gap: 6px">
-            {{ a.base || '—' }}
-            <a-button type="link" size="small" style="padding: 0 2px; height: auto" @click="openBaseDir(a)">编辑</a-button>
+          <b v-if="priming === a.type" style="color: var(--primary)"><LoadingOutlined /> 正在缓存文件夹…</b>
+          <b v-else style="display: inline-flex; align-items: center; gap: 6px">
+            {{ a.base && a.base !== '—' ? a.base : '/' }}
+            <a-tooltip :title="a.status !== 'connected' ? '请先配置凭据并连通' : '从网盘目录中选择默认保存位置'">
+              <a-button
+                type="link"
+                size="small"
+                style="padding: 0 2px; height: auto"
+                :disabled="a.status !== 'connected'"
+                @click="openBaseDir(a)"
+              >配置</a-button>
+            </a-tooltip>
           </b>
         </div>
         <div v-if="a.status === 'connected'" class="capblock">
@@ -202,6 +235,20 @@ async function onClear(a: AccountRow) {
 
 
 
+    <!-- 新增网盘：选择要接入的网盘（未适配的置灰） -->
+    <a-modal v-model:open="addOpen" :width="380" title="新增网盘" :footer="null">
+      <div class="add-grid">
+        <div v-for="d in extendable" :key="d.type" class="add-tile add-item-off">
+          <span class="chip" :style="{ background: d.color }">{{ d.name.slice(0, 2) }}</span>
+          <div class="add-tile-name">{{ d.name }}</div>
+          <a-tag style="margin-right: 0">即将支持</a-tag>
+        </div>
+      </div>
+      <p class="small" style="color: var(--text3); margin: 10px 0 0">
+        百度 / 夸克 / 115 已默认在页面上方，配置凭据即可使用。
+      </p>
+    </a-modal>
+
     <!-- 凭据配置弹窗：粘贴整串 Cookie，后端保存即验证 -->
     <a-modal
       v-model:open="credOpen"
@@ -221,26 +268,19 @@ async function onClear(a: AccountRow) {
       />
     </a-modal>
 
-    <!-- 默认目标目录编辑：保存后自动预热目录树缓存 -->
-    <a-modal
-      v-model:open="bdOpen"
-      :title="bdTitle"
-      :confirm-loading="bdSaving"
-      ok-text="保存"
-      @ok="onBaseDirSave"
-    >
+    <!-- 默认目标目录：直接展示网盘文件夹树，点了就存 -->
+    <a-modal :open="bdOpen" :width="480" :title="bdTitle" :footer="null" @update:open="(v: boolean) => (bdOpen = v)">
       <p class="small" style="color: var(--text3); margin-bottom: 10px">
-        该网盘的默认保存位置，例如 <code>/影视</code>。保存后会<b>自动加载该目录的目录树缓存</b>——
-        首次打开转存弹窗即秒开，不用现场等网盘接口。
+        从网盘目录中选择默认保存位置，选中即保存（已自动加载目录缓存）。
       </p>
-      <a-input v-model:value="bdPath" placeholder="/影视" allow-clear @press-enter="onBaseDirSave" />
+      <LazyDirTree :type="bdType" @select="onTreePick" />
     </a-modal>
   </div>
 </template>
 
 <style scoped>
 /* 卡片网格/卡片本体的视觉在 pk.css 共享段（.accgrid/.acc/.acchead/...），这里只补页面私有微调 */
-/* 品牌色顶条：与首页驾驶舱网盘卡同款分层（百度蓝/夸克青/115 紫） */
+/* 品牌色顶条：与首页网盘卡同款分层（百度蓝/夸克青/115 紫） */
 .acc {
   position: relative;
   overflow: hidden;
