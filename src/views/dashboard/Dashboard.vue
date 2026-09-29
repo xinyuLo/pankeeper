@@ -287,6 +287,7 @@ onMounted(() => theme.apply())
           :key="p.type"
           class="db-pan"
           :class="{ 'is-off': p.status === 'unset' }"
+          :data-st="p.status"
           :style="brand(p.color)"
           role="button"
           tabindex="0"
@@ -296,7 +297,12 @@ onMounted(() => theme.apply())
           @keydown.space.prevent="switchTab(p.type, true)"
         >
           <div class="db-pan-hd">
-            <div class="db-pan-ic">{{ p.short }}</div>
+            <!-- 光环核心：双环旋转（外环虚线慢转 / 内环按连接状态着色快转） -->
+            <div class="db-pan-ic">
+              <i class="db-ring-a" aria-hidden="true"></i>
+              <i class="db-ring-b" aria-hidden="true"></i>
+              <span class="db-pan-ic-core">{{ p.short }}</span>
+            </div>
             <div class="db-pan-nm">
               <b>{{ p.name }}</b>
               <span>{{ p.statusText }} · 上次检测 {{ p.lastCheck }}</span>
@@ -471,9 +477,54 @@ onMounted(() => theme.apply())
 }
 .db-pan:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); border-color: var(--db-c); }
 .db-pan:focus-visible { outline: 2px solid var(--db-c); outline-offset: 2px; }
-/* 顶部品牌色细条：一眼区分是哪家网盘（颜色经 --db-c 传入） */
-.db-pan::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 3px; background: var(--db-c); }
+/* 顶部品牌色光晕细条：一眼区分是哪家网盘（颜色经 --db-c 传入） */
+.db-pan::before {
+  content: ''; position: absolute; left: 0; right: 0; top: 0; height: 3px;
+  background: linear-gradient(90deg, transparent, var(--db-c) 35%, var(--db-c) 65%, transparent);
+  box-shadow: 0 0 10px var(--db-c);
+}
+/* 扫描线：自上而下缓缓掠过（呼应参考稿的 console 质感） */
+.db-pan::after {
+  content: ''; position: absolute; left: 0; right: 0; height: 40px; top: -46px;
+  background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--db-c) 7%, transparent), transparent);
+  animation: dbPanScan 5.5s linear infinite;
+  pointer-events: none;
+}
+@keyframes dbPanScan { 0% { top: -46px; } 70%, 100% { top: 105%; } }
+.db-pan:hover { transform: translateY(-4px); box-shadow: var(--shadow-lg), 0 0 22px color-mix(in srgb, var(--db-c) 16%, transparent); }
 .db-pan.is-off { opacity: 0.72; }
+.db-pan.is-off::after { animation-play-state: paused; opacity: 0; }
+
+/* ---- 光环核心：双环旋转 + 品牌色发光核心（参考稿 holo-ring 融合版） ---- */
+.db-pan-ic {
+  position: relative;
+  width: 44px; height: 44px; border-radius: 13px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 13px; font-weight: 700;
+  background: var(--db-c);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--db-c) 45%, transparent);
+}
+.db-ring-a, .db-ring-b {
+  position: absolute; inset: -7px; border-radius: 50%;
+  pointer-events: none;
+}
+/* 外环：虚线慢转 */
+.db-ring-a { border: 1px dashed color-mix(in srgb, var(--db-c) 45%, transparent); animation: dbRingSpin 14s linear infinite; }
+/* 内环：按连接状态着色（connected=绿 / expired=红 / unset=品牌色暗态），快转 */
+.db-ring-b {
+  inset: -3px; border: 2px solid transparent;
+  border-top-color: color-mix(in srgb, var(--db-c) 70%, transparent);
+  border-right-color: color-mix(in srgb, var(--db-c) 25%, transparent);
+  animation: dbRingSpin 3.2s linear infinite;
+}
+.db-pan[data-st='connected'] .db-ring-b { border-top-color: var(--success); border-right-color: rgba(82, 196, 26, 0.3); box-shadow: 0 0 12px rgba(82, 196, 26, 0.2); }
+.db-pan[data-st='expired'] .db-ring-b { border-top-color: var(--error); border-right-color: rgba(255, 77, 79, 0.3); box-shadow: 0 0 12px rgba(255, 77, 79, 0.2); }
+@keyframes dbRingSpin { to { transform: rotate(360deg); } }
+/* 核心字块（环中心的短名） */
+.db-pan-ic-core { position: relative; z-index: 1; }
+/* 未配置：环整体降暗，不旋转（没东西可转） */
+.db-pan.is-off .db-ring-b { animation-play-state: paused; border-top-color: var(--text4); border-right-color: transparent; box-shadow: none; }
+.db-pan.is-off .db-ring-a { opacity: 0.4; animation-play-state: paused; }
 
 .db-pan-hd { display: flex; align-items: center; gap: 10px; padding: 14px 18px 11px; }
 .db-pan-ic {
