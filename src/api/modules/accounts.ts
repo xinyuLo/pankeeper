@@ -29,6 +29,7 @@ export function listAccounts(): Promise<AccountRow[]> {
       if (!row) continue
       row.status = r.status
       row.last_check = r.last_check
+      if (r.base_dir !== undefined) row.base = (r.base_dir as string) || '—'
     }
     return MAIN_ORDER.map((t) => accountStore.accounts[t])
   })
@@ -42,6 +43,12 @@ export interface CheckResult {
   message: string
   status: AccountStatus
   last_check: string
+}
+
+/** 保存默认目标目录；后端凭据已配时会顺手预热该目录的目录树缓存 */
+export function saveBaseDir(type: MainDriveType, path: string): Promise<{ ok: boolean; primed: boolean; message: string }> {
+  if (USE_MOCK) return mockDelay({ ok: true, primed: false, message: 'mock 已保存' })
+  return put<{ ok: boolean; primed: boolean; message: string }>(`/accounts/${type}/base-dir`, { path })
 }
 
 export function checkAccount(type: MainDriveType): Promise<CheckResult> {

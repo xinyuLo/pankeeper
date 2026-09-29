@@ -44,6 +44,18 @@ export function getSearchChannels(): Promise<SearchChannel[]> {
   )
 }
 
+export interface EngineHealth {
+  ok: boolean
+  plugins: number | null
+  channels: number | null
+}
+
+/** 检索引擎健康度（不含地址，IP 属隐私） */
+export function getEngineHealth(): Promise<EngineHealth> {
+  if (USE_MOCK) return mockDelay({ ok: true, plugins: 76, channels: 90 })
+  return get<EngineHealth>('/search/health')
+}
+
 export function getPanSouAddr(): Promise<string> {
   if (USE_MOCK) return mockDelay(PANSOU_ADDR)
   return get<string>('/search/pansou-addr')

@@ -205,7 +205,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
         <div class="mt-dialog-head">
           <span class="mt-color-dot" :style="{ background: meta.color }"></span>
           <span class="mt-dialog-title">{{ editing ? '编辑' : '新增' }}自动转存任务</span>
-          <span class="mt-dialog-sub">{{ meta.full }}</span>
+          <span class="tag" :class="meta.tag" style="margin-right: 0">{{ meta.full }}</span>
           <button class="mt-close" title="关闭" @click="close">×</button>
         </div>
         <div class="mt-dialog-body">

@@ -10,7 +10,7 @@ import PkPager from '@/components/PkPager.vue'
 import QuickTransferModal from './QuickTransferModal.vue'
 import TransferModal, { type TransferTarget } from './TransferModal.vue'
 import { useIsMobile } from '@/composables/useIsMobile'
-import { getInitialResults, getPanSouAddr, getSearchChannels, getSearchResults, type SearchChannel } from '@/api/modules/search'
+import { getInitialResults, getPanSouAddr, getSearchChannels, getSearchResults, type SearchChannel, getEngineHealth } from '@/api/modules/search'
 import { getSettings, saveSearchSrc } from '@/api/modules/settings'
 import { listDdItems } from '@/api/modules/dd'
 import { DRIVE_META } from '@/api/mock/meta'
@@ -20,7 +20,8 @@ import type { DriveType, SearchResultItem } from '@/types/model'
 const isMobile = useIsMobile()
 
 /** tab 固定顺序 = DRIVE_META 的键序（全部/百度/夸克/115/123/阿里/迅雷/UC，与原型一致） */
-const DRIVE_ORDER = Object.keys(DRIVE_META) as DriveType[]
+// tab 顺序：主力转存盘在前（百度→夸克→115→123→阿里），其余靠后
+const DRIVE_ORDER: DriveType[] = ['baidu', 'quark', '115', '123', 'ali', 'xunlei', 'uc']
 
 /* ===== 静态文案 ===== */
 const T_NO_CRED = '请先到「网盘连接」页配置该网盘凭据'
@@ -30,6 +31,8 @@ const T_NO_DD = '请先到「转存配置」页给该网盘添加一个路径'
 const kw = ref('')
 const channels = ref<SearchChannel[]>([])
 const addr = ref('')
+/** 引擎状态胶囊（右上角）：不暴露地址，IP 属隐私 */
+const engineOk = ref<boolean | null>(null)
 const results = ref<SearchResultItem[]>([])
 /** 各网盘是否配过转存目录（快速转存按钮的前置条件，账号级配置在「转存配置」页） */
 const ddTypes = ref(new Set<DriveType>())
@@ -44,6 +47,7 @@ onMounted(async () => {
   ])
   channels.value = chs
   addr.value = a
+  getEngineHealth().then((h) => (engineOk.value = h.ok)).catch(() => (engineOk.value = false))
   results.value = rows
   ddTypes.value = new Set<DriveType>(dds.map((x) => x.type))
   renderStats()
@@ -271,7 +275,11 @@ function openTransfer(r: SearchResultItem) {
 }
 /** 跳转：真实系统新开分享链接；mock 没有链接，给个反馈（原型同款 toast） */
 function onJump(r: SearchResultItem) {
-  message.info(`已在新标签打开原分享：${r.n}`)
+  if (!r.url) {
+    message.warning('该结果没有分享链接')
+    return
+  }
+  window.open(r.url, '_blank', 'noopener')
 }
 
 onUnmounted(() => {
@@ -307,7 +315,12 @@ onUnmounted(() => {
           <span class="ch-edit">✎ 管理</span>
         </div>
         <span class="st-flex1"></span>
-        <span class="small muted">来源 PanSou · {{ addr }}</span>
+        <span class="engine-pill" :class="{ ok: engineOk === true, bad: engineOk === false }">
+          <span class="ep-dot"></span>
+          <template v-if="engineOk === null">引擎状态检测中…</template>
+          <template v-else-if="engineOk">PanSou 检索引擎 在线</template>
+          <template v-else>PanSou 检索引擎 离线</template>
+        </span>
       </div>
 
       <!-- 横向网盘 tab：点击筛选 + 回第 1 页；右侧常驻扫描状态 -->
@@ -319,7 +332,7 @@ onUnmounted(() => {
           :class="{ on: active === t.key, dim: t.key !== 'all' && !t.count }"
           @click="setTab(t.key)"
         >
-          <i v-if="t.count" class="pkdot" :style="{ background: t.color }"></i>
+          <i class="pkdot" :style="{ background: t.color }"></i>
           {{ t.name }}<span class="pknum">{{ t.count }}</span>
         </div>
         <span class="pk-tab-scan">
@@ -330,6 +343,9 @@ onUnmounted(() => {
     </div>
 
     <!-- 统计卡：跟随当前 tab 动态渲染；换 key 重放出场动画；数字滚动 -->
+    <!-- 检索 loading 条：仅检索中展示，贴在筛选卡下边框 -->
+    <div v-if="busy" class="pk-strip" aria-hidden="true"><i class="pk-strip-fill"></i></div>
+
     <div v-if="statCards.length" :key="statEpoch" class="statline enter" :class="{ single: active !== 'all' }">
       <div
         v-for="it in statCards"

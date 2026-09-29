@@ -371,13 +371,14 @@ watch(
 .menu .nav-hd .lico { font-size: 16px; opacity: 0.85; }
 .menu-item:hover,
 .menu .nav-hd:hover { background: #eef0f2; color: #1f2329; }
-/* 深色选中胶囊：AI 产品风点睛之笔 */
+/* 淡紫选中胶囊：logo 同色系（紫罗兰）调浅 */
 .menu-item.on {
-  background: #1f2329;
-  color: #fff;
-  font-weight: 500;
-  box-shadow: 0 2px 8px rgba(16, 24, 40, 0.18);
+  background: linear-gradient(135deg, #ede9fe, #e4dcfd);
+  color: #6d28d9;
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px rgba(139, 92, 246, 0.35), 0 2px 8px rgba(124, 58, 237, 0.12);
 }
+.menu-item.on :deep(.lico) { opacity: 1; color: #7c3aed; }
 html[data-theme='dark'] .menu-item,
 html[data-theme='dark'] .menu .nav-hd { color: rgba(255, 255, 255, 0.6); }
 html[data-theme='dark'] .menu .nav-hd { color: rgba(255, 255, 255, 0.5); }

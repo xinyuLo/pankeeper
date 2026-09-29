@@ -197,21 +197,24 @@ function tick() {
 let lastStateJson = ''
 let lastRunIdSeen = 0
 
+function applyRemoteState(s: QueueState) {
+  const json = JSON.stringify(s)
+  if (json === lastStateJson) return
+  lastStateJson = json
+  // 检测新任务开跑（前端日志单选焦点切换用）
+  for (const t of s.tasks) {
+    if (t.status === 'run' && t.id > lastRunIdSeen) {
+      if (lastRunIdSeen > 0) onNewTaskStart()
+      lastRunIdSeen = t.id
+    }
+  }
+  syncView(s)
+  fireListeners()
+}
+
 async function pollRemote() {
   try {
-    const s = await get<QueueState>('/queue/state')
-    const json = JSON.stringify(s)
-    if (json === lastStateJson) return
-    lastStateJson = json
-    // 检测新任务开跑（前端日志单选焦点切换用）
-    for (const t of s.tasks) {
-      if (t.status === 'run' && t.id > lastRunIdSeen) {
-        if (lastRunIdSeen > 0) onNewTaskStart()
-        lastRunIdSeen = t.id
-      }
-    }
-    syncView(s)
-    fireListeners()
+    applyRemoteState(await get<QueueState>('/queue/state'))
   } catch {
     /* 后端暂不可达：保留上一帧状态，下拍再试 */
   }
@@ -331,6 +334,28 @@ if (USE_MOCK) {
   setInterval(tick, TICK)
 } else {
   pkQueueCfgGet()
-  void pollRemote()
-  setInterval(pollRemote, 600)
+  // SSE 事件流为主：状态变化才推（连接挂着，零轮询、零磁盘 IO）；
+  // 断线自动重连（指数退避），并保留低频轮询作兜底（SSE 静默丢包时数据仍能自愈）
+  let pollTimer = 0
+  const startPolling = (ms: number) => {
+    window.clearInterval(pollTimer)
+    pollTimer = window.setInterval(() => void pollRemote(), ms)
+  }
+  const connectSse = () => {
+    const es = new EventSource(`/api/queue/events?token=${encodeURIComponent(localStorage.getItem('pk-auth') || '')}`)
+    es.onmessage = (ev) => {
+      try {
+        applyRemoteState(JSON.parse(ev.data) as QueueState)
+        startPolling(15000) // SSE 活着时轮询降到 15s 兜底
+      } catch {
+        /* ignore */
+      }
+    }
+    es.onerror = () => {
+      es.close()
+      startPolling(2500) // 断线：退回 2.5s 轮询自愈
+      window.setTimeout(connectSse, 10000) // 10s 后再试 SSE
+    }
+  }
+  void pollRemote().then(connectSse)
 }
