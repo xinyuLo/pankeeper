@@ -1,4 +1,5 @@
 import { reactive } from 'vue'
+import { USE_MOCK } from '../http'
 import type { PaTask } from '@/types/model'
 
 /**
@@ -6,7 +7,8 @@ import type { PaTask } from '@/types/model'
  * 驾驶舱 / 自动转存三页共用，内存态（会话内可变）。
  */
 export const paStore = reactive<{ tasks: PaTask[]; seq: number }>({
-  tasks: [
+  // 真实模式初始为空：数据一律来自后端 hydrate（登录前引导会 401，别残留假数据）
+  tasks: USE_MOCK ? [
     {
       id: 1, type: 'baidu', name: '兰香如故', enabled: true,
       share_url: 'https://pan.baidu.com/s/1aBcDeFgHiJkLmNoPqRs', share_code: 'abcd',
@@ -63,7 +65,7 @@ export const paStore = reactive<{ tasks: PaTask[]; seq: number }>({
       cron: '0 3 * * *', exclude_count: 1, exclIdx: [], last_run: '09-26 03:00', last_status: 'fail',
       last_result: '新增 0 / 跳过 8 / 失败 2', post_qms: true, post_notify: true,
     },
-  ],
+  ] : [],
   seq: 100,
 })
 
