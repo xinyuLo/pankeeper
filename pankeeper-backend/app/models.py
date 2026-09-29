@@ -18,24 +18,48 @@ def now_str() -> str:
 
 
 class Account(Base):
-    """网盘凭据。cookies_enc 为 Fernet 加密密文，任何接口不回明文。"""
+    """网盘账号（每平台可配置多个，同时在线）。
 
-    __tablename__ = "accounts"
+    旧表 accounts（type 主键，单账号）已由迁移搬入本表并原样保留（回滚保险）。
+    cookies_enc 为 Fernet 加密密文，任何接口不回明文。
+    """
 
-    type: Mapped[str] = mapped_column(Text, primary_key=True)  # baidu|quark|115
+    __tablename__ = "drive_accounts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    type: Mapped[str] = mapped_column(Text)  # baidu|quark|115
+    alias: Mapped[str] = mapped_column(Text, default="")  # 显示别名；空则用昵称
     cookies_enc: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(Text, default="unset")  # connected|expired|unset
     nickname: Mapped[str] = mapped_column(Text, default="")
     last_check: Mapped[str] = mapped_column(Text, default="从未配置")
 
+    @property
+    def display_name(self) -> str:
+        """切换下拉/通知里展示的名字：别名 > 昵称 > 平台名+序号。"""
+        return self.alias or self.nickname or f"{self.type}#{self.id}"
+
+
+class RequestStat(Base):
+    """按「日期 + 网盘」累计的请求次数（网盘日志页展示 + 风控预警用）。
+
+    只存计数，不存请求明细——明细量级太大，且页面要的是「今天发了多少」。
+    """
+
+    __tablename__ = "request_stat"
+
+    date: Mapped[str] = mapped_column(Text, primary_key=True)  # YYYY-MM-DD
+    drive: Mapped[str] = mapped_column(Text, primary_key=True)  # baidu|quark|115
+    count: Mapped[int] = mapped_column(Integer, default=0)
+
 
 class PaTask(Base):
     """自动转存任务（含任务弹窗的扩展字段，全部并表，不留内存 map）。"""
-
     __tablename__ = "pa_tasks"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     type: Mapped[str] = mapped_column(Text, default="baidu")
+    acc_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 用哪个账号跑；空=该类型第一个
     name: Mapped[str] = mapped_column(Text, default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     share_url: Mapped[str] = mapped_column(Text, default="")

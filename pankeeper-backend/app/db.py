@@ -34,6 +34,35 @@ def init_db() -> None:
 
     Base.metadata.create_all(engine)
     _migrate_columns()
+    _migrate_accounts()
+
+
+def _migrate_accounts() -> None:
+    """单账号 → 多账号迁移：旧 accounts 表（type 主键）数据搬入 drive_accounts。
+
+    只在「新表为空且旧表存在」时执行一次；旧表原样保留作回滚保险。
+    别名留空（前端回落显示昵称/平台名）。
+    """
+    with engine.connect() as conn:
+        old = conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='accounts'"
+        ).fetchall()
+        if not old:
+            return
+        new_rows = conn.exec_driver_sql("SELECT COUNT(*) FROM drive_accounts").fetchone()[0]
+        if new_rows:
+            return  # 已迁移过
+        rows = conn.exec_driver_sql(
+            "SELECT type, cookies_enc, status, nickname, last_check FROM accounts"
+        ).fetchall()
+        for r in rows:
+            conn.exec_driver_sql(
+                "INSERT INTO drive_accounts (type, alias, cookies_enc, status, nickname, last_check)"
+                " VALUES (?, '', ?, ?, ?, ?)",
+                tuple(r),
+            )
+        conn.commit()
+        print(f"[migrate] 多账号迁移：旧 accounts 表 {len(rows)} 个账号已搬入 drive_accounts（旧表保留）")
 
 
 def _migrate_columns() -> None:
@@ -49,6 +78,7 @@ def _migrate_columns() -> None:
             ("exclude_json", "TEXT DEFAULT '[]'"),
             ("ban_reason", "TEXT DEFAULT ''"),
             ("compare_path", "TEXT DEFAULT ''"),
+            ("acc_id", "INTEGER"),
         ],
     }
     with engine.connect() as conn:

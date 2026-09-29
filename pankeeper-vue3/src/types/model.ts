@@ -142,6 +142,14 @@ export interface AccountInfo {
   cred_kind: string
   status: AccountStatus
   last_check: string
+  /** 「失效通知」开关（网盘连接页卡片上控制；探活失败时据此决定是否发 Server 酱） */
+  notify: boolean
+}
+
+/** 网盘容量 + 会员摘要（卡片容量条 / 会员标签数据源；只含数字，绝不含凭据） */
+export interface AccountSummary {
+  capacity: { total: number; used: number } | null
+  vip: { name: string; expires: string | null } | null
 }
 
 /** ===== 搜索结果行 ===== */

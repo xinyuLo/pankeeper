@@ -14,9 +14,9 @@ const router = useRouter()
 const auth = useAuthStore()
 const theme = useThemeStore()
 
-/* 默认账号 admin / admin#123（首启由后端生成，登录后请修改） */
-const username = ref('admin')
-const password = ref('admin#123')
+/* 不预填账号密码，仅用 placeholder 提示 */
+const username = ref('')
+const password = ref('')
 const loading = ref(false)
 
 async function onLogin() {
@@ -59,17 +59,16 @@ onMounted(() => theme.apply())
     <div class="card">
       <div class="brand"><i></i>PanKeeper</div>
       <h1>登录</h1>
-      <div class="sub">搜得到，就该存得下。 · 单管理员账号</div>
+      <div class="sub">搜得到，就该存得下。</div>
       <div class="field">
         <label>用户名</label>
-        <a-input v-model:value="username" placeholder="admin" @press-enter="onLogin" />
+        <a-input v-model:value="username" placeholder="请输入用户名" @press-enter="onLogin" />
       </div>
       <div class="field">
         <label>密码</label>
         <a-input-password v-model:value="password" placeholder="请输入密码" @press-enter="onLogin" />
       </div>
       <a-button type="primary" class="login-btn" :loading="loading" @click="onLogin">登 录</a-button>
-      <div class="hintbox">忘记密码时，家用场景建议直接在服务端重置，不做邮箱找回——为一个人做整套找回链路属于自找麻烦。</div>
     </div>
   </div>
 </template>
@@ -195,18 +194,6 @@ onMounted(() => theme.apply())
 }
 .login-btn.ant-btn-primary:hover { filter: brightness(1.12); }
 .login-btn.ant-btn-primary:active { transform: translateY(1px); }
-
-/* 忘记密码说明：玻璃浅条 */
-.hintbox {
-  margin-top: 20px;
-  background: rgba(255, 255, 255, 0.045);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 10px;
-  padding: 10px 12px;
-  font-size: 12px;
-  color: rgba(242, 244, 251, 0.45);
-  line-height: 1.7;
-}
 
 /* ===== 右上角主题切换：玻璃化 ===== */
 .login-theme-btn {

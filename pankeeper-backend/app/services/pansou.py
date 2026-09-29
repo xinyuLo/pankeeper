@@ -38,6 +38,9 @@ def _base_url() -> tuple[str, int]:
 def search(kw: str, cloud_types: list[str] | None = None, refresh: bool = False) -> list[dict]:
     """返回前端 SearchResultItem 形状的列表（含真实转存需要的 url/password）。"""
     base, timeout = _base_url()
+    if not base:
+        # 前端已有守卫，这里是兜底：直接说人话，别把 requests 的 Invalid URL 漏给用户
+        raise PanSouError("尚未配置 PanSou 服务地址，请到「系统设置 → 搜索源」填写")
     params = {
         "kw": kw,
         "res": "merge",

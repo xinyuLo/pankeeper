@@ -14,7 +14,10 @@ const auth = useAuthStore()
 onMounted(() => {
   themeStore.apply()
   pkQueueCfgGet()
-  if (auth.logged) hydrateAll() // 未登录时不在启动期灌注（会 401），登录成功后再补
+  if (auth.logged) {
+    hydrateAll() // 未登录时不在启动期灌注（会 401），登录成功后再补
+    auth.loadAvatar() // 头像走独立接口（不并进 /settings），刷新后单独拉一次
+  }
 })
 
 // antd 主题 token 对齐原型视觉令牌（src/styles/pk.css 的 :root / dark）

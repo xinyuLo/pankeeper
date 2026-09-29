@@ -12,10 +12,12 @@ from __future__ import annotations
 import random
 import re
 import time
+from datetime import datetime
 
 import httpx
 
 from ..security import decrypt_credential
+from ..services import reqstat
 from .base import (
     AdapterError,
     CloudAdapter,
@@ -64,6 +66,8 @@ class QuarkAdapter(CloudAdapter):
         self._http = httpx.Client(
             headers={"cookie": self.cookies, "content-type": "application/json", "user-agent": UA},
             timeout=20.0,
+            # 请求计数（网盘日志页 / 风控预警）：挂在传输层，业务方法零侵入
+            event_hooks={"request": [reqstat.hook("quark")]},
         )
 
     # ---------- 基础请求 ----------
@@ -341,27 +345,54 @@ class QuarkAdapter(CloudAdapter):
             )
             d = data.get("data") or {}
             mtype = str(d.get("member_type") or "NORMAL")
-            expires = d.get("member_expires") or None
-            name = {"EXP_SVIP": "体验 SVIP", "SVIP": "SVIP", "VIP": "VIP"}.get(mtype, "普通用户" if mtype == "NORMAL" else mtype)
-            member = {"name": name, "expires": str(expires)[:10] if expires else None}
-        except (AdapterError, CredentialExpired, CircuitOpen):
-            member = None
-        try:
-            data = self._req(
-                "GET",
-                "https://drive-pc.quark.cn/1/clouddrive/capacity",
-                params=self._fake_browse_params(),
-            )
-            d = data.get("data") or {}
+            # 夸克各版本 member_type 取值不一（SUPER_VIP / SVIP / VIP / EXP_SVIP），统一映射中文
+            name = {
+                "SUPER_VIP": "超级会员",
+                "SVIP": "超级会员",
+                "VIP": "会员",
+                "EXP_SVIP": "体验会员",
+                "EXP_VIP": "体验会员",
+            }.get(mtype, "普通用户" if mtype == "NORMAL" else mtype)
+            # 到期时间：按会员类型取对应字段（均为毫秒时间戳），最后回落到通用 exp_at。
+            # 注意夸克并不返回 member_expires 这个字段（早前就是因此一直是 null）。
+            exp_raw = {
+                "SUPER_VIP": d.get("super_vip_exp_at"),
+                "SVIP": d.get("super_vip_exp_at"),
+                "EXP_SVIP": d.get("exp_svip_exp_at"),
+            }.get(mtype) or d.get("exp_at")
+            expires = None
+            if exp_raw:
+                try:
+                    expires = datetime.fromtimestamp(int(exp_raw) / 1000).strftime("%Y-%m-%d")
+                except (ValueError, OSError, OverflowError):
+                    expires = None
+            member = {"name": name, "expires": expires}
+            # 容量同在这个响应里：顺手取走，省掉一次 /capacity 请求（请求密度越低越不易触发风控）
             total = d.get("total_capacity")
-            if not total:
-                # 有些版本把合计放在 file_* 分类里，做一次兜底求和
-                total = sum(v for k, v in d.items() if isinstance(v, (int, float)) and k.startswith(("total", "use")))
-            used = d.get("use_capacity") or d.get("used_capacity")
+            used = d.get("use_capacity")
             if total:
                 cap = {"total": int(total), "used": int(used or 0)}
         except (AdapterError, CredentialExpired, CircuitOpen):
-            cap = None
+            member = None
+
+        # 兜底：member 响应里没带容量时才单独问一次 /capacity
+        if cap is None:
+            try:
+                data = self._req(
+                    "GET",
+                    "https://drive-pc.quark.cn/1/clouddrive/capacity",
+                    params=self._fake_browse_params(),
+                )
+                d = data.get("data") or {}
+                total = d.get("total_capacity")
+                if not total:
+                    # 有些版本把合计放在 file_* 分类里，做一次兜底求和
+                    total = sum(v for k, v in d.items() if isinstance(v, (int, float)) and k.startswith(("total", "use")))
+                used = d.get("use_capacity") or d.get("used_capacity")
+                if total:
+                    cap = {"total": int(total), "used": int(used or 0)}
+            except (AdapterError, CredentialExpired, CircuitOpen):
+                cap = None
         return {"capacity": cap, "vip": member}
 
     # stoken 在 list_share 与 save 之间复用，避免重复请求

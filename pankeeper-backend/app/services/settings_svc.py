@@ -18,11 +18,11 @@ _SENSITIVE_FIELDS = ("sendkey", "apikey", "webhook")
 DEFAULTS: dict[str, dict[str, Any]] = {
     "settings": {
         "search": {
-            "pansou_url": "http://192.168.2.77:8028",
+            # 默认留空：不该替用户预设外部服务地址。写死成作者自己的 NAS IP，
+            # 别人 clone 下来就是一串连不上的地址，而且会把「未配置」误显示成「已配置」。
+            "pansou_url": "",
             "timeout": 30,
             "cache_mode": "on",
-            "def_dir_baidu": "/影视",
-            "def_dir_quark": "/剧集",
             # 搜索频道白名单（空 = 使用 pansou 的全部频道）；pansou 容器环境变量的
             # CHANNELS 决定"有哪些可选"，这里决定"每次搜索带哪些"
             "channels": [],
@@ -38,7 +38,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         },
         "qms": {
             "enabled": False,
-            "url": "http://192.168.2.77:8020",
+            "url": "",
             "apikey": "",
             "act_strm": True,
             "act_emby": True,
@@ -46,8 +46,20 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "security": {"username": "admin", "session_days": 7},
     },
     "queue_cfg": {"threads": 1, "gap": 5, "qms": 10, "strm": 10},
-    # 每网盘默认目标目录（网盘连接卡片填写；保存后自动预热该目录的目录树缓存）
-    "base_dir": {"baidu": "", "quark": "", "115": ""},
+    # 网盘凭据每日探活（M3）：默认每天 10:00 跑一次。
+    # 时间特意放在上午而不是凌晨——半夜探出失效也没人看，通知等于白发；
+    # 10 点人都起来了，失效提醒当场就能处理。
+    # 强烈建议不要调得比每日更密：夸克有频率风控，过密调用反而可能加速 Cookie 失效。
+    "health_cfg": {"enabled": True, "hour": 10, "minute": 0},
+    # 请求统计保留期：默认半年（180 天）。每日定时清理更早的行，
+    # 半年足够回溯趋势，又不至于让 SQLite 无限长胖。
+    "stats_cfg": {"retain_days": 180},
+    # 每个网盘的「失效通知」开关（网盘连接页卡片上控制）。
+    # 只是粒度开关，总闸仍是 settings.notify.enabled + on_cred。
+    "drive_notify": {"baidu": True, "quark": True, "115": True},
+    # 头像：前端压缩后的 data URL（256×256 JPEG，通常 20–60KB）。
+    # 单独一组、单独接口读写，**不并进 /settings 响应**——否则每次拉配置都要背着它。
+    "avatar_cfg": {"data": "", "updated": ""},
     "cache_cfg": {
         "master": True,
         "ttl": 30,
@@ -56,7 +68,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "memHigh": 85,
         "act": "ladder",
         # 缓存大小上限（MB）：水位条 = 已用字节 / 该上限，超出按 LRU 淘汰
-        "maxSizeMb": 800,
+        "maxSizeMb": 200,
     },
 }
 

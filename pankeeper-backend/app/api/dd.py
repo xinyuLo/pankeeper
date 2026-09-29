@@ -81,7 +81,11 @@ def update_item(item_id: int, body: DdBody, _user=CurrentUser):
         )
         if dup:
             raise HTTPException(status_code=400, detail="同账号下已存在同名目录")
+        # id 是主键：body 里未传时 model_dump 会带 id=None，setattr 会把 rowid 写 NULL
+        # （sqlite 报 datatype mismatch）——更新语义下必须跳过。
         for k, v in body.model_dump().items():
+            if k == "id":
+                continue
             setattr(row, k, v)
         db.commit()
         return _row(row)

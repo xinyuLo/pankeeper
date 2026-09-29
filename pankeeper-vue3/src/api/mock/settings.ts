@@ -18,9 +18,6 @@ export interface SearchSrcCfg {
   /** 请求超时（秒） */
   timeout: number
   cache_mode: SearchCacheMode
-  /** 默认目标目录：百度 / 夸克各一（手动搜索转存的目标建议） */
-  def_dir_baidu: string
-  def_dir_quark: string
   /** 搜索频道白名单（空 = 使用 pansou 全部频道） */
   channels: string[]
 }
@@ -67,8 +64,6 @@ export const settingsStore = reactive<SettingsData>({
     pansou_url: 'http://192.168.2.77:8028',
     timeout: 30,
     cache_mode: 'on',
-    def_dir_baidu: '/影视',
-    def_dir_quark: '/剧集',
     channels: [],
   },
   notify: {

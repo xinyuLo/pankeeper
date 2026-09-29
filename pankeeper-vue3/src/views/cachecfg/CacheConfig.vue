@@ -6,7 +6,7 @@
  * 配置改完即静默写回 mock store（原型如此）；刷新=重置过期时间，清除=删行。
  * 水位条颜色随实际占用变化：<75 绿 / 75-85 黄 / >85 红。
  * ===================================================================== */
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { DRIVE_META } from '@/api/mock/meta'
 import {
@@ -28,9 +28,10 @@ const cfg = reactive<CacheCfg>({
   ttlUnit: '小时',
   memHigh: 85,
   act: 'ladder',
-  maxSizeMb: 800,
+  maxSizeMb: 200,
 })
-const mem = ref<MemUsage>({ pct: 62, usedMb: 0, totalMb: 800 })
+/* 后端没响应时保持 0 占用，别拿 mock 假值糊弄人 */
+const mem = ref<MemUsage>({ pct: 0, usedMb: 0, totalMb: 200 })
 const trees = ref<CacheTree[]>([])
 
 let loaded = false // 首次装载期间不回写（否则 onMounted 的赋值会触发一轮保存）
@@ -39,12 +40,21 @@ onMounted(async () => {
   Object.assign(cfg, r.cfg)
   mem.value = r.mem
   trees.value = await listCacheTrees()
+  // watch 回调不是同步跑的（flush:'pre' 排队），等这一拍过去再放行
+  await nextTick()
   loaded = true
 })
 
-/* 配置任意一项变化 → 静默持久化（真实系统为 PUT /api/cache/config） */
+/* 配置任意一项变化 → 防抖 600ms 后持久化（数字框连点/下拉连切只发一次） */
+let cfgSaveTimer: number | undefined
 watch(cfg, (v) => {
-  if (loaded) void saveCacheConfig({ ...v })
+  if (!loaded) return
+  window.clearTimeout(cfgSaveTimer)
+  cfgSaveTimer = window.setTimeout(() => {
+    void saveCacheConfig({ ...v })
+      .then(() => message.success('已自动保存'))
+      .catch(() => message.error('自动保存失败，请重试'))
+  }, 600)
 })
 
 /* 下拉/数字项变更的提示做防抖：数字框连续点按不刷屏（原型逐次 toast） */

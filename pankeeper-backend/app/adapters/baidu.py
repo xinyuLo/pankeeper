@@ -11,6 +11,7 @@ from __future__ import annotations
 import httpx
 
 from ..security import decrypt_credential
+from ..services import reqstat
 from .base import AdapterError, CredentialExpired
 from .rate_gate import RateGate
 
@@ -29,6 +30,8 @@ class BaiduClient:
         self._http = httpx.Client(
             headers={"cookie": self.cookies, "user-agent": UA},
             timeout=15.0,
+            # 请求计数（网盘日志页 / 风控预警）：挂在传输层，业务方法零侵入
+            event_hooks={"request": [reqstat.hook("baidu")]},
         )
 
     def _get(self, url: str, params: dict | None = None) -> dict:
@@ -83,12 +86,49 @@ class BaiduClient:
         if info.get("errno") != 0:
             return None
         data = info.get("data") or info
+        # 网页 Cookie 下 uinfo 只回 vip_type（is_vip 字段缺失），不能拿 is_vip 做前置判断
+        vip_type = int(data.get("vip_type") or 0)
         is_vip = int(data.get("is_vip") or 0)
-        vip_type = data.get("vip_type")
-        if not is_vip:
+        if not is_vip and not vip_type:
             return {"name": "普通用户", "expires": None}
-        name = {1: "VIP", 2: "SVIP", 4: "SVIP"}.get(int(vip_type or 0), "VIP")
+        name = {1: "会员", 2: "超级会员", 4: "超级会员"}.get(vip_type, "会员")
         return {"name": name, "expires": None}
+
+    def list_dir(self, directory: str = "/") -> list[dict]:
+        """列目录一层（网页端接口，供「默认目标目录」目录树使用）。
+
+        - `web=1` 走 web 通道：拿到的是用户**真实网盘目录**，不受开放平台
+          「应用只能访问 /apps/」那条限制（那是 OAuth 接口才有的约束）。
+        - 分页：单页最多 1000 条，满页时按 `start` 游标续拉；最多 5 页，
+          防止接口异常时无限循环。
+        """
+        directory = directory if directory.startswith("/") else "/" + directory
+        out: list[dict] = []
+        start = 0
+        for _ in range(5):
+            data = self._get(
+                "https://pan.baidu.com/rest/2.0/xpan/file",
+                {
+                    "method": "list",
+                    "dir": directory,
+                    "web": 1,
+                    "order": "name",
+                    "desc": 0,
+                    "limit": 1000,
+                    "start": start,
+                },
+            )
+            errno = data.get("errno")
+            if errno == -6:  # 身份验证失败
+                raise CredentialExpired("百度 Cookie 已失效")
+            if errno not in (0, None):
+                raise AdapterError(f"百度列目录失败：errno={errno}")
+            page = data.get("list") or []
+            out.extend(page)
+            if len(page) < 1000:
+                break
+            start += len(page)
+        return out
 
     def summary(self) -> dict:
         cap, vip = None, None

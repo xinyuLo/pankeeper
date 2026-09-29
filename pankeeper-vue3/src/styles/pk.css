@@ -460,7 +460,7 @@ html[data-theme='dark'] .kids { border-left-color: #3a3f4b; }
 .formrow .desc { font-size: 12.5px; color: var(--text3); margin-top: 7px; line-height: 1.6; }
 
 /* ===== 网盘连接卡 ===== */
-.accgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 18px; }
+.accgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 18px; }
 .acc {
   /* 用户点名要回的清晰描边框（--split 太淡几乎隐形，换 --border） */
   border: 1px solid var(--border);
@@ -545,7 +545,10 @@ html[data-theme='dark'] .vip-tag { color: #b39cf8; }
 .note-box ul { margin: 6px 0 0 18px; }
 
 /* ===== 转存队列看板（pq-） / 右下角浮标（pkq-） ===== */
-.pq-tabs { padding: 0 0 12px; }
+/* 只收窄与下方卡片的间距。⚠️ 不能改 padding：.tabs 是灰底胶囊，
+   一旦把 padding 换成 0 0 12px，按钮会贴住灰底的上/左/右边缘，
+   而灰底底部反被撑高一截（按钮看起来像浮在空中）。 */
+.pq-tabs { margin-bottom: 12px; }
 .pq-tabs .pq-num { margin-left: 6px; font-size: 12px; color: var(--text3); font-variant-numeric: tabular-nums; }
 .pq-item { display: flex; align-items: flex-start; gap: 14px; padding: 14px 18px; border-bottom: 1px solid var(--split); }
 .pq-item:last-child { border-bottom: none; }
