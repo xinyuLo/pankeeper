@@ -1,0 +1,167 @@
+/* =====================================================================
+ * 领域类型 —— 字段形状对齐原型 docs/02-data-model.md（接口契约）
+ * 后端（Python）就绪后，接口返回体按这里定义的字段命名对齐。
+ * 页面私有的扩展类型放各自视图文件夹，不要全部堆在这个文件里。
+ * ===================================================================== */
+
+/** 网盘类型：搜索结果支持 7 家；转存/任务只涉及前三家 */
+export type DriveType = 'baidu' | 'quark' | '115' | '123' | 'ali' | 'xunlei' | 'uc'
+
+/** 转存/自动任务涉及的网盘 */
+export type MainDriveType = 'baidu' | 'quark' | '115'
+
+/** ===== 自动转存任务（docs/02 §1） ===== */
+export interface PaTask {
+  id: number
+  type: MainDriveType
+  name: string
+  enabled: boolean
+  share_url: string
+  share_code: string
+  save_dir: string
+  /** 对比路径（去重基线，空则回退 save_dir） */
+  compare_path?: string
+  include_subdirs: boolean
+  /** 定时策略（空 = 仅手动） */
+  cron: string
+  exclude_count: number
+  /** 排除文件下标（真实系统应为文件路径/md5 列表） */
+  exclIdx: number[]
+  last_run: string
+  last_status: 'success' | 'fail' | 'running' | 'never'
+  last_result: string
+  post_qms: boolean
+  post_notify: boolean
+}
+
+/** ===== 转存队列（docs/02 §2） ===== */
+export type QueueTaskStatus = 'wait' | 'run' | 'done' | 'fail'
+export type QueuePhase = 'transfer' | 'waitqms' | 'qms' | 'waitstrm' | 'strm' | ''
+
+export interface QueueLogLine {
+  lv: 'STEP' | 'INFO' | 'WARN' | 'ERROR'
+  txt: string
+}
+
+export interface QueueTask {
+  id: number
+  name: string
+  type: MainDriveType
+  path: string
+  files: number
+  size: string
+  status: QueueTaskStatus
+  phase: QueuePhase
+  /** 当前阶段开始时刻（算 QMS/STRM 延迟用） */
+  phaseStart: number
+  progress: number
+  /** 每阶段只发一次日志的标记 */
+  flags: Record<string, number>
+  /** 完成时刻（出队计时：保留 30 分钟） */
+  doneAt: number
+  logs: QueueLogLine[]
+}
+
+export interface QueueState {
+  seq: number
+  lastTick: number
+  lastDone: number
+  tasks: QueueTask[]
+}
+
+/** ===== 队列配置（docs/02 §3） ===== */
+export interface QueueCfg {
+  /** 并行上限 1-4 */
+  threads: number
+  /** 任务间隔秒 */
+  gap: number
+  /** 转存→QMS 延迟秒 */
+  qms: number
+  /** QMS→STRM 延迟秒 */
+  strm: number
+}
+
+/** ===== 转存配置目录（docs/02 §4，快速转存的依据） ===== */
+export interface DdItem {
+  id: number
+  type: MainDriveType
+  /** 账号级作用域 */
+  account: string
+  /** 快速转存下拉顺序（小在前） */
+  sort: number
+  name: string
+  path: string
+  /** 该账号的默认目录（每账号唯一） */
+  is_default: boolean
+  qms_on: boolean
+  /** → QMS 刮削目录 id */
+  qms_id: number | null
+  /** → STRM 同步目录 id（null = 不生成） */
+  strm_id: number | null
+}
+
+export interface DdQmsPath {
+  id: number
+  media_type: 'tv' | 'movie'
+  source_path: string
+}
+
+export interface DdStrmPath {
+  id: number
+  remote_path: string
+}
+
+export interface DdAccount {
+  id: string
+  label: string
+}
+
+/** ===== 转存记录（docs/02 §7，快照） ===== */
+export interface RecordTag {
+  st: string
+  cls: 't-ok' | 't-bad' | 't-off'
+}
+
+export interface RecordItem {
+  n: string
+  t: DriveType
+  p: string
+  st: string
+  cls: 't-ok' | 't-bad' | 't-off'
+  tm: string
+  qms: RecordTag
+  strm: RecordTag
+}
+
+/** ===== 网盘连接（docs/02 §8：只回状态不回明文） ===== */
+export type AccountStatus = 'connected' | 'expired' | 'unset'
+
+export interface AccountInfo {
+  type: MainDriveType
+  /** 凭据形态说明（cookie/token），不含明文 */
+  cred_kind: string
+  status: AccountStatus
+  last_check: string
+}
+
+/** ===== 搜索结果行 ===== */
+export interface SearchResultItem {
+  n: string
+  t: DriveType
+  s: string
+  d: string
+  ok: boolean
+  hot?: boolean
+  /** 真实模式：分享链接与提取码（入队真实转存的必要字段；mock 模式为演示假链接） */
+  url?: string
+  share_code?: string
+  source?: string
+}
+
+/** ===== 通用树节点（目录树/分享树 mock） ===== */
+export interface TreeNode {
+  name: string
+  path?: string
+  size?: string
+  kids?: TreeNode[]
+}
