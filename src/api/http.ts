@@ -28,7 +28,7 @@ http.interceptors.response.use(
   (err) => {
     if (err?.response?.status === 401) {
       localStorage.removeItem('pk-auth')
-      if (location.hash !== '#/login') location.hash = '#/login'
+      if (location.pathname !== '/login') window.location.assign('/login')
     }
     return Promise.reject(err)
   },

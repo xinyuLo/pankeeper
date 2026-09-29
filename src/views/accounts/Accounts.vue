@@ -8,14 +8,8 @@ import { computed, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { accountStore, ACCOUNT_STATUS_VIEW, type AccountRow } from '@/api/mock/accounts'
 import { MAIN_ORDER, DRIVE_META } from '@/api/mock/meta'
-import { checkAccount, clearAccount, getSummary, saveCredential, type AccountSummary } from '@/api/modules/accounts'
+import { checkAccount, clearAccount, getSummary, saveBaseDir, saveCredential, type AccountSummary } from '@/api/modules/accounts'
 import type { MainDriveType } from '@/types/model'
-import { ddGetDefault } from '@/api/mock/dd'
-
-/** 默认目标目录：取「转存配置」里该网盘的默认项路径（真实数据，不再写死） */
-function ddBase(type: MainDriveType): string {
-  return ddGetDefault(type)?.path || '—'
-}
 
 /** 卡片按 baidu/quark/115 固定顺序（MAIN_ORDER）铺开，store 变了视图自动跟 */
 const rows = computed<AccountRow[]>(() => MAIN_ORDER.map((t) => accountStore.accounts[t]))
@@ -23,6 +17,36 @@ const rows = computed<AccountRow[]>(() => MAIN_ORDER.map((t) => accountStore.acc
 /** 状态 → tag 类名/文案/圆点（connected/expired/unset 三态映射） */
 function view(status: string) {
   return ACCOUNT_STATUS_VIEW[status]
+}
+
+/* ===== 默认目标目录：卡片直接填写；保存后后端自动预热该目录的目录树缓存 ===== */
+const bdOpen = ref(false)
+const bdType = ref<MainDriveType>('quark')
+const bdPath = ref('')
+const bdSaving = ref(false)
+const bdTitle = computed(() => `默认目标目录 · ${DRIVE_META[bdType.value]?.full || bdType.value}`)
+
+function openBaseDir(a: AccountRow) {
+  bdType.value = a.type
+  bdPath.value = a.base && a.base !== '—' ? a.base : ''
+  bdOpen.value = true
+}
+
+async function onBaseDirSave() {
+  bdSaving.value = true
+  try {
+    const res = await saveBaseDir(bdType.value, bdPath.value.trim())
+    const row = accountStore.accounts[bdType.value]
+    if (row) row.base = bdPath.value.trim() || '—'
+    bdOpen.value = false
+    if (res.primed) message.success(res.message + '（首次打开转存弹窗秒开）')
+    else message.info(res.message)
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '保存失败')
+  } finally {
+    bdSaving.value = false
+  }
 }
 
 /* ===== 卡片动作 ===== */
@@ -142,7 +166,13 @@ async function onClear(a: AccountRow) {
         </div>
         <div class="kv"><span>凭据类型</span><b>{{ a.cred_kind }}</b></div>
         <div class="kv"><span>上次检测</span><b>{{ a.last_check }}</b></div>
-        <div class="kv"><span>默认目标目录</span><b>{{ ddBase(a.type) }}</b></div>
+        <div class="kv">
+          <span>默认目标目录</span>
+          <b style="display: inline-flex; align-items: center; gap: 6px">
+            {{ a.base || '—' }}
+            <a-button type="link" size="small" style="padding: 0 2px; height: auto" @click="openBaseDir(a)">编辑</a-button>
+          </b>
+        </div>
         <div v-if="a.status === 'connected'" class="capblock">
           <template v-if="capOf(a.type)">
             <div class="capbar"><i :class="capClass(capOf(a.type)!.pct)" :style="{ width: capOf(a.type)!.pct + '%' }"></i></div>
@@ -189,6 +219,21 @@ async function onClear(a: AccountRow) {
         :rows="5"
         placeholder="粘贴整串 Cookie，例如：UID=...; CID=...; SEID=...; __pus=...; __puus=..."
       />
+    </a-modal>
+
+    <!-- 默认目标目录编辑：保存后自动预热目录树缓存 -->
+    <a-modal
+      v-model:open="bdOpen"
+      :title="bdTitle"
+      :confirm-loading="bdSaving"
+      ok-text="保存"
+      @ok="onBaseDirSave"
+    >
+      <p class="small" style="color: var(--text3); margin-bottom: 10px">
+        该网盘的默认保存位置，例如 <code>/影视</code>。保存后会<b>自动加载该目录的目录树缓存</b>——
+        首次打开转存弹窗即秒开，不用现场等网盘接口。
+      </p>
+      <a-input v-model:value="bdPath" placeholder="/影视" allow-clear @press-enter="onBaseDirSave" />
     </a-modal>
   </div>
 </template>

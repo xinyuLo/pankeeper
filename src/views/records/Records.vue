@@ -242,8 +242,8 @@ async function confirmTrig() {
           <a-select v-model:value="fPan" :options="PAN_OPTS" style="width: 120px" />
           <a-input v-model:value="kw" placeholder="资源名称" style="width: 200px" allow-clear />
           <span class="rk-flex1"></span>
-          <a-button @click="openTrig">触发 QMS / STRM</a-button>
-          <a-button @click="onClearOld">清空三月前记录</a-button>
+          <a-button type="primary" ghost @click="openTrig">触发 QMS / STRM</a-button>
+          <a-button danger ghost @click="onClearOld">清空三月前记录</a-button>
         </div>
         <table v-if="!isMobile">
           <thead>

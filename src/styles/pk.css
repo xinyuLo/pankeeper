@@ -181,25 +181,30 @@ html[data-theme='dark'] .t-off { color: var(--text3); background: rgba(255, 255,
   padding: 7px 16px;
   cursor: pointer;
   color: var(--text2);
-  border-radius: 7px;
+  border-radius: 8px;
+  /* 未选中：白底描边，看得出来是按钮（与搜索页 pktab 同语言） */
+  background: var(--card);
+  border: 1px solid var(--border);
   transition: all 0.18s;
   font-size: 13.5px;
   white-space: nowrap;
   user-select: none;
 }
 .tabs > div:hover {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.7);
+  color: var(--primary);
+  border-color: var(--primary-h);
 }
 .tabs > div.on {
-  color: var(--text);
+  color: #fff;
   font-weight: 500;
-  background: #fff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  background: var(--primary);
+  border-color: var(--primary);
+  box-shadow: 0 2px 8px rgba(22, 119, 255, 0.28);
 }
 html[data-theme='dark'] .tabs { background: #11141a; }
 html[data-theme='dark'] .tabs > div:hover { background: rgba(255, 255, 255, 0.06); }
-html[data-theme='dark'] .tabs > div.on { background: #262b35; color: var(--text); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4); }
+html[data-theme='dark'] .tabs > div { background: transparent; }
+html[data-theme='dark'] .tabs > div.on { background: var(--primary); border-color: var(--primary); color: #fff; box-shadow: 0 2px 8px rgba(22, 119, 255, 0.28); }
 
 /* ===== 筛选条 ===== */
 .filterbar {
@@ -909,7 +914,7 @@ button,
   flex-direction: row;
   align-items: center;
   gap: 12px;
-  max-width: 840px;
+  width: 100%;
   margin-bottom: 18px;
 }
 .searchwrap .kw-input { flex: 1 1 auto; min-width: 0; }
@@ -963,3 +968,67 @@ button,
 }
 .pk-es-title { font-size: 15px; font-weight: 600; color: var(--text); }
 .pk-es-sub { font-size: 13px; color: var(--text3); }
+
+
+/* ===== 搜索页：检索引擎状态胶囊（右上角，不暴露地址） ===== */
+.engine-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  white-space: nowrap;
+  background: var(--surface-2);
+  color: var(--text3);
+}
+.engine-pill .ep-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text4);
+  flex: none;
+}
+.engine-pill.ok { color: #237804; background: rgba(82, 196, 26, 0.08); }
+.engine-pill.ok .ep-dot { background: var(--success); box-shadow: 0 0 0 3px rgba(82, 196, 26, 0.15); }
+.engine-pill.bad { color: #d46b08; background: rgba(250, 173, 20, 0.1); }
+.engine-pill.bad .ep-dot { background: var(--warning); box-shadow: 0 0 0 3px rgba(250, 173, 20, 0.18); }
+html[data-theme='dark'] .engine-pill.ok { color: #95de64; }
+html[data-theme='dark'] .engine-pill.bad { color: #ffc53d; }
+
+
+/* ===== 搜索页：检索活动条（空闲呼吸 / 检索扫掠 / 完成闪光） ===== */
+.pk-strip {
+  position: relative;
+  height: 4px;
+  border-radius: 100px;
+  overflow: hidden;
+  /* 贴住筛选卡下边框（卡是 margin-bottom:16px 的白卡），不用时整条隐藏 */
+  margin: -3px 0 16px;
+}
+.pk-strip-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 42%;
+  border-radius: 100px;
+  background: linear-gradient(90deg, transparent, var(--primary) 50%, #69c0ff 75%, transparent);
+  animation: pkStripSweep 1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+@keyframes pkStripSweep {
+  0% { transform: translateX(-130%); }
+  100% { transform: translateX(310%); }
+}
+.pk-strip-txt {
+  position: absolute;
+  right: 12px;
+  top: -24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--primary);
+  background: var(--primary-bg);
+  border: 1px solid rgba(22, 119, 255, 0.2);
+  border-radius: 999px;
+  padding: 2px 10px;
+}

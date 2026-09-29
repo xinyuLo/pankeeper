@@ -6,6 +6,8 @@ import type { AccountInfo, MainDriveType } from '@/types/model'
  * status: ok=已连接 / bad=凭据已失效 / off=未配置（AccountInfo.status 的展示映射在视图层做）。
  */
 export interface AccountRow extends AccountInfo {
+  /** 默认目标目录（后端 base_dir 设置，卡片可编辑） */
+  base_dir?: string
   short: string
   color: string
   base: string
