@@ -1,177 +1,237 @@
-"""网盘连接：只回状态绝不回明文（红线）。"""
+"""网盘连接：多账号（每平台可配多个，同时在线）。只回状态绝不回明文（红线）。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ..db import SessionLocal
 from ..deps import CurrentUser, make_adapter_for
 from ..models import Account, now_str
-from ..services.dircache import dir_cache
 from ..services.settings_svc import get_group, save_group
+from ..services.notify import drive_enabled
 from ..security import encrypt_credential
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
-# 展示元信息（品牌色/凭据形态），与前端 accounts 页一致
+# 平台展示元信息（品牌色/凭据形态），与前端 accounts 页一致
 META = {
-    "baidu": {"short": "百度", "color": "#1677ff", "cred_kind": "BDUSS / STOKEN", "note": "适配器开发中（依据 bdsavepro 调研的接口事实）"},
+    "baidu": {"short": "百度", "color": "#1677ff", "cred_kind": "Cookie", "note": "适配器开发中（依据 bdsavepro 调研的接口事实）"},
     "quark": {"short": "夸克", "color": "#13c2c2", "cred_kind": "Cookie", "note": "已实现：转存/清单/目录/重命名"},
     "115": {"short": "115", "color": "#722ed1", "cred_kind": "Cookie / 扫码", "note": "适配器开发中（p115client 方案）"},
 }
 ORDER = ("baidu", "quark", "115")
 
 
+def _acc_or_404(db, acc_id: int) -> Account:
+    acc = db.get(Account, acc_id)
+    if acc is None:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    return acc
+
+
+def _row(acc: Account) -> dict:
+    """单账号卡片行：平台静态元信息 + 账号动态状态。"""
+    meta = META.get(acc.type, {"short": acc.type, "color": "#888", "cred_kind": "Cookie", "note": ""})
+    return {
+        "id": acc.id,
+        "type": acc.type,
+        "alias": acc.alias,
+        "display": acc.display_name,
+        "short": meta["short"],
+        "color": meta["color"],
+        "cred_kind": meta["cred_kind"],
+        "note": meta["note"],
+        "status": acc.status,
+        "nickname": acc.nickname,
+        "last_check": acc.last_check,
+        # 卡片上的「失效通知」开关（Server 酱）：按账号存；没配凭据的账号
+        # 没有"失效"可言 —— 展示为关（配置后自动恢复开关原值）
+        "notify": bool(acc.cookies_enc) and drive_enabled(str(acc.id)),
+        # 容量/会员摘要走缓存：刷新页面能立刻显示，不必等实时请求
+        "summary": _cached_summary(acc.id),
+    }
+
+
 @router.get("")
 def list_accounts(_user=CurrentUser):
     out = []
     with SessionLocal() as db:
-        for t in ORDER:
-            acc = db.get(Account, t)
-            meta = META[t]
-            out.append(
-                {
-                    "type": t,
-                    "base_dir": get_group("base_dir").get(t, ""),
-                    "short": meta["short"],
-                    "color": meta["color"],
-                    "cred_kind": meta["cred_kind"],
-                    "note": meta["note"],
-                    "status": acc.status if acc else "unset",
-                    "nickname": acc.nickname if acc else "",
-                    "last_check": acc.last_check if acc else "从未配置",
-                }
-            )
+        rows = db.query(Account).order_by(Account.type, Account.id).all()
+        for acc in rows:
+            out.append(_row(acc))
     return out
 
 
 class CredentialBody(BaseModel):
     cookies: str
+    alias: str = ""
 
 
-@router.put("/{drive_type}/credential")
-def put_credential(drive_type: str, body: CredentialBody, _user=CurrentUser):
-    if drive_type not in ORDER:
-        raise HTTPException(status_code=404, detail="未知网盘")
-    adapter = None
+class AliasBody(BaseModel):
+    alias: str = ""
+
+
+def _save_and_verify(acc: Account, cookies: str) -> dict:
+    """写入凭据 → 保存即验证。成功置 connected 并回昵称；失败置 expired 并抛 400。"""
     with SessionLocal() as db:
-        acc = db.get(Account, drive_type)
-        if acc is None:
-            acc = Account(type=drive_type)
-            db.add(acc)
-        acc.cookies_enc = encrypt_credential(body.cookies.strip())
-        acc.last_check = "从未配置"
+        row = db.get(Account, acc.id)
+        row.cookies_enc = encrypt_credential(cookies.strip())
+        row.last_check = "从未配置"
         db.commit()
-    # 保存即验证：失效直接报错并标记 expired（只回状态不回明文）
-    from ..db import SessionLocal as S2
-
     try:
-        with S2() as db:
-            adapter = make_adapter_for(db, drive_type)
+        with SessionLocal() as db:
+            adapter = make_adapter_for(db, acc.type, acc.id)
             nickname = adapter.verify()
-        with S2() as db:
-            acc = db.get(Account, drive_type)
-            acc.status = "connected"
-            acc.nickname = nickname
-            acc.last_check = now_str()
+        with SessionLocal() as db:
+            row = db.get(Account, acc.id)
+            row.status = "connected"
+            row.nickname = nickname
+            row.last_check = now_str()
             db.commit()
         return {"ok": True, "status": "connected", "nickname": nickname}
     except HTTPException:
         raise
     except Exception as e:
-        with S2() as db:
-            acc = db.get(Account, drive_type)
-            if acc:
-                acc.status = "expired"
-                acc.last_check = now_str()
+        with SessionLocal() as db:
+            row = db.get(Account, acc.id)
+            if row:
+                row.status = "expired"
+                row.last_check = now_str()
                 db.commit()
         raise HTTPException(status_code=400, detail=f"凭据验证失败：{e}")
 
 
-@router.delete("/{drive_type}/credential")
-def delete_credential(drive_type: str, _user=CurrentUser):
+@router.post("/{type}")
+def add_account(type: str, body: CredentialBody, _user=CurrentUser):
+    """新增账号（选平台 + 粘贴 Cookie + 可选别名）。保存即验证。"""
+    if type not in ORDER:
+        raise HTTPException(status_code=404, detail="未知网盘")
     with SessionLocal() as db:
-        acc = db.get(Account, drive_type)
-        if acc:
-            acc.cookies_enc = ""
-            acc.status = "unset"
-            acc.nickname = ""
-            acc.last_check = "从未配置"
-            db.commit()
+        acc = Account(type=type, alias=body.alias.strip())
+        db.add(acc)
+        db.commit()
+        acc_id = acc.id
+    try:
+        return _save_and_verify(acc, body.cookies)
+    finally:
+        pass
+
+
+@router.put("/{acc_id}/credential")
+def put_credential(acc_id: int, body: CredentialBody, _user=CurrentUser):
+    with SessionLocal() as db:
+        acc = _acc_or_404(db, acc_id)
+        if body.alias.strip():
+            acc.alias = body.alias.strip()
+        db.commit()
+    return _save_and_verify(acc, body.cookies)
+
+
+@router.put("/{acc_id}/alias")
+def set_alias(acc_id: int, body: AliasBody, _user=CurrentUser):
+    with SessionLocal() as db:
+        acc = _acc_or_404(db, acc_id)
+        acc.alias = body.alias.strip()
+        db.commit()
+    return {"ok": True, "alias": acc.alias}
+
+
+@router.delete("/{acc_id}")
+def delete_account(acc_id: int, _user=CurrentUser):
+    """删除整个账号（卡片随之消失）。"""
+    with SessionLocal() as db:
+        acc = _acc_or_404(db, acc_id)
+        db.delete(acc)
+        db.commit()
     return {"ok": True}
 
 
-@router.get("/{drive_type}/summary")
-def account_summary(drive_type: str, _user=CurrentUser):
-    """容量 + 会员摘要（卡片上的容量条数据源）。
+@router.delete("/{acc_id}/credential")
+def delete_credential(acc_id: int, _user=CurrentUser):
+    with SessionLocal() as db:
+        acc = _acc_or_404(db, acc_id)
+        acc.cookies_enc = ""
+        acc.status = "unset"
+        acc.nickname = ""
+        acc.last_check = "从未配置"
+        db.commit()
+    return {"ok": True}
+
+
+def _cache_summary(acc_id: int, data: dict) -> None:
+    """把容量/会员摘要落进 settings（key: account_summary，按账号 id）。
+
+    卡片刷新时先拿缓存渲染，不必干等一次实时请求；实时结果回来再覆盖。
+    缓存失败绝不影响接口本身。
+    """
+    try:
+        cache = get_group("account_summary")
+        cache[str(acc_id)] = data
+        save_group("account_summary", cache)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _cached_summary(acc_id: int) -> dict:
+    """读缓存摘要（没有则返回空壳，前端显示「暂无」）。"""
+    try:
+        data = get_group("account_summary").get(str(acc_id))
+    except Exception:  # noqa: BLE001
+        data = None
+    return data if isinstance(data, dict) else {"capacity": None, "vip": None}
+
+
+@router.get("/{acc_id}/summary")
+def account_summary(acc_id: int, _user=CurrentUser):
+    """容量 + 会员摘要（卡片上的容量条/会员标签数据源）。
 
     原则同凭据红线：只回摘要数字，不回任何凭据内容。
     未配置/不支持/获取失败统一返回 null 字段，前端显示「暂无」。
+    成功时写缓存，页面刷新即可立现（不必重打网盘接口）。
     """
-    if drive_type not in ORDER:
-        raise HTTPException(status_code=404, detail="未知网盘")
     with SessionLocal() as db:
-        acc = db.get(Account, drive_type)
-        if acc is None or acc.status != "connected" or not acc.cookies_enc:
+        acc = _acc_or_404(db, acc_id)
+        if acc.status != "connected" or not acc.cookies_enc:
             return {"capacity": None, "vip": None}
         try:
-            adapter = make_adapter_for(db, drive_type)
+            adapter = make_adapter_for(db, acc.type, acc_id)
         except HTTPException:
             return {"capacity": None, "vip": None}
     try:
-        return adapter.summary()
+        data = adapter.summary()
     except Exception:
-        return {"capacity": None, "vip": None}
+        return _cached_summary(acc_id)
+    _cache_summary(acc_id, data)
+    return data
 
 
-class BaseDirBody(BaseModel):
-    path: str = ""
+class NotifyBody(BaseModel):
+    enabled: bool = True
 
 
-@router.put("/{drive_type}/base-dir")
-def set_base_dir(drive_type: str, body: BaseDirBody, _user=CurrentUser):
-    """填写默认目标目录；保存后自动预热该目录的目录树缓存（凭据已配时）。"""
-    if drive_type not in ORDER:
-        raise HTTPException(status_code=404, detail="未知网盘")
-    path = body.path.strip()
-    cfg = get_group("base_dir")
-    cfg[drive_type] = path
-    save_group("base_dir", cfg)
+@router.put("/{acc_id}/notify")
+def set_drive_notify(acc_id: int, body: NotifyBody, _user=CurrentUser):
+    """账号粒度的「失效通知」开关（网盘连接页卡片上用）。
 
-    if not path:
-        return {"ok": True, "primed": False, "message": "已保存"}
+    只是粒度控制——探活发现失效时先看这里，再走 notify.push（那里还有总闸
+    settings.notify.enabled 与 on_cred 时机开关）。
+    """
     with SessionLocal() as db:
-        acc = db.get(Account, drive_type)
-        if acc is None or not acc.cookies_enc:
-            return {"ok": True, "primed": False, "message": "已保存；配置凭据后首次打开转存弹窗将自动加载缓存"}
-        try:
-            adapter = make_adapter_for(db, drive_type)
-        except HTTPException:
-            return {"ok": True, "primed": False, "message": "已保存"}
-
-    # 预热：路径解析到 fid → 拉一次目录列表进 dircache
-    if drive_type != "quark":
-        return {"ok": True, "primed": False, "message": "已保存（该网盘预热将在适配器就绪后支持）"}
-    from ..api.cache_api import _resolve_path
-
-    try:
-        fid = _resolve_path(adapter, path)
-        dir_cache.get_or_load((drive_type, "main", fid), lambda: adapter._list_dir(fid))
-    except HTTPException as e:
-        return {"ok": True, "primed": False, "message": f"已保存，但预热失败：{e.detail}"}
-    except Exception as e:
-        return {"ok": True, "primed": False, "message": f"已保存，但预热失败：{e}"}
-    return {"ok": True, "primed": True, "message": "已保存并预热目录缓存"}
+        _acc_or_404(db, acc_id)
+    cfg = get_group("drive_notify")
+    cfg[str(acc_id)] = bool(body.enabled)
+    save_group("drive_notify", cfg)
+    return {"ok": True, "acc_id": acc_id, "enabled": bool(body.enabled)}
 
 
-@router.post("/{drive_type}/check")
-def check_account(drive_type: str, _user=CurrentUser):
+@router.post("/{acc_id}/check")
+def check_account(acc_id: int, _user=CurrentUser):
     with SessionLocal() as db:
-        acc = db.get(Account, drive_type)
-        if acc is None or not acc.cookies_enc:
+        acc = _acc_or_404(db, acc_id)
+        if not acc.cookies_enc:
             return {"ok": False, "kind": "warning", "message": "尚未配置凭据，请先配置", "status": "unset", "last_check": "从未配置"}
         try:
-            adapter = make_adapter_for(db, drive_type)
+            adapter = make_adapter_for(db, acc.type, acc_id)
             nickname = adapter.verify()
             acc.status = "connected"
             acc.nickname = nickname

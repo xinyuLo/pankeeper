@@ -18,6 +18,7 @@ router = APIRouter(prefix="/api/queue", tags=["queue"])
 class EnqueueBody(BaseModel):
     name: str
     type: str = "quark"
+    acc_id: int | None = None  # 用哪个账号转存；空=该类型第一个账号
     path: str = "/"
     files: int = 0
     size: str = "—"

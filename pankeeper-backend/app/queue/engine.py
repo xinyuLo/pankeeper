@@ -30,12 +30,17 @@ TICK = 0.5
 ADAPTERS: dict[str, type[CloudAdapter]] = {"quark": QuarkAdapter}
 
 
-def _make_adapter(drive_type: str) -> CloudAdapter:
+def _make_adapter(drive_type: str, acc_id: int | None = None) -> CloudAdapter:
     cls = ADAPTERS.get(drive_type)
     if cls is None:
         raise AdapterError(f"网盘 {drive_type} 的适配器尚未实现（当前支持：{'/'.join(ADAPTERS)}）")
     with SessionLocal() as s:
-        acc = s.get(Account, drive_type)
+        if acc_id is not None:
+            acc = s.get(Account, acc_id)
+            if acc is None or acc.type != drive_type:
+                raise AdapterError("转存任务指定的账号不存在")
+        else:
+            acc = s.query(Account).filter(Account.type == drive_type).order_by(Account.id).first()
     if acc is None or acc.status == "unset" or not acc.cookies_enc:
         raise AdapterError(f"{drive_type} 账号未配置凭据，请先到「网盘连接」绑定")
     return cls(acc.cookies_enc)
@@ -200,7 +205,7 @@ class QueueEngine:
     def _run_task(self, t: dict, cfg: dict) -> None:
         name_head = t["name"].split(".")[0]
         try:
-            adapter = _make_adapter(t["type"])
+            adapter = _make_adapter(t["type"], t.get("acc_id"))
         except AdapterError as e:
             self._push_log(t, "ERROR", str(e))
             self._finish(t, "fail")
@@ -237,7 +242,7 @@ class QueueEngine:
             return
         except CredentialExpired as e:
             self._push_log(t, "ERROR", str(e))
-            self._mark_account_expired(t["type"])
+            self._mark_account_expired(t["type"], t.get("acc_id"))
             self._finish(t, "fail", str(e))
             return
         except AdapterError as e:
@@ -294,13 +299,26 @@ class QueueEngine:
         while time.time() < deadline:
             time.sleep(TICK)
 
-    def _mark_account_expired(self, drive_type: str) -> None:
+    def _mark_account_expired(self, drive_type: str, acc_id: int | None = None) -> None:
+        """标记凭据失效，并**只在「由好变坏」时推送一次**。
+
+        凭据一直没更新的情况下，每次任务失败都推会变成每日骚扰——与每日探活
+        保持同一套语义：推一次，之后静默，直到凭据重新验证通过。
+        """
+        prev: str | None = None
+        display = drive_type
         with SessionLocal() as s:
-            acc = s.get(Account, drive_type)
+            if acc_id is not None:
+                acc = s.get(Account, acc_id)
+            else:
+                acc = s.query(Account).filter(Account.type == drive_type).order_by(Account.id).first()
             if acc:
+                prev = acc.status
+                display = acc.display_name
                 acc.status = "expired"
                 s.commit()
-        notify.push("凭据过期告警", f"{drive_type} 网盘凭据已失效，请到「网盘连接」重新绑定", kind="cred")
+        if prev is not None and prev != "expired" and notify.drive_enabled(str(acc_id) if acc_id else drive_type):
+            notify.push("凭据过期告警", f"{display} 凭据已失效，请到「网盘连接」重新绑定", kind="cred")
 
     def _finish(self, t: dict, status: str, message: str = "", qms_snap: dict | None = None, strm_snap: dict | None = None, result=None) -> None:
         now_ms = int(time.time() * 1000)

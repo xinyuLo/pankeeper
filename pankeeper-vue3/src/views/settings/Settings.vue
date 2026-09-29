@@ -1,15 +1,19 @@
 <script setup lang="ts">
 /* =====================================================================
- * 系统设置页 —— 原型 _shell.html 设置段（4 个胶囊 tab）的 Vue 移植。
+ * 系统设置页 —— 原型 _shell.html 设置段（5 个胶囊 tab）的 Vue 移植。
  * - tab1 搜索源 / tab2 推送通知：改完静默保存（原型即改即存内存，无保存按钮）
  * - tab3 QMS 联动：只保留连接参数（目录关联已迁到「转存配置」与自动转存任务弹窗），
- *   带 保存/放弃 两个按钮
+ *   与 tab1/tab2 一致走防抖自动保存
  * - tab4 账号安全：改密码（前端先校验）+ 会话有效期
+ * - tab5 头像管理：上传/移除头像（前端压缩后存后端）
  * ⚠️ 交互契约：推送只服务自动转存，手动转存不接 Server 酱（docs/01）。
  * ===================================================================== */
-import { onMounted, reactive, ref, watch } from 'vue'
+import { nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
+import { useAuthStore } from '@/store/auth'
 import {
+  getQmsHealth,
   getSettings,
   saveNotify,
   saveQms,
@@ -22,12 +26,16 @@ import {
 } from '@/api/modules/settings'
 import type { NotifyCfg, QmsCfg, SearchSrcCfg, SecurityCfg } from '@/api/mock/settings'
 
+const router = useRouter()
+const auth = useAuthStore()
+
 /* ===== 胶囊 tab ===== */
 const TABS = [
   { k: 'tb1', label: '搜索源' },
   { k: 'tb2', label: '推送通知' },
   { k: 'tb3', label: 'QMS 联动' },
   { k: 'tb4', label: '账号安全' },
+  { k: 'tb5', label: '头像管理' },
 ] as const
 type TabKey = (typeof TABS)[number]['k']
 const tab = ref<TabKey>('tb1')
@@ -37,8 +45,6 @@ const search = reactive<SearchSrcCfg>({
   pansou_url: '',
   timeout: 30,
   cache_mode: 'on',
-  def_dir_baidu: '',
-  def_dir_quark: '',
   channels: [],
 })
 const notify = reactive<NotifyCfg>({
@@ -53,25 +59,50 @@ const notify = reactive<NotifyCfg>({
 const qms = reactive<QmsCfg>({ enabled: true, url: '', apikey: '', act_strm: true, act_emby: true })
 const security = reactive<SecurityCfg>({ username: 'admin', session_days: 7 })
 
+/** 初始数据灌入完成前关闭自动保存：Object.assign 本身会触发 watch，不能让「进页面」变成一次保存 */
+const ready = ref(false)
+
 onMounted(async () => {
   const d = await getSettings()
   Object.assign(search, d.search)
   Object.assign(notify, d.notify)
   Object.assign(qms, d.qms)
   Object.assign(security, d.security)
+  // QMS 引擎状态胶囊（语义同搜索页的 PanSou 在线/离线）
+  getQmsHealth().then((h) => (qmsHealth.value = h)).catch(() => (qmsHealth.value = { ok: false, message: '检测失败' }))
+  // watch 回调不是同步执行的（flush: 'pre' 排队等当前同步代码跑完），
+  // 必须等这一拍过去再放行，否则灌初值会触发「已自动保存」
+  await nextTick()
+  ready.value = true
 })
 
-/* tab1/tab2 没有保存按钮（原型即改即生效），静默写回 mock store */
+/* ===== 三个配置 tab 统一防抖自动保存 =====
+ * 停止输入 600ms 后写库，替代原来的「watch 逐键保存」与 QMS 的保存/放弃按钮。
+ * watch 在 onMounted 灌入初值时也会触发，所以用 ready 挡住首跑。 */
+const _saveTimers: Record<string, number> = {}
+function debouncedSave(key: string, doSave: () => Promise<unknown>) {
+  window.clearTimeout(_saveTimers[key])
+  _saveTimers[key] = window.setTimeout(() => {
+    void doSave()
+      .then(() => message.success('已自动保存'))
+      .catch(() => message.error('自动保存失败，请重试'))
+  }, 600)
+}
+
 watch(search, (v) => {
-  void saveSearchSrc({ ...v })
+  if (ready.value) debouncedSave('search', () => saveSearchSrc({ ...v }))
 })
 watch(notify, (v) => {
-  void saveNotify({ ...v })
+  if (ready.value) debouncedSave('notify', () => saveNotify({ ...v }))
+})
+watch(qms, (v) => {
+  if (ready.value) debouncedSave('qms', () => saveQms({ ...v }))
 })
 
 /* ===== tab1 搜索源 ===== */
+/* 缓存时长固定 30 分钟，不开放给用户选——选项只留开/关，时长写进旁边说明 */
 const CACHE_OPTS = [
-  { value: 'on', label: '开启 · 30 分钟' },
+  { value: 'on', label: '开启' },
   { value: 'off', label: '关闭' },
 ]
 const testing = ref(false)
@@ -112,8 +143,30 @@ const ONOFF_OPTS = [
   { value: 'on', label: '开启' },
   { value: 'off', label: '关闭' },
 ]
-function onQmsEnabled(v: unknown) {
-  qms.enabled = v === 'on'
+/** QMS 引擎状态（进页拉一次；点「测试」成功/失败后同步） */
+const qmsHealth = ref<{ ok: boolean; message?: string } | null>(null)
+async function onQmsEnabled(v: unknown) {
+  // 开关有门槛：地址没填不让开；填了也要先实测连通，不通照样拒绝（显示值自动弹回）
+  if (v !== 'on') {
+    qms.enabled = false
+    return
+  }
+  if (!qms.url.trim()) {
+    message.warning('还没填写 QMS 地址，开启不了联动——先填地址再测连通', 5)
+    return
+  }
+  qmsTesting.value = true
+  try {
+    const r = await testQms(qms.url, qms.apikey)
+    if (!r.ok) {
+      message.error(`QMS 连接不通（${r.message || '检查地址或 API Key'}），未开启联动`, 5)
+      return
+    }
+    qms.enabled = true
+    message.success('QMS 连通正常，联动已开启')
+  } finally {
+    qmsTesting.value = false
+  }
 }
 const qmsTesting = ref(false)
 async function onTestQms() {
@@ -123,21 +176,16 @@ async function onTestQms() {
   }
   qmsTesting.value = true
   try {
-    await testQms(qms.url)
-    message.success('QMS 连接正常')
+    // url 与 apikey 都传「输入框正在编辑的值」——不等自动保存，点测试就测当前填的
+    const r = await testQms(qms.url, qms.apikey)
+    // 后端 200 也代表"测完"，连通与否看 ok 字段，不能无条件报成功
+    if (r.ok) message.success(r.message || 'QMS 连接正常')
+    else message.error(r.message || 'QMS 连接失败')
+    // 状态胶囊同步：测的就是草稿值，比胶囊自己的定时探测更即时
+    qmsHealth.value = { ok: r.ok, message: r.ok ? '在线' : r.message }
   } finally {
     qmsTesting.value = false
   }
-}
-async function onSaveQms() {
-  await saveQms({ ...qms })
-  message.success('QMS 设置已保存')
-}
-async function onResetQms() {
-  // 放弃修改：从 store 重新拷一份（真实系统为重新 GET）
-  const d = await getSettings()
-  Object.assign(qms, d.qms)
-  message.info('已放弃本次修改')
 }
 
 /* ===== tab4 账号安全 ===== */
@@ -163,11 +211,71 @@ async function onSaveSecurity() {
       return
     }
   }
-  await saveSecurity({ old_password: pw.old, new_password: pw.next, session_days: security.session_days })
-  message.success('密码已更新')
+  await saveSecurity({
+    username: security.username,
+    old_password: pw.old,
+    new_password: pw.next,
+    session_days: security.session_days,
+  })
   pw.old = ''
   pw.next = ''
   pw.confirm = ''
+  // 账号凭证已变更：清掉本地会话强制回登录页，不拿旧 token 继续待着
+  message.success('账号已更新，请重新登录')
+  auth.logout()
+  router.push({ name: 'login' })
+}
+
+/* ===== tab5 头像管理 ===== */
+const avatarFile = ref<HTMLInputElement | null>(null)
+const avatarBusy = ref(false)
+
+/** 居中裁正方形并压到 256×256 JPEG —— 别把几 MB 的原图塞进数据库 */
+async function shrinkImage(file: File): Promise<string> {
+  const bitmap = await createImageBitmap(file)
+  const SIZE = 256
+  const side = Math.min(bitmap.width, bitmap.height)
+  const canvas = document.createElement('canvas')
+  canvas.width = SIZE
+  canvas.height = SIZE
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('canvas 不可用')
+  ctx.drawImage(bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side, 0, 0, SIZE, SIZE)
+  bitmap.close?.()
+  return canvas.toDataURL('image/jpeg', 0.85)
+}
+
+async function onPickAvatar(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // 清空，允许连续选同一个文件
+  if (!file) return
+  if (!file.type.startsWith('image/')) {
+    message.warning('请选择图片文件')
+    return
+  }
+  avatarBusy.value = true
+  try {
+    await auth.saveAvatar(await shrinkImage(file))
+    message.success('头像已更新')
+  } catch (err: unknown) {
+    const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '头像上传失败')
+  } finally {
+    avatarBusy.value = false
+  }
+}
+
+async function onRemoveAvatar() {
+  avatarBusy.value = true
+  try {
+    await auth.removeAvatar()
+    message.success('已移除头像')
+  } catch {
+    message.error('移除失败')
+  } finally {
+    avatarBusy.value = false
+  }
 }
 </script>
 
@@ -185,10 +293,9 @@ async function onSaveSecurity() {
           <label>PanSou 地址</label>
           <div>
             <div class="ctl">
-              <a-input v-model:value="search.pansou_url" style="width: 300px" placeholder="http://" />
+              <a-input v-model:value="search.pansou_url" style="width: 300px" placeholder="如 http://127.0.0.1:8000" />
               <a-button :loading="testing" @click="onTestPansou">测试连通</a-button>
             </div>
-            <div class="desc">改完记得重新测试；后端会用它转发所有搜索请求。</div>
           </div>
         </div>
         <div class="formrow">
@@ -202,14 +309,7 @@ async function onSaveSecurity() {
           <label>结果缓存</label>
           <div class="ctl">
             <a-select v-model:value="search.cache_mode" :options="CACHE_OPTS" style="width: 180px" />
-            <span class="muted small">同样的关键词短时间内不重复打 PanSou</span>
-          </div>
-        </div>
-        <div class="formrow">
-          <label>默认目标目录</label>
-          <div class="ctl">
-            <a-input v-model:value="search.def_dir_baidu" style="width: 260px" placeholder="百度网盘" />
-            <a-input v-model:value="search.def_dir_quark" style="width: 260px" placeholder="夸克网盘" />
+            <span class="muted small">开启后，同样的关键词 30 分钟内不重复打 PanSou</span>
           </div>
         </div>
       </div>
@@ -229,10 +329,11 @@ async function onSaveSecurity() {
             <div class="ctl">
               <a-input-password v-model:value="notify.sendkey" style="width: 320px" placeholder="SCT…" />
               <a-button @click="onTestSendkey">发送测试</a-button>
+              <span class="muted small">仅通知自动转存的任务</span>
             </div>
-            <div class="desc">
-              <span class="st-warn">⚠️ 推送只服务<b>自动转存</b>（手动转存不推送，弹窗里没有该项）。</span>
-              仅通知自动转存的任务完成 / 失败 / 凭据过期。
+            <div class="sc-help">
+              <a href="https://sc3.ft07.com/" target="_blank" rel="noopener noreferrer">配置说明</a>
+              <span class="muted small">还没配过？先从官网拿到 SendKey 再填这里</span>
             </div>
           </div>
         </div>
@@ -269,12 +370,13 @@ async function onSaveSecurity() {
           <label>启用联动</label>
           <div class="ctl">
             <a-select :value="qms.enabled ? 'on' : 'off'" :options="ONOFF_OPTS" style="width: 120px" @change="onQmsEnabled" />
+            <span class="qms-pill" :class="qmsHealth?.ok ? 'ok' : 'bad'"><i></i>{{ qmsHealth === null ? 'QMS 状态检测中…' : qmsHealth.ok ? 'QMS 引擎 在线' : `QMS 引擎 离线${qmsHealth.message ? ' · ' + qmsHealth.message : ''}` }}</span>
           </div>
         </div>
         <div class="formrow">
           <label>QMS 地址</label>
           <div class="ctl">
-            <a-input v-model:value="qms.url" style="width: 300px" placeholder="http://" />
+            <a-input v-model:value="qms.url" style="width: 300px" placeholder="请输入 QMS 服务地址" />
             <a-button :loading="qmsTesting" @click="onTestQms">测试</a-button>
           </div>
         </div>
@@ -289,13 +391,6 @@ async function onSaveSecurity() {
           <div class="ctl st-gap18">
             <a-checkbox v-model:checked="qms.act_strm">刮削后生成 STRM</a-checkbox>
             <a-checkbox v-model:checked="qms.act_emby">完成后刷新 Emby</a-checkbox>
-          </div>
-        </div>
-        <div class="formrow">
-          <label></label>
-          <div class="ctl">
-            <a-button type="primary" @click="onSaveQms">保存设置</a-button>
-            <a-button @click="onResetQms">放弃修改</a-button>
           </div>
         </div>
       </div>
@@ -340,6 +435,31 @@ async function onSaveSecurity() {
           </div>
         </div>
       </div>
+
+      <!-- ===== tab5 头像管理 ===== -->
+      <div v-show="tab === 'tb5'">
+        <div class="formrow">
+          <label>当前头像</label>
+          <div>
+            <div class="av-box">
+              <img v-if="auth.avatar" :src="auth.avatar" alt="头像" />
+              <span v-else>{{ auth.initial }}</span>
+            </div>
+            <div class="desc">没上传时显示用户名首字；上传后左下角那张小图会同步换掉。</div>
+          </div>
+        </div>
+        <div class="formrow">
+          <label>上传图片</label>
+          <div>
+            <div class="ctl">
+              <input ref="avatarFile" type="file" accept="image/*" class="av-file" @change="onPickAvatar" />
+              <a-button :loading="avatarBusy" @click="avatarFile?.click()">选择图片</a-button>
+              <a-button v-if="auth.avatar" danger :disabled="avatarBusy" @click="onRemoveAvatar">移除头像</a-button>
+            </div>
+            <div class="desc">jpg / png / webp 都行。会自动居中裁成正方形、压到 256×256 再存，不占空间。</div>
+          </div>
+        </div>
+      </div>
     </div>
 
 
@@ -369,17 +489,57 @@ async function onSaveSecurity() {
   color: var(--text2);
   font-weight: 500;
 }
-/* 推送契约警示（⚠️ 手动转存不推送）——warning 变量浅暗同色，无需另补 dark 覆盖 */
-.st-warn {
-  color: var(--warning);
+/* Server 酱「配置说明」外链 */
+.sc-help {
+  display: flex;
+  align-items: center;
+  gap: 8px;  margin-top: 6px;
+  font-size: 12.5px;
 }
+.sc-help a {
+  color: var(--primary);
+  text-decoration: none;
+}
+.sc-help a:hover { text-decoration: underline; }
+
+/* QMS 引擎状态胶囊（语义同搜索页的 PanSou 在线/离线） */
+.qms-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text3);
+}
+.qms-pill i { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.qms-pill.ok i { background: var(--success); box-shadow: 0 0 6px var(--success); }
+.qms-pill.ok { color: var(--text2); }
+.qms-pill.bad i { background: var(--error); }
+
+/* 头像管理：预览圆（没传图时用与 logo 同套的品牌渐变，不至于难看） */
+.av-box {
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #7c5cf6, #3b6ef6);
+  color: #fff;
+  font-size: 34px;
+  font-weight: 600;
+  box-shadow: 0 2px 10px rgba(60, 80, 200, 0.18);
+}
+.av-box img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* 原生 file input 藏起来，用按钮触发 */
+.av-file { display: none; }
 
 /* ---- 移动端（<768px）：inline 宽度的输入框不许撑破屏；PC 一条不动 ---- */
 @media (max-width: 767px) {
   .st-card :deep(.ctl > *) {
     max-width: 100%;
   }
-  /* 两格输入（默认目标目录）改竖排铺满 */
+  /* 多控件行（如 PanSou 地址 + 测试按钮）铺满，别撑破屏 */
   .st-card :deep(.ctl) { width: 100%; }
 }
 </style>

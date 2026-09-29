@@ -17,6 +17,7 @@ import {
   FieldTimeOutlined,
   SettingOutlined,
   AppstoreOutlined,
+  BarChartOutlined,
   LogoutOutlined,
 } from '@ant-design/icons-vue'
 import { useAuthStore } from '@/store/auth'
@@ -68,6 +69,7 @@ const groups: { key: string; label: string; icon: any; children: MenuItem[] }[] 
     icon: SettingOutlined,
     children: [
       { key: 'accounts', label: '网盘连接', icon: DatabaseOutlined },
+      { key: 'drive-logs', label: '网盘日志', icon: BarChartOutlined },
       { key: 'cache-config', label: '缓存配置', icon: FolderOpenOutlined },
       { key: 'queue-config', label: '队列配置', icon: FieldTimeOutlined },
       { key: 'settings', label: '系统设置', icon: SettingOutlined },
@@ -178,6 +180,7 @@ const moreMenu: { key: string; label: string; items: MenuItem[] }[] = [
     label: '系统管理',
     items: [
       { key: 'accounts', label: '网盘连接', icon: DatabaseOutlined },
+      { key: 'drive-logs', label: '网盘日志', icon: BarChartOutlined },
       { key: 'cache-config', label: '缓存配置', icon: FolderOpenOutlined },
       { key: 'queue-config', label: '队列配置', icon: FieldTimeOutlined },
       { key: 'settings', label: '系统设置', icon: SettingOutlined },
@@ -223,7 +226,7 @@ watch(
       </nav>
       <div class="side-foot">
         <div class="who">
-          <div class="avatar">管</div>
+          <div class="avatar"><img v-if="auth.avatar" :src="auth.avatar" alt="头像" /><span v-else>{{ auth.initial }}</span></div>
           <div style="flex: 1; min-width: 0">
             <div style="font-size: 13.5px; font-weight: 500">{{ auth.username }}</div>
             <div class="small muted">已登录</div>
@@ -275,7 +278,7 @@ watch(
         <div class="m-sheet">
           <div class="m-sheet-grab"></div>
           <div class="m-user">
-            <div class="avatar">管</div>
+            <div class="avatar"><img v-if="auth.avatar" :src="auth.avatar" alt="头像" /><span v-else>{{ auth.initial }}</span></div>
             <div style="flex: 1; min-width: 0">
               <div style="font-size: 13.5px; font-weight: 500">{{ auth.username }}</div>
               <div class="small muted">已登录</div>
@@ -349,6 +352,7 @@ watch(
 .menu { padding: 10px; flex: 1; overflow: auto; }
 .menu-item,
 .menu .nav-hd {
+  position: relative; /* 选中态的左侧竖条定位基准 */
   display: flex;
   align-items: center;
   gap: 10px;
@@ -369,22 +373,43 @@ watch(
 .menu .nav-hd { font-weight: 500; color: #8a8f98; margin-top: 6px; font-size: 13px; }
 .menu-item :deep(.lico),
 .menu .nav-hd .lico { font-size: 16px; opacity: 0.85; }
+/* 悬停：与选中同色系的极淡底，明确「比选中轻一档」 */
 .menu-item:hover,
-.menu .nav-hd:hover { background: #eef0f2; color: #1f2329; }
-/* 淡紫选中胶囊：logo 同色系（紫罗兰）调浅 */
-.menu-item.on {
-  background: linear-gradient(135deg, #ede9fe, #e4dcfd);
-  color: #6d28d9;
-  font-weight: 600;
-  box-shadow: inset 0 0 0 1px rgba(139, 92, 246, 0.35), 0 2px 8px rgba(124, 58, 237, 0.12);
+.menu .nav-hd:hover { background: rgba(124, 58, 237, 0.06); color: #1f2329; }
+/* 按下：再加一档——原来点下去毫无反馈，手感发虚 */
+.menu-item:active,
+.menu .nav-hd:active { background: rgba(124, 58, 237, 0.14); }
+
+/* 选中：淡紫底 + 左侧竖条。
+ * 原先的 1px 内描边 + 外阴影会把整条框成一个「浮起来的盒子」，圆角配描边显得很闷，
+ * 也跟这里注释写的设计意图（靠字色和背景分层）不符；改成纯色底 + 竖条后层次更轻。 */
+.menu-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 3px;
+  height: 18px;
+  border-radius: 0 3px 3px 0;
+  background: linear-gradient(180deg, #8b5cf6, #6d28d9);
+  transform: translateY(-50%) scaleY(0);
+  transform-origin: center;
+  transition: transform 0.2s cubic-bezier(0.22, 0.61, 0.36, 1);
 }
+.menu-item.on { background: rgba(124, 58, 237, 0.1); color: #6d28d9; font-weight: 600; }
+.menu-item.on::before { transform: translateY(-50%) scaleY(1); }
 .menu-item.on :deep(.lico) { opacity: 1; color: #7c3aed; }
 html[data-theme='dark'] .menu-item,
 html[data-theme='dark'] .menu .nav-hd { color: rgba(255, 255, 255, 0.6); }
 html[data-theme='dark'] .menu .nav-hd { color: rgba(255, 255, 255, 0.5); }
 html[data-theme='dark'] .menu-item:hover,
-html[data-theme='dark'] .menu .nav-hd:hover { background: rgba(255, 255, 255, 0.07); color: #fff; }
-html[data-theme='dark'] .menu-item.on { background: #f7f7f9; color: #17191c; }
+html[data-theme='dark'] .menu .nav-hd:hover { background: rgba(139, 92, 246, 0.13); color: #fff; }
+html[data-theme='dark'] .menu-item:active,
+html[data-theme='dark'] .menu .nav-hd:active { background: rgba(139, 92, 246, 0.2); }
+/* 暗色侧栏本身是深色，原来选中项直接铺一块近白 #f7f7f9 过于刺眼，也跟它的 hover 态不属同一体系 */
+html[data-theme='dark'] .menu-item.on { background: rgba(139, 92, 246, 0.2); color: #c4b5fd; }
+html[data-theme='dark'] .menu-item.on::before { background: linear-gradient(180deg, #a78bfa, #8b5cf6); }
+html[data-theme='dark'] .menu-item.on :deep(.lico) { color: #a78bfa; }
 .menu .nav-hd .chev { margin-left: auto; width: 14px; height: 14px; opacity: 0.4; transition: transform 0.22s; }
 .nav-group.open .nav-hd .chev { transform: rotate(180deg); }
 .menu .nav-sub { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 0.24s ease; }
@@ -434,6 +459,7 @@ html[data-theme='dark'] .logout-btn { background: transparent; }
   width: 30px;
   height: 30px;
   border-radius: 50%;
+  overflow: hidden; /* 头像图裁成圆形 */
   background: linear-gradient(135deg, #1677ff, #69c0ff);
   color: #fff;
   font-size: 12.5px;
@@ -443,6 +469,7 @@ html[data-theme='dark'] .logout-btn { background: transparent; }
   font-weight: 500;
   flex-shrink: 0;
 }
+.avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
 .pagehead {
   position: fixed;

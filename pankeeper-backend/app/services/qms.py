@@ -11,14 +11,21 @@ import httpx
 from ..services.settings_svc import get_group
 
 
-def _client() -> tuple[httpx.Client, str] | None:
+def _client(require_enabled: bool = True, url: str | None = None, apikey: str | None = None) -> tuple[httpx.Client, str] | None:
+    """构造 QMS 客户端。
+    - require_enabled=False 供「测试连接」使用：测的是地址与 API Key 是否可用，
+      不该被「启用联动」开关挡住。
+    - url / apikey 传入时优先使用（测试正在编辑、尚未保存的值），否则用库里已保存的。
+    """
     cfg = get_group("settings")["qms"]
-    if not cfg.get("enabled") or not cfg.get("url"):
+    target = (url or cfg.get("url") or "").strip()
+    if not target or (require_enabled and not cfg.get("enabled")):
         return None
+    key = apikey if apikey is not None else cfg.get("apikey")
     headers = {}
-    if cfg.get("apikey"):
-        headers["X-API-Key"] = cfg["apikey"]
-    return httpx.Client(base_url=cfg["url"].rstrip("/"), headers=headers, timeout=15.0), cfg["url"]
+    if key:
+        headers["X-API-Key"] = key
+    return httpx.Client(base_url=target.rstrip("/"), headers=headers, timeout=15.0), target
 
 
 def trigger_scrape(qms_id: int) -> tuple[bool, str]:
@@ -57,11 +64,24 @@ def trigger_strm(strm_id: int) -> tuple[bool, str]:
         client.close()
 
 
-def test_connection() -> tuple[bool, str]:
-    """GET /api/user/info 连接测试（网盘连接页/设置页的「测试」按钮）。"""
-    c = _client()
+def health() -> dict:
+    """QMS 引擎状态（设置页胶囊用，语义同 PanSou 的 /search/health）。
+
+    用「已保存配置」测——反映的是当前联动链路的真实状态，而非输入框草稿。
+    """
+    cfg = get_group("settings")["qms"]
+    if not (cfg.get("url") or "").strip():
+        return {"ok": False, "message": "未配置"}
+    ok, msg = test_connection()
+    return {"ok": ok, "message": msg if not ok else "在线"}
+
+
+def test_connection(url: str | None = None, apikey: str | None = None) -> tuple[bool, str]:
+    """GET /api/user/info 连接测试（网盘连接页/设置页的「测试」按钮）。
+    url/apikey 传入时测该值（输入框里正在编辑的值），否则测已保存的。不要求「启用联动」为开。"""
+    c = _client(require_enabled=False, url=url, apikey=apikey)
     if c is None:
-        return False, "QMS 未启用或未填地址"
+        return False, "请先填写 QMS 地址"
     client, url = c
     try:
         resp = client.get("/api/user/info")

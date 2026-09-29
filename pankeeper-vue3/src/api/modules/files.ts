@@ -10,7 +10,7 @@ export interface DirItem {
 
 /**
  * 网盘目录浏览（转存弹窗/配置浏览共用）：按父目录拉一层，后端带目录树缓存。
- * type 目前支持 quark（baidu/115 adapter 在 M3）。
+ * type 支持 quark / baidu；115 适配器待实现（会返回 400）。
  */
 export function getFilesList(
   type: string,

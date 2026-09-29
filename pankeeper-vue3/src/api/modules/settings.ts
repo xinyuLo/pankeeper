@@ -63,13 +63,21 @@ export async function testSendkey(sendkey: string): Promise<void> {
   await post('/settings/notify/test', { sendkey })
 }
 
-/** 测试 QMS 连接 */
-export async function testQms(url: string): Promise<void> {
+/** 测试 QMS 连接，返回连通结果（ok/message 直接来自后端，供调用方判断）。
+ *  url/apikey 传「输入框正在编辑的值」——不传则后端回落到已保存配置。 */
+export async function testQms(url: string, apikey: string): Promise<{ ok: boolean; message?: string }> {
   if (USE_MOCK) {
     void url
-    return mockDelay(undefined, 300)
+    void apikey
+    return mockDelay({ ok: true, message: 'QMS 连接正常' }, 300)
   }
-  await post('/settings/qms/test', { url })
+  return post<{ ok: boolean; message?: string }>('/settings/qms/test', { url, apikey })
+}
+
+/** QMS 引擎状态胶囊（设置页用，语义同 /search/health；按已保存配置测） */
+export function getQmsHealth(): Promise<{ ok: boolean; message?: string }> {
+  if (USE_MOCK) return mockDelay({ ok: true, message: '在线' }, 200)
+  return get<{ ok: boolean; message?: string }>('/qms/health')
 }
 
 /** 查看推送历史（最近 50 条的投递结果） */
@@ -78,18 +86,20 @@ export function pushHistory(): Promise<{ delivered: number; failed: number }> {
   return get<{ delivered: number; failed: number }>('/notify/history', { params: { limit: 50 } })
 }
 
-/** 修改密码 + 会话有效期。后端同一端点：new_password 为空则只更新会话/用户名 */
+/** 修改用户名 + 密码 + 会话有效期。后端同一端点：new_password 为空则只更新用户名/会话 */
 export async function saveSecurity(payload: {
+  username: string
   old_password: string
   new_password: string
   session_days: SessionDays
 }): Promise<void> {
   if (USE_MOCK) {
+    settingsStore.security.username = payload.username
     settingsStore.security.session_days = payload.session_days
     return mockDelay(undefined, 300)
   }
   await put('/settings/security', {
-    username: 'admin',
+    username: payload.username,
     old_password: payload.old_password,
     new_password: payload.new_password,
     session_days: payload.session_days,
