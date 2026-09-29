@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -38,7 +38,12 @@ def queue_state(_user=CurrentUser):
 
 
 @router.get("/events")
-async def queue_events():
+async def queue_events(token: str = ""):
+    """SSE：状态变化推送给前端。鉴权走查询参数（EventSource 不支持自定义 header）。"""
+    from ..security import parse_token
+
+    if not parse_token(token):
+        raise HTTPException(status_code=401, detail="登录凭证不存在或已过期")
     """SSE：状态变化推送给前端（前端 600ms 轮询 /state 作为兜底）。"""
 
     async def gen():

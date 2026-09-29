@@ -46,6 +46,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "security": {"username": "admin", "session_days": 7},
     },
     "queue_cfg": {"threads": 1, "gap": 5, "qms": 10, "strm": 10},
+    # 每网盘默认目标目录（网盘连接卡片填写；保存后自动预热该目录的目录树缓存）
+    "base_dir": {"baidu": "", "quark": "", "115": ""},
     "cache_cfg": {
         "master": True,
         "ttl": 30,
