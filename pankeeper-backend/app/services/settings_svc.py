@@ -57,11 +57,16 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     # 每个网盘的「失效通知」开关（网盘连接页卡片上控制）。
     # 只是粒度开关，总闸仍是 settings.notify.enabled + on_cred。
     "drive_notify": {"baidu": True, "quark": True, "115": True},
+    # 各网盘「默认根目录」（网盘连接页配置）：所有目录树弹窗的固定浏览起点。
+    # 与转存配置的 is_default（快速转存下拉第一项/排序）是两回事，别混。
+    "root_cfg": {},
     # 头像：前端压缩后的 data URL（256×256 JPEG，通常 20–60KB）。
     # 单独一组、单独接口读写，**不并进 /settings 响应**——否则每次拉配置都要背着它。
     "avatar_cfg": {"data": "", "updated": ""},
     "cache_cfg": {
         "master": True,
+        # 缓存持久化：条目写穿到 SQLite（dir_tree_cache 表），重启/重装不丢、恢复零网盘请求
+        "persist": True,
         "ttl": 30,
         "ttlUnit": "小时",
         "auto": True,

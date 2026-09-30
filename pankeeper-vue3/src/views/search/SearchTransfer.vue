@@ -437,8 +437,27 @@ onUnmounted(() => {
           <div class="pk-es-sub">输入关键词开始检索，或切换上方网盘筛选试试</div>
         </template>
       </div>
-      <template v-else>
-      <table v-if="!isMobile">
+      <!-- 检索中：能量环 + 放大镜动画（纯 CSS/SVG，无水印无体积） -->
+      <div v-if="busy" class="st-searching">
+        <div class="ss-orbit">
+          <i class="ss-glow g1"></i>
+          <i class="ss-glow g2"></i>
+          <div class="ss-ring r-dash"></div>
+          <div class="ss-ring r-solid"><i class="ss-dot"></i></div>
+          <div class="ss-ring r-arc"></div>
+          <div class="ss-core">
+            <svg viewBox="0 0 48 48" fill="none">
+              <circle cx="20" cy="20" r="11" stroke="#fff" stroke-width="3.5" />
+              <path d="M29 29 L39 39" stroke="#fff" stroke-width="4.5" stroke-linecap="round" />
+            </svg>
+          </div>
+        </div>
+        <div class="ss-text">正在全网检索资源<i></i><i></i><i></i></div>
+        <div class="ss-sub">已扫 {{ scanCount }} 个频道 · 结果按网盘自动分类</div>
+      </div>
+
+      <template v-else-if="paged.length">
+      <table v-if="!isMobile" class="st-table">
         <thead>
           <tr>
             <th style="width: 50%">资源名称</th>
@@ -449,18 +468,7 @@ onUnmounted(() => {
           </tr>
         </thead>
 
-        <!-- 骨架屏：检索中给 7 行占位（宽度错落更像真内容） -->
-        <tbody v-if="busy" key="skel">
-          <tr v-for="(w, i) in ['72%', '54%', '66%', '48%', '60%', '44%', '70%']" :key="i" class="skel-tr">
-            <td><span class="skel" :style="{ width: w }"></span></td>
-            <td><span class="skel" style="width: 56px"></span></td>
-            <td><span class="skel" style="width: 44px"></span></td>
-            <td><span class="skel" style="width: 52px"></span></td>
-            <td><span class="skel" style="width: 74px; height: 26px; border-radius: 6px"></span></td>
-          </tr>
-        </tbody>
-
-        <tbody v-else :key="'rows' + rowEpoch">
+        <tbody :key="'rows' + rowEpoch">
           <tr v-for="(r, i) in paged" :key="r.t + '-' + r.n" :style="{ animationDelay: 0.03 * i + 's' }">
             <td>
               <div class="st-namecell">
@@ -488,19 +496,12 @@ onUnmounted(() => {
 
       <!-- 手机端：单条结果一张卡（名称两行 + 来源/大小/时间 + 三按钮），动作与表格版同一批 handler -->
       <div v-else class="st-cards" :key="'mrows' + rowEpoch">
-        <template v-if="busy">
-          <div v-for="(w, i) in [7, 6, 8, 5, 7, 6, 8]" :key="i" class="st-card-item">
-            <div class="st-card-name"><span class="skel" :style="{ width: w * 10 + '%' }"></span></div>
-            <div class="st-card-meta"><span class="skel" style="width: 52px"></span><span class="skel" style="width: 44px"></span></div>
-          </div>
-        </template>
-        <template v-else>
-          <div
-            v-for="(r, i) in paged"
-            :key="r.t + '-' + r.n"
-            class="st-card-item"
-            :style="{ animationDelay: 0.03 * i + 's' }"
-          >
+        <div
+          v-for="(r, i) in paged"
+          :key="r.t + '-' + r.n"
+          class="st-card-item"
+          :style="{ animationDelay: 0.03 * i + 's' }"
+        >
             <div class="st-card-name">
               <span class="srcbar" :style="{ background: DRIVE_META[r.t].color }"></span>
               <span class="st-card-title">{{ r.n }}</span>
@@ -518,8 +519,6 @@ onUnmounted(() => {
               <button class="btn btn-jump" @click="onJump(r)">跳转</button>
             </div>
           </div>
-
-        </template>
       </div>
       <PkPager v-if="paged.length" v-model:current="page" v-model:pageSize="size" :total="filtered.length" />
       </template>
@@ -597,6 +596,143 @@ onUnmounted(() => {
   font-weight: 500;
 }
 .st-hot { flex: none; margin-right: 0; }
+
+/* fixed 布局让「资源名称 50%」真正生效：超长名称在格子内省略（hover 有 title 全文），按钮列不再被挤没 */
+table.st-table { table-layout: fixed; }
+
+/* ===== 检索中动画：能量环 + 卫星点 + 核心放大镜（纯 CSS/SVG） ===== */
+.st-searching {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 360px;
+  padding: 36px 0;
+}
+.ss-orbit {
+  position: relative;
+  width: 180px;
+  height: 180px;
+}
+/* 背景辉光斑：给整个环打氛围光 */
+.ss-glow {
+  position: absolute;
+  width: 88px;
+  height: 88px;
+  border-radius: 50%;
+  filter: blur(34px);
+  opacity: 0.32;
+}
+.ss-glow.g1 {
+  top: -20px;
+  left: -10px;
+  background: var(--primary);
+  animation: ssDrift 5s ease-in-out infinite alternate;
+}
+.ss-glow.g2 {
+  bottom: -24px;
+  right: -12px;
+  background: #7c5cfc;
+  animation: ssDrift 5s ease-in-out infinite alternate-reverse;
+}
+@keyframes ssDrift {
+  from { transform: translate(0, 0) scale(1); }
+  to { transform: translate(18px, 12px) scale(1.25); }
+}
+/* 三层环：虚线慢转 / 实线反向带卫星 / 弧线快转 */
+.ss-ring {
+  position: absolute;
+  border-radius: 50%;
+}
+.ss-ring.r-dash {
+  inset: 0;
+  border: 1.5px dashed color-mix(in srgb, var(--primary) 45%, transparent);
+  animation: ssSpin 9s linear infinite;
+}
+.ss-ring.r-solid {
+  inset: 26px;
+  border: 1.5px solid color-mix(in srgb, #7c5cfc 45%, transparent);
+  animation: ssSpin 5s linear infinite reverse;
+}
+.ss-dot {
+  position: absolute;
+  top: -5px;
+  left: 50%;
+  width: 9px;
+  height: 9px;
+  margin-left: -4.5px;
+  border-radius: 50%;
+  background: #7c5cfc;
+  box-shadow: 0 0 10px 2px color-mix(in srgb, #7c5cfc 70%, transparent);
+}
+.ss-ring.r-arc {
+  inset: 52px;
+  border: 3.5px solid transparent;
+  border-top-color: var(--primary);
+  border-right-color: var(--primary);
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--primary) 60%, transparent));
+  animation: ssSpin 1.1s linear infinite;
+}
+@keyframes ssSpin {
+  to { transform: rotate(360deg); }
+}
+/* 核心：渐变圆 + 放大镜 + 呼吸光晕 */
+.ss-core {
+  position: absolute;
+  inset: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--primary), #7c5cfc);
+  animation: ssPulse 1.8s ease-out infinite;
+}
+.ss-core svg {
+  width: 30px;
+  height: 30px;
+}
+@keyframes ssPulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 45%, transparent); }
+  70% { box-shadow: 0 0 0 22px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+/* 文案：渐变流光 */
+.ss-text {
+  margin-top: 26px;
+  font-size: 15px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  background: linear-gradient(90deg, var(--text) 30%, var(--primary), #7c5cfc, var(--text) 70%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: ssShine 2.6s linear infinite;
+}
+@keyframes ssShine {
+  from { background-position: 120% 0; }
+  to { background-position: -120% 0; }
+}
+.ss-text i {
+  width: 4px;
+  height: 4px;
+  margin-left: 5px;
+  border-radius: 50%;
+  background: var(--text3);
+  animation: ssBounce 1.2s ease-in-out infinite;
+}
+.ss-text i:nth-child(2) { animation-delay: 0.15s; }
+.ss-text i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes ssBounce {
+  0%, 100% { transform: translateY(0); opacity: 0.4; }
+  50% { transform: translateY(-4px); opacity: 1; }
+}
+.ss-sub {
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: var(--text3);
+}
 
 /* ===== 入场过渡：卡片整体上浮淡入 + 结果行逐行错峰（配合模板的 animation-delay） ===== */
 .enter { animation: pkEnter 0.3s cubic-bezier(0.22, 0.61, 0.36, 1) both; }

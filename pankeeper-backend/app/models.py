@@ -205,3 +205,18 @@ class DirPathCache(Base):
     dir_path: Mapped[str] = mapped_column(Text)
     parent_id: Mapped[str] = mapped_column(Text, default="")
     last_seen_at: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class DirTreeCacheRow(Base):
+    """目录树缓存持久层：内存 LRU 为主，写穿到这里，重启后免回源恢复。
+
+    键 = (type, acc, cid)；过期判断靠 expires_at（恢复时丢掉过期行）。
+    """
+
+    __tablename__ = "dir_tree_cache"
+    type: Mapped[str] = mapped_column(Text, primary_key=True)
+    acc: Mapped[str] = mapped_column(Text, primary_key=True)
+    cid: Mapped[str] = mapped_column(Text, primary_key=True)
+    items_json: Mapped[str] = mapped_column(Text, default="[]")
+    expires_at: Mapped[int] = mapped_column(Integer, default=0)
+    cached_at: Mapped[int] = mapped_column(Integer, default=0)

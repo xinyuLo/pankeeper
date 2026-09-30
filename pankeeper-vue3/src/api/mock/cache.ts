@@ -14,6 +14,8 @@ export type CacheAct = 'ladder' | 'off' | 'compress'
 export interface CacheCfg {
   /** 目录树缓存总开关 */
   master: boolean
+  /** 缓存持久化：条目写穿 SQLite，重启不丢、恢复零网盘请求 */
+  persist: boolean
   /** 缓存失效时间（数值与单位分开存，默认 30 小时） */
   ttl: number
   ttlUnit: '分钟' | '小时'
@@ -39,6 +41,8 @@ export interface CacheTree {
   size: string
   /** 距过期的分钟数：>=0 缓存中（fresh），<0 已过期（stale） */
   ttlMin: number
+  /** 缓存写入时间（秒级时间戳；旧后端可能不带） */
+  cachedAt?: number
 }
 
 /** 内存水位（mock 固定值：62% · 4.9 GB / 8 GB，与原型一致） */
@@ -57,6 +61,7 @@ export const cacheStore = reactive<{
 }>({
   cfg: {
     master: true,
+    persist: true,
     auto: true,
     ttl: 30,
     ttlUnit: '小时',

@@ -159,10 +159,16 @@ const DRILL_DIRS: PaDrillDir[] = [
   { name: '海报剧照', size: '310 MB' },
 ]
 
+/** 解析分享链接：验证有效性，返回文件数（真实接口，空链接后端 400） */
+export function parseShare(type: string, shareUrl: string, shareCode = ''): Promise<{ count: number; total: number }> {
+  if (USE_MOCK) return mockDelay({ count: 36, total: 36 })
+  return post<{ count: number; total: number }>('/pa/parse-share', { type, share_url: shareUrl, share_code: shareCode })
+}
+
 export function getDrillDirs(): Promise<PaDrillDir[]> {
-  // TODO 后端: POST /api/pa/tasks/parse-share（解析分享返回子目录）
   return mockDelay(DRILL_DIRS.map((d) => ({ ...d })))
 }
+
 
 /* ===================== 排除清单缓存（原型 mtExclCache 移植） =====================
  * 文件清单要请求网盘 API 逐个取 MD5，很慢（真机几秒起）。缓存 key = 分享链接，

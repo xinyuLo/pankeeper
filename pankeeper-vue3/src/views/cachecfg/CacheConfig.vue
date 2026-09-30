@@ -66,6 +66,9 @@ function toastCfg(msg = '缓存策略已更新') {
 function onMasterSw(v: boolean | string | number) {
   message.success(v ? '目录树缓存已开启' : '目录树缓存已关闭，转存弹窗将实时拉取')
 }
+function onPersistSw(v: boolean | string | number) {
+  message.success(v ? '缓存持久化已开启：重启不再丢缓存' : '缓存持久化已关闭：重启后缓存清空')
+}
 function onAutoSw(v: boolean | string | number) {
   message.success(v ? '自动刷新已开启' : '自动刷新已关闭，过期后打开弹窗会稍等一次')
 }
@@ -99,6 +102,8 @@ interface AccRow {
   stale: number
   /** 最早到期条目的剩余分钟数（下次刷新时间 = now + nextMin） */
   nextMin: number
+  /** 本组条目里最新一次缓存写入时间（秒级时间戳，0=无记录） */
+  lastCachedAt: number
   ids: (number | string)[]
 }
 const accRows = computed<AccRow[]>(() => {
@@ -107,13 +112,14 @@ const accRows = computed<AccRow[]>(() => {
     const key = `${t.type}/${t.acc}`
     let row = map.get(key)
     if (!row) {
-      row = { key, type: t.type, accName: t.acc_name || t.acc, entries: 0, sizeKb: 0, stale: 0, nextMin: Infinity, ids: [] }
+      row = { key, type: t.type, accName: t.acc_name || t.acc, entries: 0, sizeKb: 0, stale: 0, nextMin: Infinity, lastCachedAt: 0, ids: [] }
       map.set(key, row)
     }
     row.entries += t.entries || 0
     row.sizeKb += Math.max(1, (t.entries || 0) * 2) // 与后端同口径：每条 ~2KB
     if (t.ttlMin < 0) row.stale += 1
     row.nextMin = Math.min(row.nextMin, t.ttlMin)
+    row.lastCachedAt = Math.max(row.lastCachedAt, t.cachedAt || 0)
     row.ids.push(t.id)
   }
   return [...map.values()]
@@ -126,23 +132,37 @@ function metaName(type: CacheTree['type']): string {
 function metaColor(type: CacheTree['type']): string {
   return DRIVE_META[type]?.color ?? '#1677ff'
 }
-/** 下次刷新时间：最早到期条目 = now + min(ttlMin)。当天显示"今天 HH:MM"，跨天显示" M/D HH:MM" */
+/** 下次刷新时间：最早到期条目 = now + min(ttlMin)，统一 yyyy-MM-dd HH:mm */
 function nextRefreshText(row: AccRow): string {
   if (!Number.isFinite(row.nextMin)) return '—'
   if (row.stale) return '已过期 · 打开即刷新'
   const d = new Date(Date.now() + row.nextMin * 60000)
   const hh = String(d.getHours()).padStart(2, '0')
   const mm = String(d.getMinutes()).padStart(2, '0')
-  const now = new Date()
-  const day = d.toDateString() === now.toDateString() ? '今天' : `${d.getMonth() + 1}/${d.getDate()}`
-  return `${day} ${hh}:${mm}`
+  const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  return `${ymd} ${hh}:${mm}`
 }
 
-function ttlText(t: CacheTree): string {
-  if (t.ttlMin < 0) return '已过期 · 待刷新'
-  const h = Math.round((t.ttlMin / 60) * 10) / 10
-  return h >= 1 ? `缓存中 · 剩 ${h} 小时` : `缓存中 · 剩 ${t.ttlMin} 分钟`
+/** 缓存时间：本组最新一次缓存写入，yyyy-MM-dd HH:mm */
+function cachedAtText(row: AccRow): string {
+  if (!row.lastCachedAt) return '—'
+  const d = new Date(row.lastCachedAt * 1000)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
+
+/** 距下次刷新倒计时：紧凑格式（1天5小时 / 5小时59分 / 42分钟） */
+function countdownText(row: AccRow): { text: string; warn: boolean } | null {
+  if (!Number.isFinite(row.nextMin)) return null
+  if (row.stale) return null
+  const d = Math.floor(row.nextMin / 1440)
+  const h = Math.floor((row.nextMin % 1440) / 60)
+  const m = row.nextMin % 60
+  const text = d > 0 ? `${d}天${h}小时` : h > 0 ? `${h}小时${m}分` : `${m}分钟`
+  // 剩余不足 1 小时给警示色，提醒快到期了
+  return { text, warn: row.nextMin < 60 }
+}
+
 
 async function reload() {
   trees.value = await listCacheTrees()
@@ -195,8 +215,15 @@ async function onClearAll() {
       <div class="cc-sect">缓存策略</div>
       <div class="formrow">
         <label>目录树缓存</label>
-        <div class="ctl">
+        <div class="ctl cc-mastrow">
           <a-switch v-model:checked="cfg.master" @change="onMasterSw" />
+          <!-- 持久化（写穿 SQLite，重启不丢）；默认开 -->
+          <span class="cc-persist">
+            <a-tooltip title="开启后缓存写入数据库：重启/重装不丢，恢复零网盘请求">
+              <span class="cc-persist-label">持久化</span>
+            </a-tooltip>
+            <a-switch v-model:checked="cfg.persist" size="small" @change="onPersistSw" />
+          </span>
         </div>
       </div>
       <div class="formrow">
@@ -251,7 +278,9 @@ async function onClearAll() {
             <tr>
               <th class="cc-th" style="width: 110px">网盘</th>
               <th class="cc-th">账号</th>
+              <th class="cc-th" style="width: 150px">缓存时间</th>
               <th class="cc-th" style="width: 150px">下次刷新</th>
+              <th class="cc-th" style="width: 130px">距下次缓存</th>
               <th class="cc-th" style="width: 100px">缓存条数</th>
               <th class="cc-th" style="width: 90px">大小</th>
               <th class="cc-th" style="width: 140px">状态</th>
@@ -266,7 +295,14 @@ async function onClearAll() {
                 </span>
               </td>
               <td class="cc-td">{{ row.accName }}</td>
+              <td class="cc-td">{{ cachedAtText(row) }}</td>
               <td class="cc-td">{{ nextRefreshText(row) }}</td>
+              <td class="cc-td">
+                <span v-if="countdownText(row)" class="cc-count" :class="{ warn: countdownText(row)!.warn }">
+                  {{ countdownText(row)!.text }}
+                </span>
+                <span v-else class="cc-count expired">已过期</span>
+              </td>
               <td class="cc-td cc-num">{{ row.entries }}</td>
               <td class="cc-td cc-num">{{ row.sizeKb }} KB</td>
               <td class="cc-td cc-ttl" :class="row.stale ? 'stale' : 'fresh'">
@@ -280,7 +316,7 @@ async function onClearAll() {
               </td>
             </tr>
             <tr v-if="!accRows.length">
-              <td colspan="7" class="cc-empty">缓存是空的 · 打开一次转存弹窗就会把目录树存进来</td>
+              <td colspan="9" class="cc-empty">缓存是空的 · 打开一次转存弹窗就会把目录树存进来</td>
             </tr>
           </tbody>
         </table>
@@ -444,6 +480,49 @@ async function onClearAll() {
 }
 .cc-ttl {
   font-size: 12px;
+}
+/* 目录树缓存行：主开关 + 持久化小开关并排 */
+.cc-mastrow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.cc-persist {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.cc-persist-label {
+  font-size: 12.5px;
+  color: var(--text3);
+  cursor: help;
+}
+/* 距下次缓存倒计时：低饱和药丸样式，等宽数字；快到期转橙、过期转红 */
+.cc-count {
+  display: inline-block;
+  padding: 2px 10px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  border-radius: 999px;
+  color: var(--text2);
+  background: color-mix(in srgb, var(--primary) 7%, var(--card));
+  border: 1px solid color-mix(in srgb, var(--primary) 18%, var(--border));
+}
+.cc-count.warn {
+  color: #d46b08;
+  background: color-mix(in srgb, #fa8c16 12%, var(--card));
+  border-color: color-mix(in srgb, #fa8c16 40%, var(--border));
+}
+.cc-count.expired {
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 8%, var(--card));
+  border-color: color-mix(in srgb, var(--error) 30%, var(--border));
+}
+html[data-theme='dark'] .cc-count.warn {
+  color: #ffa940;
+}
+html[data-theme='dark'] .cc-count.expired {
+  color: #ff7875;
 }
 .cc-ttl.fresh {
   color: #389e0d;

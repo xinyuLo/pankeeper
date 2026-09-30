@@ -11,6 +11,7 @@ import LazyDirTree from '@/components/LazyDirTree.vue'
 import { ddStore, ddFind } from '@/api/mock/dd'
 import { DD_MEDIA, MAIN_ORDER, DRIVE_META } from '@/api/mock/meta'
 import { accountStore } from '@/api/mock/accounts'
+import { getRootDirs } from '@/api/modules/accounts'
 import { saveDdItem, deleteDdItem, setDefaultDir, listDdItems, listQmsPaths, listStrmPaths } from '@/api/modules/dd'
 import type { DdItem, DdQmsPath, DdStrmPath, MainDriveType } from '@/types/model'
 
@@ -99,6 +100,9 @@ const bdAccId = computed<number | null>(() => {
 })
 /** LazyDirTree 的 key：类型/账号变了整树重建 */
 const bdKey = computed(() => `${bdType.value}/${bdAccId.value ?? 'def'}`)
+/** 根路径锁定：网盘连接页配置的「默认根目录」（root_cfg），目录弹窗只展示它的子目录 */
+const rootDirs = ref<Record<string, string>>({})
+const bdRootPath = computed(() => rootDirs.value[bdType.value] || '')
 
 function onBdPick(path: string) {
   bdPath.value = path
@@ -118,6 +122,12 @@ function onPickOk() {
   }
   fPath.value = bdPath.value
   bdOpen.value = false
+}
+
+/** 打开目录树：编辑=已填路径自动展开选中；新增=不预选（树根仍是默认根目录） */
+function onBrowse() {
+  bdPath.value = fPath.value
+  bdOpen.value = true
 }
 
 function openEditor(id: number | null) {
@@ -160,6 +170,7 @@ const expanded = ref(new Set<string>())
 /* ===== 进页面：拉真实转存配置 + QMS/STRM 路径列表（此前页面渲染的一直是 mock 假数据） ===== */
 onMounted(async () => {
   await listDdItems().catch(() => {})
+  rootDirs.value = await getRootDirs().catch(() => ({}))
   loadQmsStrmPaths()
 })
 
@@ -349,7 +360,7 @@ async function confirmEditor() {
       <label class="dd-label">网盘路径<i>*</i></label>
       <div class="dd-pick">
         <a-input :value="fPath" readonly />
-        <a-button type="primary" ghost @click="bdOpen = true">浏览</a-button>
+        <a-button type="primary" ghost @click="onBrowse">浏览</a-button>
       </div>
     </div>
 
@@ -402,7 +413,8 @@ async function confirmEditor() {
       <p class="small" style="color: var(--text3); margin-bottom: 10px">
         点文件夹名选中目标目录，点左侧箭头展开子目录。
       </p>
-      <LazyDirTree ref="bdTree" :key="bdKey" :type="bdType" :acc-id="bdAccId" @select="onBdPick" />
+      <!-- 打开即沿已配置路径（默认目录）逐层展开并选中；根锁定：只显示默认目录的子目录 -->
+      <LazyDirTree ref="bdTree" :key="bdKey" :type="bdType" :acc-id="bdAccId" :root-path="bdRootPath" :initial-path="bdPath" @select="onBdPick" />
       <p class="bd-picked">已选目录：<b>{{ bdPath || '/' }}</b></p>
     </a-modal>
 </template>

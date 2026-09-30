@@ -75,6 +75,37 @@ def _is_first_of_type(acc: Account) -> bool:
     return bool(first and first.id == acc.id)
 
 
+# ===== 默认根目录（网盘连接页配置） =====
+# 所有目录树弹窗的固定浏览起点；与转存配置的 is_default（快速转存下拉第一项）无关。
+
+VALID_DRIVE_TYPES = ("baidu", "quark", "115")
+
+
+@router.get("/root-dirs")
+def get_root_dirs(_user=CurrentUser):
+    """{type: path}；没配置的类型不在结果里（弹窗回退真根浏览）。"""
+    return get_group("root_cfg")
+
+
+class RootDirBody(BaseModel):
+    type: str
+    path: str = ""
+
+
+@router.put("/root-dirs")
+def put_root_dir(body: RootDirBody, _user=CurrentUser):
+    if body.type not in VALID_DRIVE_TYPES:
+        raise HTTPException(status_code=400, detail=f"未知网盘类型：{body.type}")
+    cfg = get_group("root_cfg")
+    path = (body.path or "").strip()
+    if path:
+        cfg[body.type] = path
+    else:
+        cfg.pop(body.type, None)  # 清空 = 该网盘回退真根浏览
+    save_group("root_cfg", cfg)
+    return cfg
+
+
 @router.get("")
 def list_accounts(_user=CurrentUser):
     out = []

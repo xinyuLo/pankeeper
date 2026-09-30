@@ -9,7 +9,7 @@ import { DRIVE_META } from '@/api/mock/meta'
 import { getDirTree } from '@/api/modules/tasks'
 import { getFilesList } from '@/api/modules/files'
 import { USE_MOCK } from '@/api/http'
-import { ddStore } from '@/api/mock/dd'
+import { getRootDirs } from '@/api/modules/accounts'
 import type { MainDriveType, TreeNode } from '@/types/model'
 
 const props = defineProps<{ open: boolean; type: MainDriveType; initial: string; accId?: number | null }>()
@@ -118,6 +118,18 @@ function allPaths(list: TreeNode[], out: string[]) {
 }
 const visible = computed(() => {
   if (!USE_MOCK) {
+    // 配了默认目标目录：以它为根，只显示它的子目录（锁定根本身和其余真根层一律隐藏）
+    const lock = defaultDirPath()
+    if (lock && lock !== '/') {
+      return remoteRows.value.filter((r) => {
+        if (!r.path.startsWith(lock + '/')) return false
+        const parts = r.path.split('/').filter(Boolean)
+        for (let i = 1; i < parts.length; i++) {
+          if (!expanded.value.has('/' + parts.slice(0, i).join('/'))) return false
+        }
+        return true
+      })
+    }
     // 只显示"所有祖先都展开"的行：拍平列表里收起父层时子层要真正藏起来
     return remoteRows.value.filter((r) => {
       const parts = r.path.split('/').filter(Boolean)
@@ -159,13 +171,10 @@ function ok() {
   close()
 }
 
-/** 该网盘（当前账号）配置的默认目录：转存配置里 is_default 的那条 */
+/** 该网盘的「默认根目录」（网盘连接页配置的 root_cfg，打开时拉取） */
+const rootDirs = ref<Record<string, string>>({})
 function defaultDirPath(): string {
-  const accKey = props.accId ? String(props.accId) : null
-  const hit = ddStore.items.find(
-    (x) => x.type === props.type && x.is_default && (!accKey || x.account === accKey),
-  )
-  return hit?.path || ''
+  return rootDirs.value[props.type] || ''
 }
 
 /** 从根展开到 targetPath：沿途逐层加载子目录，让选中项露出来 */
@@ -187,12 +196,16 @@ watch(
   () => props.open,
   async (v) => {
     if (!v) return
-    // 没带初始值就从默认目录起步（转存配置里 is_default 的那条）
+    // 根目录锁定跟「默认根目录」(root_cfg) 走；没带初始值就选中锁定根本身
+    if (!USE_MOCK) rootDirs.value = await getRootDirs().catch(() => ({}))
     selected.value = props.initial || defaultDirPath()
     if (!USE_MOCK) {
       fidByPath.value = {}
       expanded.value = new Set()
       await loadRemoteRoot()
+      // 配了默认根目录：先展开到锁定根（子目录数据也就绪），显示层会过滤掉根以上的部分
+      const lock = defaultDirPath()
+      if (lock && lock !== '/') await expandTowards(lock)
       if (selected.value && selected.value !== '/') await expandTowards(selected.value)
       return
     }

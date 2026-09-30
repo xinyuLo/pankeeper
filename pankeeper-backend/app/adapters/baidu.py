@@ -179,14 +179,23 @@ class BaiduClient(CloudAdapter):
 
     @staticmethod
     def parse_share_url(url: str) -> str:
-        """任意形态的分享链接 → surl（/s/xxx 的 xxx）。"""
+        """任意形态的分享链接 → 页面短码（/s/xxx 的完整 xxx，含前导 1）。
+
+        注意两套短码：页面地址 /s/<slug> 用**全长**；share/verify 的 surl 参数
+        要去掉前导 1 的 22 位码——混用会 404/验证失效。
+        """
         url = (url or "").strip().split("#")[0]
         m = re.search(r"/share/init\?surl=([a-zA-Z0-9_-]+)", url)
         if m is None:
-            m = re.search(r"/s/1?([a-zA-Z0-9_-]{4,})", url)
+            m = re.search(r"/s/([a-zA-Z0-9_-]+)", url)
         if m is None:
             raise AdapterError(f"无法识别的百度分享链接：{url[:80]}")
         return m.group(1)
+
+    @staticmethod
+    def _verify_surl(slug: str) -> str:
+        """verify 接口的 surl：去掉前导 1 的 22 位码。"""
+        return slug[1:] if len(slug) >= 22 and slug.startswith("1") else slug
 
     def _share_session(self) -> httpx.Client:
         """分享链路专用会话。
@@ -201,6 +210,7 @@ class BaiduClient(CloudAdapter):
                 if "=" in part:
                     k, _, v = part.strip().partition("=")
                     jar[k] = v
+            self._base_cookie_jar = jar  # verify 重建 jar 时要用
             self._share_cli = httpx.Client(
                 cookies=jar,
                 headers={"user-agent": UA},
@@ -257,28 +267,62 @@ class BaiduClient(CloudAdapter):
         raise AdapterError(f"{action}失败：errno={errno}")
 
     def _verify_password(self, surl: str, pwd: str) -> None:
-        """提取码验证；成功后 BDCLND 落在 share 会话里，后续请求自动携带。"""
-        body = self._share_post(
-            "https://pan.baidu.com/share/verify",
-            params={"surl": surl, "t": int(time.time() * 1000), "channel": "chunlei", "web": 1, "bdstoken": "null", "clienttype": 0},
-            data={"pwd": pwd},
-            referer=f"https://pan.baidu.com/s/{surl}",
-        )
-        self._check_share_errno(body, "提取码验证")
+        """提取码验证；成功后把 randsk 显式写进会话 cookie（BDCLND）。
 
-    def _fetch_share_page(self, surl: str) -> dict:
-        """分享页 HTML 抓 yunData.setData(...) JSON：shareid/uk/bdstoken/file_list。"""
+        不能依赖 httpx 自动收 Set-Cookie：百度对 BDCLND 会下发两份（domain 属性
+        差异），请求头里出现重复 Cookie 时百度仍按未验证处理，页面拿不到 yunData。
+        所以这里拿到 randsk 后清空 jar 重建：基础 cookie + 单份 BDCLND。
+        """
         cli = self._share_session()
         self.gate.wait()
         try:
-            resp = cli.get(f"https://pan.baidu.com/s/{surl}", headers={"referer": "https://pan.baidu.com/"})
+            resp = cli.post(
+                "https://pan.baidu.com/share/verify",
+                params={"surl": surl, "t": int(time.time() * 1000), "channel": "chunlei", "web": 1, "bdstoken": "null", "clienttype": 0},
+                data={"pwd": pwd},
+                headers={"referer": f"https://pan.baidu.com/s/{surl}"},
+            )
+        except httpx.HTTPError as e:
+            self.gate.on_failure()
+            raise AdapterError(f"网络异常：{e}") from e
+        try:
+            body = resp.json()
+        except ValueError as e:
+            self.gate.on_failure()
+            raise AdapterError(f"响应非 JSON（HTTP {resp.status_code}）") from e
+        self.gate.on_success()
+        self._check_share_errno(body, "提取码验证")
+        bdclnd = body.get("randsk") or ""
+        if bdclnd:
+            jar = dict(self._base_cookie_jar)
+            jar["BDCLND"] = bdclnd
+            cli.cookies.clear()
+            for k, v in jar.items():
+                cli.cookies.set(k, v)
+
+    def _fetch_share_page(self, page_slug: str) -> dict:
+        """分享页 HTML 抓 yunData.setData(...) JSON：shareid/uk/bdstoken/file_list。
+
+        page_slug 是**全长**短码（/s/1xxx 的 1xxx）——用 verify 那个 22 位短码会 404。
+        """
+        cli = self._share_session()
+        self.gate.wait()
+        try:
+            resp = cli.get(f"https://pan.baidu.com/s/{page_slug}", headers={"referer": "https://pan.baidu.com/"})
         except httpx.HTTPError as e:
             self.gate.on_failure()
             raise AdapterError(f"网络异常：{e}") from e
         self.gate.on_success()
         html = resp.text
+        # yunData 两种挂载形态都试（新版页面偶用 locals.mset）
         m = re.search(r"yunData\.setData\((\{.*?\})\)\s*;", html, re.S)
         if m is None:
+            m = re.search(r"locals\.mset\((\{.*?\})\)\s*;", html, re.S)
+        if m is None:
+            if "页面不存在" in html or resp.status_code == 404:
+                raise ShareBanned("分享链接不存在（页面 404）")
+            if re.search(r"输入提取码|提取码：|share-verif", html):
+                raise AdapterError("该分享需要提取码，但请求里没有带上（请补提取码后重试）")
             if re.search(r"分享的文件已经被取消|分享已过期|分享不存在|链接不存在", html):
                 raise ShareBanned("分享页提示链接已失效")
             raise AdapterError("分享页解析失败（未找到 yunData，可能需要先过提取码验证）")
@@ -321,13 +365,21 @@ class BaiduClient(CloudAdapter):
         )
 
     def list_share(self, spec: TaskSpec) -> list[ShareFile]:
-        surl = self.parse_share_url(spec.share_url)
-        referer = f"https://pan.baidu.com/s/{surl}"
-        if spec.share_code:
-            self._verify_password(surl, spec.share_code)
-        page = self._fetch_share_page(surl)
+        slug = self.parse_share_url(spec.share_url)
+        page_url = f"https://pan.baidu.com/s/{slug}"
+        referer = page_url
+        # 提取码三个来源都认：独立字段 > 链接 ?pwd= > 链接 password=。
+        # 只要把 pwd 放在链接里（快速转存的常态）也必须先 verify 拿 BDCLND，
+        # 否则抓到的是「输入提取码」页面，yunData 根本不存在——bdsavepro 同款顺序。
+        pwd = (spec.share_code or "").strip()
+        if not pwd:
+            m = re.search(r"[?&](?:pwd|password)=([a-zA-Z0-9]+)", spec.share_url or "")
+            pwd = m.group(1) if m else ""
+        if pwd:
+            self._verify_password(self._verify_surl(slug), pwd)
+        page = self._fetch_share_page(slug)
         ctx = {
-            "surl": surl,
+            "surl": slug,
             "referer": referer,
             "shareid": page.get("shareid"),
             "uk": page.get("uk") or page.get("share_uk"),

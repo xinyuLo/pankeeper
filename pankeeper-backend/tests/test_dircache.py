@@ -25,6 +25,7 @@ from app.services.settings_svc import get_group, save_group  # noqa: E402
 
 def _small_cache(max_entries: int = 100) -> DirTreeCache:
     save_group("cache_cfg", {**get_group("cache_cfg"), "maxSizeMb": 800, "maxEntries": max_entries})
+    DirTreeCache._db_clear(True)  # 持久化开启后新实例会从库里恢复，先清库保证用例隔离
     return DirTreeCache()
 
 
@@ -98,3 +99,40 @@ def test_singleflight_concurrent_load_once():
         t.join(timeout=3)
     assert calls["n"] == 1  # 4 个并发只有 1 个真正加载
     assert len(results) == 4
+
+def test_persistence_roundtrip():
+    """写穿持久化：新实例（模拟重启）从 SQLite 恢复，零回源。"""
+    DirTreeCache._db_clear(True)
+    c1 = DirTreeCache()
+    k = ("quark", "main", "persist-1")
+    c1.get_or_load(k, lambda: [{"name": "x"}])
+
+    c2 = DirTreeCache()
+    calls = {"n": 0}
+
+    def loader():
+        calls["n"] += 1
+        return []
+
+    assert c2.get_or_load(k, loader) == [{"name": "x"}]
+    assert calls["n"] == 0  # 命中恢复数据，没打 loader
+    c2._db_clear(True)
+
+
+def test_persist_off_no_restore():
+    """持久化开关关闭：不恢复、不落库。"""
+    save_group("cache_cfg", {**get_group("cache_cfg"), "persist": False})
+    c1 = DirTreeCache()
+    k = ("quark", "main", "persist-off")
+    c1.get_or_load(k, lambda: [{"name": "y"}])
+    c2 = DirTreeCache()
+    calls = {"n": 0}
+
+    def loader():
+        calls["n"] += 1
+        return []
+
+    assert c2.get_or_load(k, loader) == []  # 没恢复到，回源了
+    assert calls["n"] == 1
+    save_group("cache_cfg", {**get_group("cache_cfg"), "persist": True})
+    DirTreeCache._db_clear(True)

@@ -114,3 +114,14 @@ export async function setDriveNotify(accId: number, enabled: boolean): Promise<v
   }
   await put(`/accounts/${accId}/notify`, { enabled })
 }
+
+/** ===== 默认根目录（网盘连接页配置）：目录树弹窗的固定浏览起点，按网盘类型存 ===== */
+export function getRootDirs(): Promise<Record<string, string>> {
+  if (USE_MOCK) return mockDelay({})
+  return get<Record<string, string>>('/accounts/root-dirs')
+}
+
+export function setRootDir(type: string, path: string): Promise<Record<string, string>> {
+  if (USE_MOCK) return mockDelay({ [type]: path })
+  return put<Record<string, string>>('/accounts/root-dirs', { type, path })
+}
