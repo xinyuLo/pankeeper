@@ -23,6 +23,7 @@ import type { CacheCfg, CacheTree, MemUsage } from '@/api/mock/cache'
 /* ===== 页面状态 ===== */
 const cfg = reactive<CacheCfg>({
   master: true,
+  persist: true,
   auto: true,
   ttl: 30,
   ttlUnit: '小时',
