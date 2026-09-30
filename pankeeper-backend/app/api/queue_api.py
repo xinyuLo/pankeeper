@@ -47,7 +47,6 @@ async def queue_events(token: str = ""):
 
     if not parse_token(token):
         raise HTTPException(status_code=401, detail="登录凭证不存在或已过期")
-    """SSE：状态变化推送给前端（前端 600ms 轮询 /state 作为兜底）。"""
 
     async def gen():
         last = None
@@ -61,9 +60,11 @@ async def queue_events(token: str = ""):
                 yield f"data: {snap}\n\n"
             else:
                 heartbeat += 1
-                if heartbeat >= 50:  # ~30s 一次心跳防代理断连
+                if heartbeat >= 50:  # ~30s 一次心跳：保活防代理断连，前端也据此重置兜底轮询
                     heartbeat = 0
-                    yield ": ping\n\n"
+                    # 用具名事件而非 ": ping" 注释行 —— 注释行不会触发前端 onmessage，
+                    # 前端就无法据此判断「SSE 还活着」，只能无条件定时轮询兜底。
+                    yield "event: ping\ndata: {}\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
