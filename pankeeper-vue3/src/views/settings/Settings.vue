@@ -74,29 +74,51 @@ onMounted(async () => {
   // 必须等这一拍过去再放行，否则灌初值会触发「已自动保存」
   await nextTick()
   ready.value = true
+  // 灌入的初值就是「已保存状态」：登记快照，之后没实际改动不会触发保存+toast
+  _savedSnapshots.search = JSON.stringify(search)
+  _savedSnapshots.notify = JSON.stringify(notify)
+  _savedSnapshots.qms = JSON.stringify(qms)
 })
 
 /* ===== 三个配置 tab 统一防抖自动保存 =====
- * 停止输入 600ms 后写库，替代原来的「watch 逐键保存」与 QMS 的保存/放弃按钮。
+ * 停止输入 2s 后写库；失焦立即写库（flushSave）。自动保存是静默的——弹「成功」
+ * 反而打扰（手动输入地址一路弹），只有失败才提示。
  * watch 在 onMounted 灌入初值时也会触发，所以用 ready 挡住首跑。 */
 const _saveTimers: Record<string, number> = {}
-function debouncedSave(key: string, doSave: () => Promise<unknown>) {
+/** 每组配置最近一次成功保存的内容快照，变了才保存 */
+const _savedSnapshots: Record<string, string> = {}
+/** 待保存的动作（key → 快照+fn）：失焦 flush 时取最新一个执行 */
+const _pending: Record<string, { snap: string; doSave: () => Promise<unknown> }> = {}
+function debouncedSave(key: string, val: unknown, doSave: () => Promise<unknown>) {
+  const snap = JSON.stringify(val)
+  if (snap === _savedSnapshots[key]) return
+  _pending[key] = { snap, doSave }
   window.clearTimeout(_saveTimers[key])
-  _saveTimers[key] = window.setTimeout(() => {
-    void doSave()
-      .then(() => message.success('已自动保存'))
-      .catch(() => message.error('自动保存失败，请重试'))
-  }, 600)
+  _saveTimers[key] = window.setTimeout(() => void flushSave(key), 2000)
+}
+
+/** 立刻保存某组待保存的配置（输入框 @blur 调；没待保存就是空操作） */
+async function flushSave(key: string) {
+  window.clearTimeout(_saveTimers[key])
+  const p = _pending[key]
+  if (!p) return
+  delete _pending[key]
+  try {
+    await p.doSave()
+    _savedSnapshots[key] = p.snap
+  } catch {
+    message.error('自动保存失败，请重试')
+  }
 }
 
 watch(search, (v) => {
-  if (ready.value) debouncedSave('search', () => saveSearchSrc({ ...v }))
+  if (ready.value) debouncedSave('search', v, () => saveSearchSrc({ ...v }))
 })
 watch(notify, (v) => {
-  if (ready.value) debouncedSave('notify', () => saveNotify({ ...v }))
+  if (ready.value) debouncedSave('notify', v, () => saveNotify({ ...v }))
 })
 watch(qms, (v) => {
-  if (ready.value) debouncedSave('qms', () => saveQms({ ...v }))
+  if (ready.value) debouncedSave('qms', v, () => saveQms({ ...v }))
 })
 
 /* ===== tab1 搜索源 ===== */
@@ -114,7 +136,12 @@ async function onTestPansou() {
   testing.value = true
   try {
     const r = await testPansou(search.pansou_url)
-    message.success(`连通正常，响应 ${r.ms} ms`)
+    // 后端连通失败也是 200 + {ok:false}，必须看 ok 字段，不能 promise 不抛就当成功
+    if (r.ok) message.success(`连通正常，响应 ${r.ms} ms`)
+    else message.error(`连通失败：${r.message || '请检查地址'}`, 5)
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '连通失败，请检查地址', 5)
   } finally {
     testing.value = false
   }
@@ -129,13 +156,25 @@ async function onTestSendkey() {
     message.warning('请先填写 SendKey')
     return
   }
-  await testSendkey(notify.sendkey)
-  message.success('测试消息已发送')
+  try {
+    // 后端发送失败也是 200 + {ok:false,message}，不抛异常，必须看 ok
+    const r = await testSendkey(notify.sendkey)
+    if (r.ok) message.success(r.message || '测试消息已发送')
+    else message.error(r.message || '发送失败，请检查 SendKey', 5)
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '发送失败，请检查 SendKey', 5)
+  }
 }
 async function onPushHistory() {
-  const h = await pushHistory()
-  // 有失败条目，按原型用警示色提示而不是成功色
-  message.warning(`最近 50 条推送：已投递 ${h.delivered} 条 / 失败 ${h.failed} 条`)
+  try {
+    const h = await pushHistory()
+    // 有失败条目，按原型用警示色提示而不是成功色
+    message.warning(`最近 50 条推送：已投递 ${h.delivered} 条 / 失败 ${h.failed} 条`)
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '拉取推送历史失败')
+  }
 }
 
 /* ===== tab3 QMS 联动 ===== */
@@ -164,6 +203,9 @@ async function onQmsEnabled(v: unknown) {
     }
     qms.enabled = true
     message.success('QMS 连通正常，联动已开启')
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || 'QMS 连接不通，未开启联动', 5)
   } finally {
     qmsTesting.value = false
   }
@@ -183,6 +225,10 @@ async function onTestQms() {
     else message.error(r.message || 'QMS 连接失败')
     // 状态胶囊同步：测的就是草稿值，比胶囊自己的定时探测更即时
     qmsHealth.value = { ok: r.ok, message: r.ok ? '在线' : r.message }
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || 'QMS 连接失败', 5)
+    qmsHealth.value = { ok: false, message: detail || '离线' }
   } finally {
     qmsTesting.value = false
   }
@@ -211,12 +257,19 @@ async function onSaveSecurity() {
       return
     }
   }
-  await saveSecurity({
-    username: security.username,
-    old_password: pw.old,
-    new_password: pw.next,
-    session_days: security.session_days,
-  })
+  try {
+    await saveSecurity({
+      username: security.username,
+      old_password: pw.old,
+      new_password: pw.next,
+      session_days: security.session_days,
+    })
+  } catch (e: unknown) {
+    // 当前密码错误、用户名冲突等：后端 400 + detail，表单原样保留让用户改
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '保存失败')
+    return
+  }
   pw.old = ''
   pw.next = ''
   pw.confirm = ''
@@ -293,7 +346,7 @@ async function onRemoveAvatar() {
           <label>PanSou 地址</label>
           <div>
             <div class="ctl">
-              <a-input v-model:value="search.pansou_url" style="width: 300px" placeholder="如 http://127.0.0.1:8000" />
+              <a-input v-model:value="search.pansou_url" style="width: 300px" placeholder="如 http://127.0.0.1:8000" @blur="flushSave('search')" />
               <a-button :loading="testing" @click="onTestPansou">测试连通</a-button>
             </div>
           </div>
@@ -301,7 +354,7 @@ async function onRemoveAvatar() {
         <div class="formrow">
           <label>请求超时</label>
           <div class="ctl">
-            <a-input-number v-model:value="search.timeout" :min="1" :max="300" style="width: 110px" />
+            <a-input-number v-model:value="search.timeout" :min="1" :max="300" style="width: 110px" @blur="flushSave('search')" />
             <span class="muted">秒</span>
           </div>
         </div>
@@ -327,7 +380,7 @@ async function onRemoveAvatar() {
           <label>Server 酱 SendKey</label>
           <div>
             <div class="ctl">
-              <a-input-password v-model:value="notify.sendkey" style="width: 320px" placeholder="SCT…" />
+              <a-input-password v-model:value="notify.sendkey" style="width: 320px" placeholder="SCT…" @blur="flushSave('notify')" />
               <a-button @click="onTestSendkey">发送测试</a-button>
               <span class="muted small">仅通知自动转存的任务</span>
             </div>
@@ -340,7 +393,7 @@ async function onRemoveAvatar() {
         <div class="formrow">
           <label>自定义 Webhook</label>
           <div class="ctl">
-            <a-input v-model:value="notify.webhook" style="width: 360px" placeholder="https://你的机器人地址" />
+            <a-input v-model:value="notify.webhook" style="width: 360px" placeholder="https://你的机器人地址" @blur="flushSave('notify')" />
           </div>
         </div>
         <div class="formrow">
@@ -376,14 +429,14 @@ async function onRemoveAvatar() {
         <div class="formrow">
           <label>QMS 地址</label>
           <div class="ctl">
-            <a-input v-model:value="qms.url" style="width: 300px" placeholder="请输入 QMS 服务地址" />
+            <a-input v-model:value="qms.url" style="width: 300px" placeholder="请输入 QMS 服务地址" @blur="flushSave('qms')" />
             <a-button :loading="qmsTesting" @click="onTestQms">测试</a-button>
           </div>
         </div>
         <div class="formrow">
           <label>API Key</label>
           <div class="ctl">
-            <a-input-password v-model:value="qms.apikey" style="width: 280px" />
+            <a-input-password v-model:value="qms.apikey" style="width: 280px" @blur="flushSave('qms')" />
           </div>
         </div>
         <div class="formrow">
