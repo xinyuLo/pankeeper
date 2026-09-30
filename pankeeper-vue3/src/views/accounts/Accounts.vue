@@ -9,12 +9,10 @@ import { message } from 'ant-design-vue'
 import LazyDirTree from '@/components/LazyDirTree.vue'
 import { accountStore, ACCOUNT_STATUS_VIEW, type AccountRow } from '@/api/mock/accounts'
 import { MAIN_ORDER, DRIVE_META } from '@/api/mock/meta'
-import { ddStore } from '@/api/mock/dd'
-import { addAccount, checkAccount, deleteAccount, getSummary, listAccounts, saveCredential, setAlias, setDefaultAccount, setDriveNotify, type AccountSummary } from '@/api/modules/accounts'
-import { listDdItems, saveDdItem, setDefaultDir } from '@/api/modules/dd'
+import { addAccount, checkAccount, deleteAccount, getRootDirs, getSummary, listAccounts, saveCredential, setAlias, setDefaultAccount, setDriveNotify, setRootDir, type AccountSummary } from '@/api/modules/accounts'
 import { getFilesList } from '@/api/modules/files'
 import { warmTrees, warmStatus } from '@/api/modules/cache'
-import type { DdItem, MainDriveType } from '@/types/model'
+import type { MainDriveType } from '@/types/model'
 
 /** 卡片列表：多账号平铺，按平台固定顺序 + 同平台按 id 排 */
 const rows = computed<AccountRow[]>(() => {
@@ -154,26 +152,28 @@ onMounted(async () => {
   for (const a of accountStore.accounts) {
     if (a.status === 'connected') loadSummary(a.id)
   }
-  await listDdItems().catch(() => {}) // 默认目标目录读写「转存配置」，进页对齐一次
+  rootDirs.value = await getRootDirs().catch(() => ({})) // 默认根目录：进页拉一次
 })
 
-/* ===== 默认目标目录：读写「转存配置」页的 is_default 条目（唯一真源，不是独立字段） ===== */
+/* ===== 默认根目录：独立配置（root_cfg），目录树弹窗的固定浏览起点 =====
+ * 与转存配置的 is_default（快速转存下拉第一项/排序）是两回事。 */
 const bdOpen = ref(false)
 const bdType = ref<MainDriveType>('quark')
 const bdPath = ref('')
 const bdFid = ref('') // 树里选中的目录 fid（预热缓存用；没点选就保存时回落按路径预热）
 const bdTree = ref<InstanceType<typeof LazyDirTree> | null>(null)
 const bdSaving = ref(false)
-const bdTitle = computed(() => `默认目标目录 · ${DRIVE_META[bdType.value]?.full || bdType.value}`)
+const bdTitle = computed(() => `默认根目录 · ${DRIVE_META[bdType.value]?.full || bdType.value}`)
+const rootDirs = ref<Record<string, string>>({})
 
-/** 该网盘当前的默认条目 */
-function defaultDirOf(type: MainDriveType): DdItem | null {
-  return ddStore.items.find((x) => x.type === type && x.is_default) || null
+/** 该网盘当前的默认根目录（空串 = 未配置，弹窗回退真根浏览） */
+function rootDirOf(type: MainDriveType): string {
+  return rootDirs.value[type] || ''
 }
 
 function openBaseDir(a: AccountRow) {
   bdType.value = a.type
-  bdPath.value = defaultDirOf(a.type)?.path || '/'
+  bdPath.value = rootDirOf(a.type)
   bdFid.value = ''
   bdOpen.value = true
 }
@@ -217,7 +217,7 @@ async function warmAll(type: MainDriveType) {
         message.error(`缓存失败：${st.message || '未知错误'}`, 5)
         return
       }
-      await new Promise((r) => setTimeout(r, 1000))
+      await new Promise((r) => setTimeout(r, 3000)) // 3s 一次：进度不刷屏，后端本就 1s 限速
     }
     message.warning('缓存还在后台跑，已转入静默；可稍后在「网盘日志 → 缓存」查看', 5)
   } catch (e: unknown) {
@@ -238,21 +238,8 @@ async function onConfirmBaseDir() {
   const fid = bdFid.value
   const path = bdPath.value
   try {
-    const item = defaultDirOf(type)
-    if (item) {
-      await saveDdItem({ ...item, path }) // 更新默认条，保留 QMS/STRM 关联
-    } else {
-      const others = ddStore.items.filter((x) => x.type === type)
-      if (others.length === 0) {
-        // 一条都没有：新建即默认（后端对首条自动 is_default）
-        await saveDdItem({ id: null, type, account: 'main', sort: 1, name: '默认目录', path, is_default: true, qms_on: false, qms_id: null, strm_id: null })
-      } else {
-        // 边缘：有条目但无默认 —— 更新第一条并设为默认
-        const first = others[0]
-        await saveDdItem({ ...first, path })
-        await setDefaultDir(first.id)
-      }
-    }
+    await setRootDir(type, path)
+    rootDirs.value = await getRootDirs()
   } catch (e: unknown) {
     const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
     message.error(detail || '保存失败')
@@ -260,7 +247,6 @@ async function onConfirmBaseDir() {
     return
   }
   // 配置落库即预热缓存：提示「正在缓存 → 缓存成功/失败」，不再弹「已保存」
-  await listDdItems().catch(() => {}) // 同步 store：不然下次保存还走"新建"分支，撞同名检查
   bdOpen.value = false
   bdSaving.value = false
   const hide = message.loading('正在缓存文件夹信息…', 0)
@@ -398,7 +384,7 @@ async function onClear(a: AccountRow) {
         <div class="acchead">
           <div class="accname">
             <span class="chip" :style="{ background: a.color }">{{ a.short }}</span>
-            {{ a.alias || DRIVE_META[a.type].full }}
+            {{ a.alias || a.nickname || DRIVE_META[a.type].full }}
             <span class="tag acc-tag" :class="view(a.status).cls">
               <span class="dot" :class="view(a.status).dot"></span>{{ view(a.status).label }}
             </span>
@@ -411,13 +397,8 @@ async function onClear(a: AccountRow) {
               @click="onSetDefault(a)"
             >{{ a.is_default ? '★ 默认' : '☆ 设默认' }}</span>
           </div>
-        </div>
-        <div class="kv">
-          <span>别名</span>
-          <b>
-            {{ a.alias || '—' }}
-            <a-button type="link" size="small" style="padding: 0 2px; height: auto" @click="openAlias(a)">修改</a-button>
-          </b>
+          <!-- 别名入口：卡片头右侧小按钮（默认展示网盘用户名，别名可 点这里 改） -->
+          <button class="acc-alias-btn" title="修改别名" @click="openAlias(a)">别名</button>
         </div>
         <div class="kv">
           <span>会员</span>
@@ -429,9 +410,9 @@ async function onClear(a: AccountRow) {
         </div>
         <div class="kv"><span>上次检测</span><b>{{ a.last_check }}</b></div>
         <div class="kv">
-          <span>默认目标目录</span>
+          <span>默认根目录</span>
           <b style="display: inline-flex; align-items: center; gap: 6px">
-            {{ defaultDirOf(a.type)?.path || '—' }}
+            {{ rootDirOf(a.type) || '—' }}
             <a-tooltip :title="a.status !== 'connected' ? '请先配置凭据并连通' : '从网盘目录中选择默认保存位置'">
               <a-button
                 type="link"
@@ -439,7 +420,7 @@ async function onClear(a: AccountRow) {
                 style="padding: 0 2px; height: auto"
                 :disabled="a.status !== 'connected'"
                 @click="openBaseDir(a)"
-              >{{ defaultDirOf(a.type) ? '修改' : '配置' }}</a-button>
+              >{{ rootDirOf(a.type) ? '修改' : '配置' }}</a-button>
             </a-tooltip>
           </b>
         </div>
@@ -556,7 +537,7 @@ async function onClear(a: AccountRow) {
       />
     </a-modal>
 
-    <!-- 默认目标目录：读写「转存配置」的默认条目（key 绑 type，切换网盘强制重建） -->
+    <!-- 默认根目录：独立配置（root_cfg），所有目录树弹窗的浏览起点（key 绑 type，切换网盘强制重建） -->
     <a-modal
       :open="bdOpen"
       :width="480"
@@ -574,9 +555,10 @@ async function onClear(a: AccountRow) {
         </div>
       </template>
       <p class="small" style="color: var(--text3); margin-bottom: 10px">
-        点文件夹名选中目标目录，点左侧箭头展开子目录；保存写入「转存配置」的默认条目。
+        从网盘真根选择一个目录作为本网盘的默认根目录；保存后所有目录树弹窗都从这里开始浏览。
       </p>
-      <LazyDirTree ref="bdTree" :key="bdType" :type="bdType" @select="onTreePick" />
+      <!-- 这个弹窗本身从真根浏览（配置入口不该被锁）；initialPath 只是回显定位 -->
+      <LazyDirTree ref="bdTree" :key="bdType" :type="bdType" :initial-path="rootDirOf(bdType)" @select="onTreePick" />
       <p class="bd-picked">已选目录：<b>{{ bdPath || '/' }}</b></p>
     </a-modal>
     <!-- 别名编辑小弹窗 -->
@@ -687,6 +669,24 @@ async function onClear(a: AccountRow) {
   color: #fff;
   background: var(--acc);
   border: 1px solid var(--acc);
+}
+
+/* 别名按钮：卡片头右侧低调小胶囊，hover 才亮起品牌色 */
+.acc-alias-btn {
+  height: 24px;
+  padding: 0 10px;
+  font-size: 12px;
+  color: var(--text3);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.acc-alias-btn:hover {
+  color: var(--acc);
+  border-color: var(--acc);
+  background: color-mix(in srgb, var(--acc) 10%, transparent);
 }
 
 /* ===== 新增账号弹窗（acc-add- 前缀页面私有） ===== */
