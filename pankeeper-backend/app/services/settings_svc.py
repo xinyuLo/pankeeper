@@ -13,7 +13,7 @@ from ..models import Setting
 from ..security import decrypt_credential, encrypt_credential
 
 # 落库加密的敏感字段：密文加 fernet: 前缀，get_group 读取时自动解密
-_SENSITIVE_FIELDS = ("sendkey", "apikey", "webhook")
+_SENSITIVE_FIELDS = ("sendkey", "apikey", "webhook", "tmdb_api_key")
 
 DEFAULTS: dict[str, dict[str, Any]] = {
     "settings": {
@@ -111,7 +111,7 @@ def save_group(key: str, value: dict[str, Any]) -> None:
     if key == "settings":
         old = get_group(key)
         for group in ("notify", "qms"):
-            for field in ("sendkey", "apikey", "webhook"):
+            for field in ("sendkey", "apikey", "webhook", "tmdb_api_key"):
                 new_val = (value.get(group, {}) or {}).get(field, "")
                 if isinstance(new_val, str) and new_val.startswith("****"):
                     value.setdefault(group, {})[field] = old.get(group, {}).get(field, "")

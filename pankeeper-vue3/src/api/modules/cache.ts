@@ -70,3 +70,24 @@ export async function clearAllCacheTrees(): Promise<void> {
 
 /** 供页面直接复用的过期判定（避免页面各写一份规则） */
 export const isStaleTree = cacheIsStale
+
+/* ===== 全树预热：保存 Cookie 验证通过后触发，后台跑，前端轮询进度 ===== */
+
+export interface WarmStatus {
+  status: 'idle' | 'queued' | 'running' | 'done' | 'error'
+  done: number
+  total: number
+  message?: string
+}
+
+/** 启动某网盘的全树预热（后台执行立即返回；已在跑则回当前进度） */
+export function warmTrees(type: string): Promise<WarmStatus> {
+  if (USE_MOCK) return mockDelay({ status: 'done', done: 0, total: 0 })
+  return post<WarmStatus>('/cache/trees/warm', { type })
+}
+
+/** 查询预热进度 */
+export function warmStatus(type: string): Promise<WarmStatus> {
+  if (USE_MOCK) return mockDelay({ status: 'done', done: 0, total: 0 })
+  return get<WarmStatus>('/cache/trees/warm/status', { params: { type } })
+}

@@ -35,6 +35,18 @@ const DEFAULT_DIR = USE_MOCK ? '/我的资源/影视/电视剧/国产剧' : '/'
 /** 只有三大盘支持真实目录浏览；其余盘允许直接转存（目标目录自动创建） */
 const isMainDrive = computed(() => !!props.target && (['baidu', 'quark', '115'] as string[]).includes(props.target.type))
 
+/* 真实目录树刷新：绕过后端缓存直连重拉根层 */
+const mineTree = ref<InstanceType<typeof LazyDirTree> | null>(null)
+const treeRefreshing = ref(false)
+async function onRefreshTree() {
+  treeRefreshing.value = true
+  try {
+    await mineTree.value?.reload()
+  } finally {
+    treeRefreshing.value = false
+  }
+}
+
 const meta = computed(() => (props.target ? DRIVE_META[props.target.type] : null))
 /** 分享摘要行：资源名 + 「N 项 · X GB」跟着资源走（项数 mock 固定 12） */
 const sumMeta = computed(() => `12 项 · ${props.target?.size || '82.4 GB'}`)
@@ -173,11 +185,16 @@ function start() {
       <div class="pane" style="margin-top: 14px">
         <div class="pane-hd">
           <span>保存到我的网盘</span>
-          <a-button size="small" @click="mkfolder">新建文件夹</a-button>
+          <span style="display: flex; gap: 6px">
+            <!-- 绕过后端目录缓存直连重拉：网盘侧刚建/删了文件夹时用 -->
+            <a-button size="small" :loading="treeRefreshing" @click="onRefreshTree">刷新</a-button>
+            <a-button size="small" @click="mkfolder">新建文件夹</a-button>
+          </span>
         </div>
         <div class="pane-bd">
           <LazyDirTree
             v-if="!USE_MOCK && isMainDrive"
+            ref="mineTree"
             :type="target!.type as MainDriveType"
             @select="(p: string) => (selectedDir = p)"
           />

@@ -27,8 +27,34 @@ const props = defineProps<{
 
 const emit = defineEmits<{ (e: 'select', path: string, fid: string): void }>()
 
-/** 暴露给调用方：强制刷新根层（绕过后端目录缓存直连重拉） */
-defineExpose({ reload: () => loadRoot(true) })
+/**
+ * 暴露给调用方：刷新"当前可见层级"（根 + 所有已展开的层）。
+ * 逐层 force 重拉（绕后端缓存），按 fid 对齐保留展开/选中状态——不是废弃整树重头再来。
+ */
+defineExpose({ reload: () => refreshLayer('0', '/', root.items, (items) => (root.items = items)) })
+
+/** force 重拉一层；旧子节点里已展开的按 fid 对齐递归强刷。返回该层新节点。 */
+async function refreshLayer(
+  parent: string,
+  parentPath: string,
+  oldNodes: DirNode[],
+  commit: (nodes: DirNode[]) => void,
+) {
+  const items = await getFilesList(props.type, parent, parentPath === '/' ? '/' : '', true)
+  const oldByFid = new Map(oldNodes.map((n) => [n.fid, n]))
+  const nodes = items.map((it) => toNode(it, parentPath))
+  for (const n of nodes) {
+    const o = oldByFid.get(n.fid)
+    if (o && o.open && o.loaded && n.is_dir) {
+      // 该子层本来就展开着：跟着强刷，保持展开
+      n.kids = await refreshLayer(n.fid, n.path, o.kids, () => {})
+      n.loaded = true
+      n.open = true
+    }
+  }
+  commit(nodes)
+  return nodes
+}
 
 function toNode(it: DirItem, parentPath: string): DirNode {
   return {

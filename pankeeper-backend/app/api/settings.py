@@ -26,6 +26,8 @@ def get_settings(_user=CurrentUser):
         data["notify"]["sendkey"] = "****" + data["notify"]["sendkey"][-4:]
     if data["qms"].get("apikey"):
         data["qms"]["apikey"] = "****" + data["qms"]["apikey"][-4:]
+    if data["qms"].get("tmdb_api_key"):
+        data["qms"]["tmdb_api_key"] = "****" + data["qms"]["tmdb_api_key"][-4:]
     return data
 
 
@@ -145,8 +147,15 @@ def test_search(body: dict, _user=CurrentUser):
     try:
         resp = requests.get(f"{url}/api/health", timeout=8)
         data = resp.json()
+        # 测试结果同步进 pansou_health 缓存：搜索页首屏状态保持新鲜
+        from .search import _save_health_cache
+
+        _save_health_cache(True, data.get("plugin_count"))
         return {"ok": True, "ms": int(resp.elapsed.total_seconds() * 1000), "plugins": data.get("plugin_count")}
     except (requests.RequestException, ValueError) as e:
+        from .search import _save_health_cache
+
+        _save_health_cache(False)
         return {"ok": False, "message": str(e)}
 
 

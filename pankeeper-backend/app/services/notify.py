@@ -15,8 +15,10 @@ from .settings_svc import get_group
 SC_TAG = "PanKeeper"
 
 
-def push(title: str, content: str, kind: str = "info") -> None:
-    """kind: info|done|fail|part|cred —— 按推送时机开关过滤。"""
+def push(title: str, content: str, kind: str = "info", short: str | None = None) -> None:
+    """kind: info|done|fail|part|cred —— 按推送时机开关过滤。
+
+    short：Server酱³ 列表简介（Turbo 不支持该参数，会忽略）。"""
     cfg = get_group("settings")["notify"]
     if not cfg.get("enabled"):
         return
@@ -25,7 +27,7 @@ def push(title: str, content: str, kind: str = "info") -> None:
     if flag and not cfg.get(flag, True):
         return
     if cfg.get("sendkey"):
-        _serverchan(cfg["sendkey"], f"{title}", content)
+        _serverchan(cfg["sendkey"], f"{title}", content, short)
     if cfg.get("webhook"):
         _webhook(cfg["webhook"], title, content)
 
@@ -57,9 +59,12 @@ def _sc_request(sendkey: str, data: dict) -> httpx.Response:
     return httpx.post(url, data=data, timeout=10)
 
 
-def _serverchan(sendkey: str, title: str, content: str) -> None:
+def _serverchan(sendkey: str, title: str, content: str, short: str | None = None) -> None:
     try:
-        _sc_request(sendkey, {"title": title, "desp": content})
+        data = {"title": title, "desp": content}
+        if short:
+            data["short"] = short
+        _sc_request(sendkey, data)
     except httpx.HTTPError:
         pass  # 推送失败不阻塞主流程
 
