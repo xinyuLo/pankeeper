@@ -8,6 +8,7 @@ import { message } from 'ant-design-vue'
 import { pkQueue } from '@/queue/engine'
 import { DRIVE_META, DD_MEDIA } from '@/api/mock/meta'
 import { listDdItems, listQmsPaths, listStrmPaths } from '@/api/modules/dd'
+import { ddStore } from '@/api/mock/dd'
 import type { DdItem, DdQmsPath, DdStrmPath, DriveType, MainDriveType } from '@/types/model'
 
 const props = defineProps<{
@@ -22,7 +23,9 @@ const props = defineProps<{
 
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>()
 
-const items = ref<DdItem[]>([])
+/** 保存位置候选：直接读 ddStore（reactive）—— 搜索页进入时已加载过，
+ *  所以打开弹窗的瞬间就有数据，不必等网络，也就不会先闪一下「还没配置转存目录」的空态。 */
+const items = computed<DdItem[]>(() => ddStore.items)
 const qmsPaths = ref<DdQmsPath[]>([])
 const strmPaths = ref<DdStrmPath[]>([])
 const selId = ref<number | null>(null)
@@ -49,25 +52,37 @@ const currentItem = computed<DdItem | null>(
 
 const driveName = computed(() => (props.type ? DRIVE_META[props.type as MainDriveType]?.full || props.type : ''))
 
-/** 每次打开：拉转存配置 → 显式钉住默认项 → 清空更名 → 聚焦输入框 */
+/** 钉住默认项：is_default 是账号级属性，同网盘两个账号可能各有一条默认，
+ *  必须显式钉到排序最前的默认项（原型踩过：浏览器只认最后一个 selected）。 */
+function pinDefault() {
+  const def = options.value.find((x) => x.is_default) || options.value[0] || null
+  selId.value = def ? def.id : null
+}
+
+/** 每次打开：清空更名 → 立即用 ddStore 的现成数据渲染 → 慢请求转后台补 → 聚焦输入框。
+ *  ⚠️ 这里**不能 await**：QMS/STRM 打的是 NAS 上的 qmediasync，原先三个请求 Promise.all
+ *     全等完才赋值，导致弹窗先渲染成「还没配置转存目录」的空态、两三秒后才切成表单。 */
 watch(
   () => props.open,
-  async (v) => {
+  (v) => {
     if (!v) return
     rename.value = ''
-    const [its, qs, ss] = await Promise.all([listDdItems(), listQmsPaths(), listStrmPaths()])
-    items.value = its
-    qmsPaths.value = qs
-    strmPaths.value = ss
-    // ⚠️ is_default 是账号级属性：同网盘两个账号可能各有一条默认，
-    //    必须显式钉到排序最前的默认项（原型踩过：浏览器只认最后一个 selected）。
-    const def = options.value.find((x) => x.is_default) || options.value[0] || null
-    selId.value = def ? def.id : null
+    pinDefault() // 用 store 现成数据立即钉默认项，弹窗首帧就是完整表单
+    // 后台静默刷新保存位置（写回 ddStore，items 是它的 computed 会自动更新）
+    listDdItems().catch(() => {})
+    // QMS / STRM 最慢，各自到货各自填，绝不挡主表单渲染
+    listQmsPaths().then((qs) => (qmsPaths.value = qs)).catch(() => {})
+    listStrmPaths().then((ss) => (strmPaths.value = ss)).catch(() => {})
     void nextTick().then(() => {
       setTimeout(() => renameRef.value?.focus?.(), 60)
     })
   },
 )
+
+/** store 异步刷新回来后，若选中项已不在候选中（首帧无数据 / 配置被删），重钉一次 */
+watch(options, () => {
+  if (!options.value.some((x) => x.id === selId.value)) pinDefault()
+})
 
 function close() {
   emit('update:open', false)

@@ -101,7 +101,7 @@ interface AccRow {
   entries: number
   sizeKb: number
   stale: number
-  /** 最早到期条目的剩余分钟数（下次刷新时间 = now + nextMin） */
+  /** 最新一次缓存条目的剩余分钟数（下次刷新时间 = now + nextMin） */
   nextMin: number
   /** 本组条目里最新一次缓存写入时间（秒级时间戳，0=无记录） */
   lastCachedAt: number
@@ -110,16 +110,29 @@ interface AccRow {
 const accRows = computed<AccRow[]>(() => {
   const map = new Map<string, AccRow>()
   for (const t of trees.value) {
-    const key = `${t.type}/${t.acc}`
+    // 同一账号在缓存键里可能是 "main"（老默认账号写法）或账号 id，两种 acc 指向同一个账号；
+    // acc_name 是后端按账号表解析出的统一展示名 —— 按它归并，一个账号只出一行。
+    const key = `${t.type}/${t.acc_name || t.acc}`
     let row = map.get(key)
     if (!row) {
-      row = { key, type: t.type, accName: t.acc_name || t.acc, entries: 0, sizeKb: 0, stale: 0, nextMin: Infinity, lastCachedAt: 0, ids: [] }
+      row = {
+        key,
+        type: t.type,
+        accName: t.acc_name || t.acc,
+        entries: 0,
+        sizeKb: 0,
+        stale: 0,
+        nextMin: -Infinity,
+        lastCachedAt: 0,
+        ids: [],
+      }
       map.set(key, row)
     }
     row.entries += t.entries || 0
     row.sizeKb += Math.max(1, (t.entries || 0) * 2) // 与后端同口径：每条 ~2KB
     if (t.ttlMin < 0) row.stale += 1
-    row.nextMin = Math.min(row.nextMin, t.ttlMin)
+    // 「下次刷新」取最新缓存那条：同账号各条目 TTL 相同，cachedAt 最大即到期最晚
+    row.nextMin = Math.max(row.nextMin, t.ttlMin)
     row.lastCachedAt = Math.max(row.lastCachedAt, t.cachedAt || 0)
     row.ids.push(t.id)
   }
@@ -133,7 +146,7 @@ function metaName(type: CacheTree['type']): string {
 function metaColor(type: CacheTree['type']): string {
   return DRIVE_META[type]?.color ?? '#1677ff'
 }
-/** 下次刷新时间：最早到期条目 = now + min(ttlMin)，统一 yyyy-MM-dd HH:mm */
+/** 下次刷新时间：本组最新缓存那条的到期时间 = now + max(ttlMin)，统一 yyyy-MM-dd HH:mm */
 function nextRefreshText(row: AccRow): string {
   if (!Number.isFinite(row.nextMin)) return '—'
   if (row.stale) return '已过期 · 打开即刷新'

@@ -14,6 +14,7 @@ import { useIsMobile } from '@/composables/useIsMobile'
 import { getInitialResults, getPanSouAddr, getSearchChannels, getSearchResults, type SearchChannel, getEngineHealth, getEngineHealthCached } from '@/api/modules/search'
 import { getSettings, saveSearchSrc } from '@/api/modules/settings'
 import { listDdItems } from '@/api/modules/dd'
+import { ddStore } from '@/api/mock/dd'
 import { DRIVE_META } from '@/api/mock/meta'
 import type { DriveType, SearchResultItem } from '@/types/model'
 
@@ -47,12 +48,14 @@ function goPansouCfg() {
  *  缓存由每日探活 + 设置页"测试 PanSou"刷新。不暴露地址，IP 属隐私 */
 const engineOk = ref<boolean | null>(null)
 const results = ref<SearchResultItem[]>([])
-/** 各网盘是否配过转存目录（快速转存按钮的前置条件，账号级配置在「转存配置」页） */
-const ddTypes = ref(new Set<DriveType>())
+/** 各网盘是否配过转存目录（快速转存按钮的前置条件，账号级配置在「转存配置」页）。
+ *  直接从 reactive 的 ddStore 派生 —— 在「转存配置」页增删改后这里即时同步，不必刷新页面。 */
+const ddTypes = computed(() => new Set<DriveType>(ddStore.items.map((x) => x.type)))
 
 onMounted(async () => {
   // 首屏走缓存结果（无检索动效），等价原型打开页面时 window.results 已在
-  const [chs, a, rows, dds, cached] = await Promise.all([
+  // listDdItems() 只为把后端配置灌进 ddStore（ddTypes 是它的 computed，不在此赋值）
+  const [chs, a, rows, , cached] = await Promise.all([
     getSearchChannels(),
     getPanSouAddr(),
     getInitialResults(),
@@ -66,7 +69,6 @@ onMounted(async () => {
   engineOk.value = cached.ok
   getEngineHealth().then((h) => (engineOk.value = h.ok)).catch(() => (engineOk.value = false))
   results.value = rows
-  ddTypes.value = new Set<DriveType>(dds.map((x) => x.type))
   renderStats()
 })
 
