@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /* 任务配置弹窗（原型 mtTaskMask，720px）—— 新增/编辑共用。
  * 表单顺序：名称 / 分享链接(解析) / 提取码 / 保存到 / 对比路径 / 包含子目录 /
- * QMS 联动(开关+目录下拉) / 正则过滤(可多条) / 转存文件夹下钻 / 定时表达式 / 完成后动作。
+ * QMS 联动(开关+目录下拉) / 正则过滤(仅匹配) / 转存文件夹下钻 / 定时表达式 / 完成后动作。
  * 注意：没有排除文件清单——入口在任务行的「排除」按钮上，别加回来（设计约定）。
  * QMS 联动开关与「完成后动作 · 触发 QMS 刮削」是同一状态（postQms），两处控件联动。
  * 目录弹窗从这里叠加打开（允许两层）。 */
@@ -9,6 +9,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import DirModal from './DirModal.vue'
 import { DD_MEDIA, DRIVE_META } from '@/api/mock/meta'
+import { accountStore } from '@/api/mock/accounts'
 import { listQmsPaths, listStrmPaths } from '@/api/modules/dd'
 import {
   cronHuman,
@@ -28,6 +29,7 @@ const meta = computed(() => DRIVE_META[props.type])
 const editing = computed(() => !!(props.task && props.task.id))
 
 /* ===== 表单状态 ===== */
+const accId = ref<number | null>(null) // 用哪个账号跑；null = 该类型默认账号
 const name = ref('')
 const shareUrl = ref('')
 const shareCode = ref('')
@@ -39,12 +41,23 @@ const postNotify = ref(false)
 const qmsId = ref<number | null>(null)
 const strmId = ref<number | null>(null)
 const cron = ref('0 3 * * *')
-/* 正则过滤：产品定为一组（匹配模式 + 替换名）。存储仍是数组形状（后端契约），
+/* 正则过滤：只做匹配过滤；文件名改名交给 QMS 刮削统一处理（正则改名已砍）。
  * 空规则保存时忽略 → 空数组。 */
 const regPat = ref('')
-const regRep = ref('')
 const drillOn = ref(false)
 const drill = ref<string[]>([])
+
+/* ===== 所属账号：该类型已连接账号，默认选中「默认账号」 ===== */
+const accOptions = computed(() =>
+  accountStore.accounts
+    .filter((a) => a.type === props.type)
+    .map((a) => ({ value: a.id, label: a.alias || a.nickname || `${DRIVE_META[a.type].name}#${a.id}`, def: !!a.is_default })),
+)
+function pickDefaultAcc(): number | null {
+  const list = accOptions.value
+  if (!list.length) return null
+  return (list.find((a) => a.def) || list[0]).value
+}
 
 /* ===== 下拉数据（进弹窗拉一次即可） ===== */
 const qmsPaths = ref<DdQmsPath[]>([])
@@ -73,10 +86,6 @@ function onParse() {
   message.success(code ? `解析成功，共 36 个文件 · 提取码 ${code}` : '解析成功，共 36 个文件')
 }
 
-/* 开 QMS 联动时给个默认整理目录，避免下拉空着 */
-watch(postQms, (v) => {
-  if (v && qmsId.value == null) qmsId.value = qmsPaths.value[0]?.id ?? null
-})
 
 /* ===== 目录弹窗（叠加第二层） ===== */
 const dirOpen = ref(false)
@@ -99,6 +108,7 @@ watch(
     if (!v) return
     const t = props.task
     const ex: PaExtras = t ? getPaExtras(t.id) : { regex: [{ pat: '', rep: '' }], drill_on: false, drill: [], qms_id: null, strm_id: null }
+    accId.value = t?.acc_id ?? pickDefaultAcc()
     name.value = t?.name || ''
     shareUrl.value = t?.share_url || ''
     shareCode.value = t?.share_code || ''
@@ -110,7 +120,6 @@ watch(
     cron.value = t ? t.cron || '' : '0 3 * * *' // 新任务给个常用默认，编辑带原值（空=仅手动）
     const firstRule = ex.regex[0]
     regPat.value = firstRule?.pat || ''
-    regRep.value = firstRule?.rep || ''
     drillOn.value = ex.drill_on
     drill.value = [...ex.drill]
     qmsId.value = ex.qms_id
@@ -120,8 +129,6 @@ watch(
       qmsPaths.value = await listQmsPaths()
       strmPaths.value = await listStrmPaths()
     }
-    // 带出联动开着但没存过目录的旧任务：给个默认整理目录，别让下拉空着
-    if (postQms.value && qmsId.value == null) qmsId.value = qmsPaths.value[0]?.id ?? null
     if (!drillDirs.value.length) drillDirs.value = await getDrillDirs()
   },
 )
@@ -140,10 +147,15 @@ async function onSave() {
     message.error('请填写任务名称和分享链接（必填）')
     return
   }
+  if (accId.value == null) {
+    message.error(`该网盘还没有已连接的账号，请先到「网盘连接」配置`)
+    return
+  }
   const t = props.task
   const task: PaTask = {
     id: t?.id ?? 0,
     type: props.type,
+    acc_id: accId.value,
     name: name.value.trim(),
     enabled: t ? t.enabled : true,
     share_url: shareUrl.value.trim(),
@@ -162,7 +174,7 @@ async function onSave() {
   }
   // 正则过滤：一组规则，pat/rep 都空就忽略；STRM 只在联动开着时才有意义
   const extras: PaExtras = {
-    regex: regPat.value.trim() || regRep.value.trim() ? [{ pat: regPat.value.trim(), rep: regRep.value.trim() }] : [],
+    regex: regPat.value.trim() ? [{ pat: regPat.value.trim(), rep: '' }] : [], // 正则改名已砍（QMS 刮削统一改名），只留匹配过滤
     drill_on: drillOn.value,
     drill: [...drill.value],
     qms_id: postQms.value ? qmsId.value : null,
@@ -213,7 +225,22 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
           <div class="mt-form-row">
             <label class="mt-label">任务名称</label>
             <div class="mt-control">
-              <input v-model="name" class="mt-input" placeholder="如：兰香如故 自动转存" />
+              <input v-model="name" class="mt-input" />
+            </div>
+          </div>
+
+          <!-- 所属账号：同网盘可配多个账号，这里选任务用哪个；默认选中「默认账号」 -->
+          <div class="mt-form-row">
+            <label class="mt-label">所属账号</label>
+            <div class="mt-control">
+              <a-select
+                v-model:value="accId"
+                :options="accOptions"
+                style="width: 260px"
+                :disabled="!accOptions.length"
+                :placeholder="accOptions.length ? '选择账号' : '该网盘暂无已连接账号'"
+              />
+              <div class="mt-hint">多账号时在这里选；「默认」在「网盘连接」页设置</div>
             </div>
           </div>
 
@@ -222,12 +249,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
             <label class="mt-label">分享链接</label>
             <div class="mt-control">
               <div class="mt-row-inline">
-                <input
-                  v-model="shareUrl"
-                  class="mt-input"
-                  placeholder="粘贴完整分享链接，含提取码，如 https://pan.baidu.com/s/1abc?pwd=xyz4"
-                />
-                <button class="mt-btn mt-btn-inline" @click="onParse">解析</button>
+                <input v-model="shareUrl" class="mt-input" />
+                <button class="mt-btn mt-btn-inline mt-btn-soft" @click="onParse">解析</button>
               </div>
               <div class="mt-hint">链接末尾带 <code>?pwd=</code> 会自动识别提取码</div>
             </div>
@@ -237,7 +260,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
           <div class="mt-form-row">
             <label class="mt-label">提取码</label>
             <div class="mt-control">
-              <input v-model="shareCode" class="mt-input" style="max-width: 220px" placeholder="4 位提取码（粘贴链接点「解析」自动识别）" />
+              <input v-model="shareCode" class="mt-input" style="max-width: 220px" readonly placeholder="解析后自动填写" title="粘贴带 ?pwd= 的链接或点「解析」自动识别" />
             </div>
           </div>
 
@@ -247,7 +270,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
             <div class="mt-control">
               <div class="mt-row-inline">
                 <input :value="saveDir" class="mt-input" placeholder="选择网盘目录" readonly title="点击「浏览」选择目录" />
-                <button class="mt-btn mt-btn-inline" @click="browse('save')">浏览</button>
+                <button class="mt-btn mt-btn-inline mt-btn-soft" @click="browse('save')">浏览</button>
               </div>
             </div>
           </div>
@@ -258,7 +281,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
             <div class="mt-control">
               <div class="mt-row-inline">
                 <input :value="comparePath" class="mt-input" placeholder="用于去重对比的目录" readonly title="点击「浏览」选择目录" />
-                <button class="mt-btn mt-btn-inline" @click="browse('compare')">浏览</button>
+                <button class="mt-btn mt-btn-inline mt-btn-soft" @click="browse('compare')">浏览</button>
               </div>
               <div class="mt-hint">转存前会与该路径下的文件做去重对比（先 MD5 后文件名）。</div>
             </div>
@@ -301,9 +324,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
           <div class="mt-form-row" style="align-items: flex-start">
             <label class="mt-label">正则过滤</label>
             <div class="mt-control">
-              <input v-model="regPat" class="mt-input" placeholder="匹配模式（正则），如 \.mkv$" style="margin-bottom: 8px" />
-              <input v-model="regRep" class="mt-input" placeholder="替换 / 重命名，如 [1080P]；留空 = 只匹配过滤" />
-              <div class="mt-hint">两项都留空 = 不启用过滤；填了模式，转存时按规则处理文件名。</div>
+              <input v-model="regPat" class="mt-input" placeholder="匹配模式（正则），如 \.mkv$" />
+              <div class="mt-hint">留空 = 不过滤；填了模式，只转存文件名匹配的文件。</div>
             </div>
           </div>
 
@@ -370,7 +392,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
     </div>
 
     <!-- 目录树选择器：叠加第二层（z-index 1002 > 任务弹窗 1000） -->
-    <DirModal v-model:open="dirOpen" :type="type" :initial="dirInitial" @picked="onPicked" />
+    <DirModal v-model:open="dirOpen" :type="type" :initial="dirInitial" :acc-id="accId" @picked="onPicked" />
   </teleport>
 </template>
 

@@ -89,13 +89,36 @@ const ACT_OPTS = [
   { value: 'compress', label: '只压缩条目，不关闭' },
 ]
 
-/* ===== 已缓存目录表 ===== */
+/* ===== 已缓存目录表：一个账号一行（条目/大小累加） ===== */
+interface AccRow {
+  key: string
+  type: CacheTree['type']
+  accName: string
+  entries: number
+  sizeKb: number
+  stale: number
+  /** 最早到期条目的剩余分钟数（下次刷新时间 = now + nextMin） */
+  nextMin: number
+  ids: (number | string)[]
+}
+const accRows = computed<AccRow[]>(() => {
+  const map = new Map<string, AccRow>()
+  for (const t of trees.value) {
+    const key = `${t.type}/${t.acc}`
+    let row = map.get(key)
+    if (!row) {
+      row = { key, type: t.type, accName: t.acc_name || t.acc, entries: 0, sizeKb: 0, stale: 0, nextMin: Infinity, ids: [] }
+      map.set(key, row)
+    }
+    row.entries += t.entries || 0
+    row.sizeKb += Math.max(1, (t.entries || 0) * 2) // 与后端同口径：每条 ~2KB
+    if (t.ttlMin < 0) row.stale += 1
+    row.nextMin = Math.min(row.nextMin, t.ttlMin)
+    row.ids.push(t.id)
+  }
+  return [...map.values()]
+})
 const staleCount = computed(() => trees.value.filter((t) => t.ttlMin < 0).length)
-const countTip = computed(() =>
-  trees.value.length
-    ? `${trees.value.length} 棵目录树 · ${staleCount.value ? staleCount.value + ' 棵已过期' : '全部有效'}`
-    : '暂无缓存',
-)
 
 function metaName(type: CacheTree['type']): string {
   return DRIVE_META[type]?.name ?? type
@@ -103,6 +126,18 @@ function metaName(type: CacheTree['type']): string {
 function metaColor(type: CacheTree['type']): string {
   return DRIVE_META[type]?.color ?? '#1677ff'
 }
+/** 下次刷新时间：最早到期条目 = now + min(ttlMin)。当天显示"今天 HH:MM"，跨天显示" M/D HH:MM" */
+function nextRefreshText(row: AccRow): string {
+  if (!Number.isFinite(row.nextMin)) return '—'
+  if (row.stale) return '已过期 · 打开即刷新'
+  const d = new Date(Date.now() + row.nextMin * 60000)
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  const now = new Date()
+  const day = d.toDateString() === now.toDateString() ? '今天' : `${d.getMonth() + 1}/${d.getDate()}`
+  return `${day} ${hh}:${mm}`
+}
+
 function ttlText(t: CacheTree): string {
   if (t.ttlMin < 0) return '已过期 · 待刷新'
   const h = Math.round((t.ttlMin / 60) * 10) / 10
@@ -113,20 +148,20 @@ async function reload() {
   trees.value = await listCacheTrees()
 }
 
-/* 刷新一棵 = 重置为当前配置下的满血 TTL（真实系统重拉网盘目录后回填） */
-async function onRefreshRow(t: CacheTree) {
-  await refreshCacheTree(t.id)
-  message.success(`已刷新「${t.path}」的目录树缓存`)
+/* 刷新一个账号 = 该账号全部缓存键失效，下次浏览直连重拉 */
+async function onRefreshRow(row: AccRow) {
+  for (const id of row.ids) await refreshCacheTree(id)
+  message.success(`已刷新「${row.accName}」的缓存`)
   await reload()
 }
-async function onClearRow(t: CacheTree) {
-  await clearCacheTree(t.id)
-  message.success(`已清除「${t.path}」的缓存`)
+async function onClearRow(row: AccRow) {
+  for (const id of row.ids) await clearCacheTree(id)
+  message.success(`已清除「${row.accName}」的缓存`)
   await reload()
 }
 async function onRefreshAll() {
-  const n = await refreshAllCacheTrees()
-  message.success(`已刷新全部 ${n} 棵目录树`)
+  await refreshAllCacheTrees()
+  message.success('已刷新全部缓存')
   await reload()
 }
 async function onClearAll() {
@@ -149,7 +184,7 @@ async function onClearAll() {
           </div>
         </div>
         <div class="cc-headact">
-          <a-button @click="onRefreshAll">立即刷新全部</a-button>
+          <a-button type="primary" @click="onRefreshAll">立即刷新全部</a-button>
           <a-popconfirm title="清空全部目录树缓存？" ok-text="清空" cancel-text="取消" @confirm="onClearAll">
             <a-button>清空缓存</a-button>
           </a-popconfirm>
@@ -157,12 +192,11 @@ async function onClearAll() {
       </div>
 
       <!-- ===== 段一：缓存策略 ===== -->
-      <div class="cc-sect">缓存策略<span class="cc-secttip">多久过期、要不要提前续</span></div>
+      <div class="cc-sect">缓存策略</div>
       <div class="formrow">
         <label>目录树缓存</label>
         <div class="ctl">
           <a-switch v-model:checked="cfg.master" @change="onMasterSw" />
-          <span class="muted small">总开关，关闭后转存弹窗每次都实时拉网盘目录</span>
         </div>
       </div>
       <div class="formrow">
@@ -170,19 +204,17 @@ async function onClearAll() {
         <div class="ctl">
           <a-input-number v-model:value="cfg.ttl" :min="1" style="width: 110px" @change="toastCfg()" />
           <a-select v-model:value="cfg.ttlUnit" :options="TTLUNIT_OPTS" style="width: 110px" @change="toastCfg()" />
-          <span class="muted small">超时未命中就重新拉取，保证新建文件夹能被看到</span>
         </div>
       </div>
       <div class="formrow">
         <label>自动刷新</label>
         <div class="ctl">
           <a-switch v-model:checked="cfg.auto" @change="onAutoSw" />
-          <span class="muted small">过期前后台预取下一版目录树，打开转存弹窗永远零等待</span>
         </div>
       </div>
 
       <!-- ===== 段二：内存保护 ===== -->
-      <div class="cc-sect">内存保护<span class="cc-secttip">内存吃紧时自动降级，转存按钮永远打得开</span></div>
+      <div class="cc-sect">内存保护</div>
       <!-- 水位条钉死 40% 卡宽：整行都是灰条太空 -->
       <div class="cc-memrow">
         <div class="progress cc-membar" :class="memCls">
@@ -193,64 +225,61 @@ async function onClearAll() {
         </span>
       </div>
       <div class="formrow">
-        <label>内存水位阈值</label>
+        <label>内存阈值</label>
         <div class="ctl">
           <a-select v-model:value="cfg.memHigh" :options="MEMHIGH_OPTS" style="width: 180px" @change="toastCfg()" />
-          <span class="muted small">超过这条水位线开始降级</span>
         </div>
       </div>
       <div class="formrow">
         <label>降级动作</label>
         <div class="ctl">
           <a-select v-model:value="cfg.act" :options="ACT_OPTS" style="width: 180px" @change="toastCfg('降级策略已更新')" />
-          <span class="muted small">
-            压缩条目 → 减半缓存上限 → 关闭缓存 · 降到哪一级都只是变慢，不会让转存不可用
-          </span>
         </div>
       </div>
       <div class="formrow">
         <label>缓存大小上限（MB）</label>
         <div class="ctl">
           <a-input-number v-model:value="cfg.maxSizeMb" :min="50" style="width: 130px" @change="toastCfg()" />
-          <span class="muted small">超过后按「最久未使用」淘汰目录</span>
         </div>
       </div>
 
       <!-- ===== 段三：已缓存目录 ===== -->
-      <div class="cc-sect">已缓存目录<span class="cc-secttip">{{ countTip }}</span></div>
+      <div class="cc-sect">已缓存目录</div>
       <div class="cc-tablewrap pk-hscroll">
         <table class="cc-table">
           <thead>
             <tr>
               <th class="cc-th" style="width: 110px">网盘</th>
-              <th class="cc-th" style="width: 160px">账号</th>
-              <th class="cc-th">目录</th>
-              <th class="cc-th" style="width: 80px">条目</th>
-              <th class="cc-th" style="width: 80px">大小</th>
-              <th class="cc-th" style="width: 130px">状态</th>
+              <th class="cc-th">账号</th>
+              <th class="cc-th" style="width: 150px">下次刷新</th>
+              <th class="cc-th" style="width: 100px">缓存条数</th>
+              <th class="cc-th" style="width: 90px">大小</th>
+              <th class="cc-th" style="width: 140px">状态</th>
               <th class="cc-th cc-th-ops" style="width: 130px">操作</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="t in trees" :key="t.id" class="cc-row">
+            <tr v-for="row in accRows" :key="row.key" class="cc-row">
               <td class="cc-td">
                 <span class="cc-pantag">
-                  <i class="cc-pandot" :style="{ background: metaColor(t.type) }"></i>{{ metaName(t.type) }}
+                  <i class="cc-pandot" :style="{ background: metaColor(row.type) }"></i>{{ metaName(row.type) }}
                 </span>
               </td>
-              <td class="cc-td">{{ t.acc }}</td>
-              <td class="cc-td cc-path">{{ t.path }}</td>
-              <td class="cc-td cc-num">{{ t.entries }}</td>
-              <td class="cc-td cc-num">{{ t.size }}</td>
-              <td class="cc-td cc-ttl" :class="t.ttlMin >= 0 ? 'fresh' : 'stale'">{{ ttlText(t) }}</td>
+              <td class="cc-td">{{ row.accName }}</td>
+              <td class="cc-td">{{ nextRefreshText(row) }}</td>
+              <td class="cc-td cc-num">{{ row.entries }}</td>
+              <td class="cc-td cc-num">{{ row.sizeKb }} KB</td>
+              <td class="cc-td cc-ttl" :class="row.stale ? 'stale' : 'fresh'">
+                {{ row.stale ? `${row.stale} 条已过期` : '全部有效' }}
+              </td>
               <td class="cc-td">
                 <span class="cc-ops">
-                  <button class="cc-op" @click="onRefreshRow(t)">刷新</button>
-                  <button class="cc-op cc-op-del" @click="onClearRow(t)">清除</button>
+                  <button class="cc-op" @click="onRefreshRow(row)">刷新</button>
+                  <button class="cc-op cc-op-del" @click="onClearRow(row)">清除</button>
                 </span>
               </td>
             </tr>
-            <tr v-if="!trees.length">
+            <tr v-if="!accRows.length">
               <td colspan="7" class="cc-empty">缓存是空的 · 打开一次转存弹窗就会把目录树存进来</td>
             </tr>
           </tbody>
@@ -442,12 +471,24 @@ html[data-theme='dark'] .cc-ttl.fresh {
   color: var(--text);
   transition: all 0.15s;
 }
+.cc-op {
+  border-color: color-mix(in srgb, var(--primary) 35%, var(--border));
+  background: color-mix(in srgb, var(--primary) 8%, var(--card));
+  color: var(--primary);
+}
 .cc-op:hover {
   border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 16%, var(--card));
   color: var(--primary);
+}
+.cc-op-del {
+  border-color: color-mix(in srgb, var(--error) 35%, var(--border));
+  background: color-mix(in srgb, var(--error) 8%, var(--card));
+  color: var(--error);
 }
 .cc-op-del:hover {
   border-color: var(--error);
+  background: color-mix(in srgb, var(--error) 16%, var(--card));
   color: var(--error);
 }
 .cc-empty {

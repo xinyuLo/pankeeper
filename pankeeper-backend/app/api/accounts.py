@@ -29,9 +29,25 @@ def _acc_or_404(db, acc_id: int) -> Account:
     return acc
 
 
-def _row(acc: Account) -> dict:
+def _default_map(db) -> dict:
+    """每类型默认账号 map（settings 组 default_accounts：{type: acc_id}）。"""
+    from ..services.settings_svc import get_group
+
+    try:
+        return get_group("default_accounts") or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _row(acc: Account, default_map: dict | None = None) -> dict:
     """单账号卡片行：平台静态元信息 + 账号动态状态。"""
     meta = META.get(acc.type, {"short": acc.type, "color": "#888", "cred_kind": "Cookie", "note": ""})
+    if default_map is None:
+        with SessionLocal() as db:
+            default_map = _default_map(db)
+    # 没显式设过默认：该类型 id 最小的账号视为默认（单账号场景天然成立）
+    explicit = default_map.get(acc.type)
+    is_default = (acc.id == explicit) if explicit else _is_first_of_type(acc)
     return {
         "id": acc.id,
         "type": acc.type,
@@ -44,6 +60,7 @@ def _row(acc: Account) -> dict:
         "status": acc.status,
         "nickname": acc.nickname,
         "last_check": acc.last_check,
+        "is_default": is_default,
         # 卡片上的「失效通知」开关（Server 酱）：按账号存；没配凭据的账号
         # 没有"失效"可言 —— 展示为关（配置后自动恢复开关原值）
         "notify": bool(acc.cookies_enc) and drive_enabled(str(acc.id)),
@@ -52,13 +69,20 @@ def _row(acc: Account) -> dict:
     }
 
 
+def _is_first_of_type(acc: Account) -> bool:
+    with SessionLocal() as db:
+        first = db.query(Account).filter(Account.type == acc.type).order_by(Account.id).first()
+    return bool(first and first.id == acc.id)
+
+
 @router.get("")
 def list_accounts(_user=CurrentUser):
     out = []
     with SessionLocal() as db:
+        dmap = _default_map(db)
         rows = db.query(Account).order_by(Account.type, Account.id).all()
         for acc in rows:
-            out.append(_row(acc))
+            out.append(_row(acc, dmap))
     return out
 
 
@@ -138,12 +162,38 @@ def set_alias(acc_id: int, body: AliasBody, _user=CurrentUser):
 
 @router.delete("/{acc_id}")
 def delete_account(acc_id: int, _user=CurrentUser):
-    """删除整个账号（卡片随之消失）。"""
+    """删除整个账号（卡片随之消失）。若它是默认账号，显式指定一并移除（回落隐式默认）。"""
     with SessionLocal() as db:
         acc = _acc_or_404(db, acc_id)
+        acc_type = acc.type
         db.delete(acc)
         db.commit()
+    from ..services.settings_svc import get_group, save_group
+
+    dmap = get_group("default_accounts") or {}
+    if dmap.get(acc_type) == acc_id:
+        dmap.pop(acc_type, None)
+        save_group("default_accounts", dmap)
     return {"ok": True}
+
+
+@router.put("/{acc_id}/set-default")
+def set_default_account(acc_id: int, _user=CurrentUser):
+    """设为该类型的默认账号（转存/调度未指定账号时用它）。
+
+    已是显式默认再点 = 取消指定，回落"该类型 id 最小"的隐式默认。"""
+    with SessionLocal() as db:
+        acc = _acc_or_404(db, acc_id)
+        acc_type = acc.type
+    from ..services.settings_svc import get_group, save_group
+
+    dmap = get_group("default_accounts") or {}
+    if dmap.get(acc_type) == acc_id:
+        dmap.pop(acc_type, None)
+    else:
+        dmap[acc_type] = acc_id
+    save_group("default_accounts", dmap)
+    return {"ok": True, "type": acc_type, "default_acc_id": dmap.get(acc_type)}
 
 
 @router.delete("/{acc_id}/credential")

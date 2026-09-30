@@ -28,10 +28,9 @@ export interface NotifyCfg {
   /** Server 酱 SendKey（mock 明文存内存；真实系统加密存储、接口不回填明文） */
   sendkey: string
   webhook: string
-  /** 推送时机四项：转存完成 / 转存失败 / 部分失败 / 凭据过期告警 */
-  on_done: boolean
-  on_fail: boolean
-  on_part: boolean
+  /** 推送时机三项：自动转存 / 搜索转存 / 凭据过期告警 */
+  on_auto: boolean
+  on_search: boolean
   on_cred: boolean
 }
 
@@ -74,9 +73,8 @@ export const settingsStore = reactive<SettingsData>({
     enabled: true,
     sendkey: 'SCT123456abcdefg',
     webhook: '',
-    on_done: true,
-    on_fail: true,
-    on_part: true,
+    on_auto: true,
+    on_search: true,
     on_cred: true,
   },
   qms: {

@@ -16,13 +16,21 @@ SC_TAG = "PanKeeper"
 
 
 def push(title: str, content: str, kind: str = "info", short: str | None = None) -> None:
-    """kind: info|done|fail|part|cred —— 按推送时机开关过滤。
+    """按推送时机开关过滤。kind 对应设置页「推送通知 → 推送时机」三个开关：
 
+    - search_done / search_fail → on_search（搜索转存）
+    - auto_done   / auto_fail   → on_auto（自动转存）
+    - cred                      → on_cred（凭据过期告警）
+    - info                      → 不受时机开关限制（仅受总开关）
     short：Server酱³ 列表简介（Turbo 不支持该参数，会忽略）。"""
     cfg = get_group("settings")["notify"]
     if not cfg.get("enabled"):
         return
-    gate = {"done": "on_done", "fail": "on_fail", "part": "on_part", "cred": "on_cred"}
+    gate = {
+        "search_done": "on_search", "search_fail": "on_search",
+        "auto_done": "on_auto", "auto_fail": "on_auto",
+        "cred": "on_cred", "info": None,
+    }
     flag = gate.get(kind)
     if flag and not cfg.get(flag, True):
         return
