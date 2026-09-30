@@ -6,8 +6,9 @@ import type { QueueCfg, QueueState, QueueTask } from '@/types/model'
  * 转存队列引擎（双模式，导出接口对两种模式完全一致，组件层无感）：
  * - mock 模式（VITE_USE_MOCK!=='false'）：本地 600ms tick 模拟（原型 queue-core.js 移植，
  *   localStorage `pkq_v2` / `pkq_cfg`）；
- * - 真实模式：消费后端队列（GET /queue/state 每 600ms 轮询，POST /queue/tasks 入队，
- *   GET/PUT /queue/config），状态同步进 queueView 响应式镜像，QueueBoard/QueueBadge 照常渲染。
+ * - 真实模式：消费后端队列（SSE /queue/events 推变化为主，/queue/state 仅作兜底轮询，
+ *   POST /queue/tasks 入队，GET/PUT /queue/config），状态同步进 queueView 响应式镜像，
+ *   QueueBoard/QueueBadge 照常渲染。
  * 阶段机契约（两种模式一致）：transfer→waitqms→qms→waitstrm→strm→done，完成保留 30 分钟。
  * ===================================================================== */
 
@@ -341,16 +342,21 @@ if (USE_MOCK) {
     window.clearInterval(pollTimer)
     pollTimer = window.setInterval(() => void pollRemote(), ms)
   }
+  // 兜底轮询只在「SSE 静默」时才该发生：收到任何服务端动静（状态帧 / 心跳）都把定时器往后推。
+  // 间隔必须大于后端心跳周期（~30s），否则心跳还没到、定时器先触发了，白白多打一次 /queue/state。
+  const SSE_IDLE_POLL = 45000
   const connectSse = () => {
     const es = new EventSource(`/api/queue/events?token=${encodeURIComponent(localStorage.getItem('pk-auth') || '')}`)
     es.onmessage = (ev) => {
       try {
         applyRemoteState(JSON.parse(ev.data) as QueueState)
-        startPolling(15000) // SSE 活着时轮询降到 15s 兜底
+        startPolling(SSE_IDLE_POLL)
       } catch {
         /* ignore */
       }
     }
+    // 后端 ~30s 一个具名心跳事件：连接还活着的证据 → 重置兜底定时器（空闲时几乎不再轮询）
+    es.addEventListener('ping', () => startPolling(SSE_IDLE_POLL))
     es.onerror = () => {
       es.close()
       startPolling(2500) // 断线：退回 2.5s 轮询自愈
