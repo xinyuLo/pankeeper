@@ -40,6 +40,10 @@ export interface QmsCfg {
   enabled: boolean
   url: string
   apikey: string
+  /** TMDB v3 api_key：转存完成的富文本推送（封面/剧照）用它查 TMDB */
+  tmdb_api_key: string
+  /** TMDB 代理（http://host:port）：NAS 直连 api.themoviedb.org 不通时填 */
+  tmdb_proxy: string
   /** 触发动作：刮削后生成 STRM / 完成后刷新 Emby */
   act_strm: boolean
   act_emby: boolean
@@ -79,6 +83,8 @@ export const settingsStore = reactive<SettingsData>({
     enabled: true,
     url: 'http://192.168.2.77:8020',
     apikey: '****-****-****',
+    tmdb_api_key: '',
+    tmdb_proxy: '',
     act_strm: true,
     act_emby: true,
   },

@@ -1,6 +1,7 @@
 """缓存配置（目录树缓存策略 + 内存观测）与目录浏览（转存弹窗懒加载）。"""
 from __future__ import annotations
 
+import threading
 import time
 
 from fastapi import APIRouter, HTTPException
@@ -71,48 +72,109 @@ def list_files(type: str = "quark", parent: str = "0", path: str = "", force_ref
     """转存弹窗目录浏览：按父目录拉一层，缓存 key=(type, account, cid)。
 
     adapter（解密+client）只在真正要打网盘时才构造——缓存命中时零开销。"""
+    return dir_cache.get_or_load((type, "main", parent), lambda: _load_dir_payload(type, parent, path), force=force_refresh)
 
-    def load():
-        with SessionLocal() as db:
-            adapter = make_adapter_for(db, type)
-        if type == "quark":
-            if parent == "0" and path:
-                # 按路径浏览：逐级解析到 fid（懒加载契约：前端只传父层）
-                fid = _resolve_path(adapter, path)
-                items = adapter._list_dir(fid)
-            else:
-                items = adapter._list_dir(parent)
-            out = [
-                {
-                    "fid": str(it.get("fid", "")),
-                    "name": str(it.get("file_name", "")),
-                    "is_dir": bool(it.get("dir")),
-                    "size": int(it.get("size") or 0),
-                }
-                for it in items
-            ]
-            # 目录 ID→路径映射（稳定，无 TTL）
-            _remember_paths(type, parent, path, out)
-            return out
-        if type == "baidu":
-            # 百度没有 quark 那种 fid 概念，直接用**完整路径**当目录标识：
-            # 根层前端传 parent='0' + path='/'；展开子层时 parent 就是上一层的 path。
-            directory = path if (path and parent in ("0", "")) else parent
-            if not directory or directory == "0":
-                directory = "/"
-            items = adapter.list_dir(directory)
-            return [
-                {
-                    "fid": str(it.get("path") or ""),
-                    "name": str(it.get("server_filename") or ""),
-                    "is_dir": bool(it.get("isdir")),
-                    "size": int(it.get("size") or 0),
-                }
-                for it in items
-            ]
-        raise HTTPException(status_code=400, detail=f"网盘 {type} 适配器尚未实现")
 
-    return dir_cache.get_or_load((type, "main", parent), load, force=force_refresh)
+def _load_dir_payload(type: str, parent: str, path: str):
+    """拉取并映射一层目录（/files/list 与全树预热共用）。调用方负责包进 dir_cache.get_or_load。"""
+    with SessionLocal() as db:
+        adapter = make_adapter_for(db, type)
+    if type == "quark":
+        if parent == "0" and path:
+            # 按路径浏览：逐级解析到 fid（懒加载契约：前端只传父层）
+            fid = _resolve_path(adapter, path)
+            items = adapter._list_dir(fid)
+        else:
+            items = adapter._list_dir(parent)
+        out = [
+            {
+                "fid": str(it.get("fid", "")),
+                "name": str(it.get("file_name", "")),
+                "is_dir": bool(it.get("dir")),
+                "size": int(it.get("size") or 0),
+            }
+            for it in items
+        ]
+        # 目录 ID→路径映射（稳定，无 TTL）
+        _remember_paths(type, parent, path, out)
+        return out
+    if type == "baidu":
+        # 百度没有 quark 那种 fid 概念，直接用**完整路径**当目录标识：
+        # 根层前端传 parent='0' + path='/'；展开子层时 parent 就是上一层的 path。
+        directory = path if (path and parent in ("0", "")) else parent
+        if not directory or directory == "0":
+            directory = "/"
+        items = adapter.list_dir(directory)
+        return [
+            {
+                "fid": str(it.get("path") or ""),
+                "name": str(it.get("server_filename", "")),
+                "is_dir": bool(it.get("isdir")),
+                "size": int(it.get("size") or 0),
+            }
+            for it in items
+        ]
+    raise HTTPException(status_code=400, detail=f"网盘 {type} 适配器尚未实现")
+
+
+# ===== 全树预热：保存 Cookie 验证通过后一次性把目录树灌进缓存 =====
+# 上限防失控：目录数/深度到顶就停，剩余的浏览时按需缓存
+WARM_MAX_DIRS = 300
+WARM_MAX_DEPTH = 5
+_WARM_JOBS: dict[str, dict] = {}
+_WARM_LOCK = threading.Lock()
+
+
+def _warm_walk(type: str) -> None:
+    from collections import deque
+
+    job = _WARM_JOBS[type]
+    job.update(status="running", done=0, total=1, message="")
+    try:
+        # 根节点：quark 用 fid，baidu 用路径（fid 即完整路径）
+        root = "0" if type == "quark" else "/"
+        queue: deque[tuple[str, int]] = deque([(root, 0)])
+        seen: set[str] = set()
+        while queue:
+            key_id, depth = queue.popleft()
+            if key_id in seen:
+                continue
+            seen.add(key_id)
+            if job["done"] >= WARM_MAX_DIRS or depth > WARM_MAX_DEPTH:
+                job["message"] = f"已达上限（{WARM_MAX_DIRS} 个目录 / {WARM_MAX_DEPTH} 层），其余浏览时按需缓存"
+                break
+            payload = dir_cache.get_or_load((type, "main", key_id), lambda k=key_id: _load_dir_payload(type, k, ""))
+            job["done"] += 1
+            job["total"] = max(job["total"], job["done"])
+            for it in payload:
+                if it["is_dir"] and it["fid"] and it["fid"] not in seen:
+                    job["total"] += 1
+                    queue.append((it["fid"], depth + 1))
+        job["status"] = "done"
+    except Exception as e:  # noqa: BLE001 —— 预热失败不影响业务，状态报给前端
+        job["status"] = "error"
+        job["message"] = str(e)
+
+
+@router.post("/cache/trees/warm")
+def warm_trees(body: dict, _user=CurrentUser):
+    """后台启动某网盘的全树预热，立即返回。重复调用时若已在跑则直接回当前进度。"""
+    type = body.get("type") or ""
+    if type not in ("baidu", "quark"):
+        raise HTTPException(status_code=400, detail=f"网盘 {type} 暂不支持目录预热")
+    with _WARM_LOCK:
+        job = _WARM_JOBS.get(type)
+        if job and job["status"] == "running":
+            return {"type": type, **job}
+        _WARM_JOBS[type] = {"status": "queued", "done": 0, "total": 1, "message": ""}
+    threading.Thread(target=_warm_walk, args=(type,), daemon=True).start()
+    return {"type": type, **_WARM_JOBS[type]}
+
+
+@router.get("/cache/trees/warm/status")
+def warm_status(type: str, _user=CurrentUser):
+    job = _WARM_JOBS.get(type) or {"status": "idle", "done": 0, "total": 0, "message": ""}
+    return {"type": type, **job}
 
 
 def _resolve_path(adapter, path: str) -> str:

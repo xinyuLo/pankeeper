@@ -5,15 +5,16 @@
  * dd- 前缀私有样式在本文件 <style scoped>；数据直接读写 ddStore（内存态），
  * 增删改走 api/modules/dd.ts（mockDelay 包一层，后端就绪后只换实现）。
  * ===================================================================== */
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import { ddStore, ddQmsPaths, ddStrmPaths, ddFind } from '@/api/mock/dd'
-import { DD_ACCOUNTS, DD_MEDIA, MAIN_ORDER, DRIVE_META } from '@/api/mock/meta'
+import { ddStore, ddFind } from '@/api/mock/dd'
+import { DD_MEDIA, MAIN_ORDER, DRIVE_META } from '@/api/mock/meta'
 import { DD_TREES } from '@/api/mock/tree'
+import { accountStore } from '@/api/mock/accounts'
 import { getFilesList } from '@/api/modules/files'
 import { USE_MOCK } from '@/api/http'
-import { saveDdItem, deleteDdItem, setDefaultDir } from '@/api/modules/dd'
-import type { DdItem, MainDriveType, TreeNode } from '@/types/model'
+import { saveDdItem, deleteDdItem, setDefaultDir, listDdItems, listQmsPaths, listStrmPaths } from '@/api/modules/dd'
+import type { DdItem, DdQmsPath, DdStrmPath, MainDriveType, TreeNode } from '@/types/model'
 
 /* ===== 列表态 ===== */
 const active = ref<MainDriveType>('baidu')
@@ -27,9 +28,10 @@ function countOf(t: MainDriveType): number {
   return ddStore.items.filter((x) => x.type === t).length
 }
 
-/** 账号 id → 展示名（查不到时兜底显示原始 id） */
+/** 账号 id → 展示名（真实账号：别名/昵称；查不到时兜底显示原始值） */
 function accLabel(acc: string): string {
-  return DD_ACCOUNTS[active.value].find((a) => a.id === acc)?.label || acc || '—'
+  const a = accountStore.accounts.find((x) => String(x.id) === String(acc))
+  return a ? a.alias || a.nickname || `${DRIVE_META[a.type].name}#${a.id}` : acc || '—'
 }
 
 function switchTab(t: MainDriveType) {
@@ -62,29 +64,43 @@ const fStrmId = ref(0) // 0 = 不生成 STRM（select 没法用 null 当选项�
 const treeOpen = ref(false)
 
 const typeOptions = MAIN_ORDER.map((k) => ({ value: k, label: DRIVE_META[k].full }))
+/** 所属账号：真实账号列表（网盘连接页配的），不是 mock 的假号 */
 const accOptions = computed(() =>
-  (DD_ACCOUNTS[fType.value] || []).map((a) => ({ value: a.id, label: a.label })),
+  accountStore.accounts
+    .filter((a) => a.type === fType.value)
+    .map((a) => ({ value: String(a.id), label: a.alias || a.nickname || `${DRIVE_META[a.type].name}#${a.id}` })),
 )
-// QMS 刮削目录下拉：#id · 类型 · 路径（照 bdSavePro 的标签格式）
+/** QMS 刮削目录 / STRM 同步路径：打开弹窗时从 QMS 拉真实列表 */
+const qmsPaths = ref<DdQmsPath[]>([])
+const strmPaths = ref<DdStrmPath[]>([])
+// QMS 刮削目录下拉：#id · 类型 · 路径
 const qmsOptions = computed(() =>
-  ddQmsPaths.map((p) => ({ value: p.id, label: `#${p.id} · ${DD_MEDIA[p.media_type] || p.media_type} · ${p.source_path}` })),
+  qmsPaths.value.map((p) => ({ value: p.id, label: `#${p.id} · ${DD_MEDIA[p.media_type as 'tv'] || p.media_type} · ${p.source_path}` })),
 )
 // STRM 下拉：首项「不生成」对应哨兵 0
 const strmOptions = computed(() => [
   { value: 0, label: '不生成 STRM' },
-  ...ddStrmPaths.map((p) => ({ value: p.id, label: `#${p.id} · ${p.remote_path}` })),
+  ...strmPaths.value.map((p) => ({ value: p.id, label: `#${p.id} · ${p.remote_path}` })),
 ])
 
 // 开着 QMS 却没选目录时，自动选中第一项（原型 ddRenderQms 同款兜底）
 watch(fQmsOn, (on) => {
-  if (on && fQmsId.value == null && ddQmsPaths.length) fQmsId.value = ddQmsPaths[0].id
+  if (on && fQmsId.value == null && qmsPaths.value.length) fQmsId.value = qmsPaths.value[0].id
 })
+
+async function loadQmsStrmPaths() {
+  // QMS 未启用/连不上时静默置空：下拉显示"暂无可选"，不挡住表单其他项
+  qmsPaths.value = await listQmsPaths().catch(() => [])
+  strmPaths.value = await listStrmPaths().catch(() => [])
+}
 
 function openEditor(id: number | null) {
   editingId.value = id
   const it = id != null ? ddFind(id) : null
   fType.value = it ? it.type : active.value
-  fAcc.value = it ? it.account : DD_ACCOUNTS[fType.value][0]?.id || ''
+  const firstAcc = accountStore.accounts.find((a) => a.type === fType.value)
+  fAcc.value = it ? it.account : String(firstAcc?.id ?? '')
+  if (!it && !firstAcc) message.warning(`该网盘还没有已连接的账号，请先到「网盘连接」配置`)
   fPath.value = it ? it.path : ''
   fName.value = it ? it.name : ''
   // 新增时排序默认排到该网盘现有最大值 + 1（原型如此）
@@ -98,11 +114,13 @@ function openEditor(id: number | null) {
   // ⚠️ 必须重置树展开态与按钮文案，否则第二次打开显示「收起目录」、点一下反而把树收起来（原型踩过）
   treeOpen.value = false
   modalOpen.value = true
+  loadQmsStrmPaths()
 }
 
 /** 切换网盘：账号跟随切到该网盘第一个，已选路径/树展开态作废（跨网盘路径无意义） */
 function onTypeChange() {
-  fAcc.value = DD_ACCOUNTS[fType.value][0]?.id || ''
+  const firstAcc = accountStore.accounts.find((a) => a.type === fType.value)
+  fAcc.value = String(firstAcc?.id ?? '')
   fPath.value = ''
   expanded.value = new Set()
   remoteRows.value = []
@@ -210,6 +228,12 @@ function toggleTree() {
   if (treeOpen.value && !USE_MOCK && remoteRows.value.length === 0) loadRemoteRoot()
 }
 
+/* ===== 进页面：拉真实转存配置 + QMS/STRM 路径列表（此前页面渲染的一直是 mock 假数据） ===== */
+onMounted(async () => {
+  await listDdItems().catch(() => {})
+  loadQmsStrmPaths()
+})
+
 /* ===== 保存（校验全部不关弹窗，重名只在同网盘 + 同账号内拦截） ===== */
 async function confirmEditor() {
   const name = fName.value.trim()
@@ -268,7 +292,7 @@ async function confirmEditor() {
     message.success(`已保存「${name}」`)
   } else {
     await saveDdItem({
-      id: 0, // saveDdItem 查不到 id=0 会自增 seq 后入库
+      id: null, // 新建：后端自增分配 id，不再用 0 当"新建"魔法值
       type: fType.value,
       account: fAcc.value,
       sort: fSort.value,

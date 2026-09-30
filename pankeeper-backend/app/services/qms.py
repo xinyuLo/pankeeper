@@ -46,6 +46,72 @@ def trigger_scrape(qms_id: int) -> tuple[bool, str]:
         client.close()
 
 
+def scrape_pathes() -> list[dict] | None:
+    """GET /api/scrape/pathes：QMS 刮削路径列表（转存配置页下拉）。失败返回 None。"""
+    c = _client()
+    if c is None:
+        return None
+    client, _ = c
+    try:
+        resp = client.get("/api/scrape/pathes", params={"page": 1, "pageSize": 200})
+        data = resp.json()
+        if resp.status_code == 200 and data.get("code") in (0, 200):
+            d = data.get("data")
+            return d if isinstance(d, list) else (d or {}).get("list") or []
+        return None
+    except (httpx.HTTPError, ValueError):
+        return None
+    finally:
+        client.close()
+
+
+def sync_pathes() -> list[dict] | None:
+    """GET /api/sync/path-list：QMS STRM 同步路径列表。失败返回 None。"""
+    c = _client()
+    if c is None:
+        return None
+    client, _ = c
+    try:
+        resp = client.get("/api/sync/path-list", params={"page": 1, "page_size": 200})
+        data = resp.json()
+        if resp.status_code == 200 and data.get("code") in (0, 200):
+            d = data.get("data")
+            return d if isinstance(d, list) else (d or {}).get("list") or []
+        return None
+    except (httpx.HTTPError, ValueError):
+        return None
+    finally:
+        client.close()
+
+
+def scrape_records(name: str | None = None, status: str | None = None, page_size: int = 100) -> list[dict] | None:
+    """GET /api/scrape/records：查刮削记录（联动推送用——等 QMS 刮完改名再推）。
+
+    返回 list（可能为空）；QMS 未启用/连接失败返回 None（调用方据此放弃本次轮询）。
+    记录字段见 qMediaSync controllers/scrape.go：file_name/media_name/tmdb_id/status/
+    new_file/season_number/episode_number/type 等。
+    """
+    c = _client()
+    if c is None:
+        return None
+    client, _ = c
+    try:
+        params: dict = {"page": 1, "pageSize": page_size}
+        if name:
+            params["name"] = name
+        if status:
+            params["status"] = status
+        resp = client.get("/api/scrape/records", params=params)
+        data = resp.json()
+        if resp.status_code == 200 and data.get("code") in (0, 200):
+            return (data.get("data") or {}).get("list") or []
+        return None
+    except (httpx.HTTPError, ValueError):
+        return None
+    finally:
+        client.close()
+
+
 def trigger_strm(strm_id: int) -> tuple[bool, str]:
     """POST /api/sync/path/start {"id": N}（STRM 同步目录挂在 QMS 侧管理）。"""
     c = _client()
