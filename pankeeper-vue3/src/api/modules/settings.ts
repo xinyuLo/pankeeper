@@ -45,8 +45,8 @@ export async function saveQms(cfg: SettingsData['qms']): Promise<void> {
   await put('/settings/qms', cfg)
 }
 
-/** 测试 PanSou 连通，返回响应耗时（毫秒） */
-export async function testPansou(url: string): Promise<{ ok: boolean; ms: number }> {
+/** 测试 PanSou 连通。返回响应耗时；失败时 ok=false + message（HTTP 仍是 200） */
+export async function testPansou(url: string): Promise<{ ok: boolean; ms: number; message?: string }> {
   if (USE_MOCK) {
     void url
     return mockDelay({ ok: true, ms: 120 + Math.round(Math.random() * 40) })
@@ -54,13 +54,13 @@ export async function testPansou(url: string): Promise<{ ok: boolean; ms: number
   return post<{ ok: boolean; ms: number }>('/settings/search/test', { url })
 }
 
-/** 发送 Server 酱测试消息 */
-export async function testSendkey(sendkey: string): Promise<void> {
+/** 发送 Server 酱测试消息。后端发送失败也是 200 + {ok:false,message}，调用方必须看 ok */
+export async function testSendkey(sendkey: string): Promise<{ ok: boolean; message?: string }> {
   if (USE_MOCK) {
     void sendkey
-    return mockDelay(undefined, 400)
+    return mockDelay({ ok: true, message: '（mock）测试消息已发送' }, 400)
   }
-  await post('/settings/notify/test', { sendkey })
+  return post<{ ok: boolean; message?: string }>('/settings/notify/test', { sendkey })
 }
 
 /** 测试 QMS 连接，返回连通结果（ok/message 直接来自后端，供调用方判断）。

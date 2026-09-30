@@ -8,6 +8,9 @@
 """
 from __future__ import annotations
 
+import hashlib
+import threading
+
 import httpx
 
 from ..security import decrypt_credential
@@ -20,6 +23,26 @@ UA = (
     "Chrome/126.0.0.0 Safari/537.36"
 )
 
+# 同 quark：httpx.Client() 在 Windows 上构造 ~0.5s（SSL 上下文），而 adapter 每个
+# 请求都会新建 —— client 必须按账号（Cookie）复用，进程生命周期内不关闭。
+_CLIENTS: dict[str, httpx.Client] = {}
+_CLIENT_LOCK = threading.Lock()
+
+
+def _shared_client(cookies: str) -> httpx.Client:
+    key = hashlib.sha1(cookies.encode()).hexdigest()
+    with _CLIENT_LOCK:
+        cli = _CLIENTS.get(key)
+        if cli is None:
+            cli = httpx.Client(
+                headers={"cookie": cookies, "user-agent": UA},
+                timeout=15.0,
+                # 请求计数（网盘日志页 / 风控预警）：挂在传输层，业务方法零侵入
+                event_hooks={"request": [reqstat.hook("baidu")]},
+            )
+            _CLIENTS[key] = cli
+        return cli
+
 
 class BaiduClient:
     type = "baidu"
@@ -27,12 +50,7 @@ class BaiduClient:
     def __init__(self, cookies_enc: str, gate: RateGate | None = None):
         self.cookies = decrypt_credential(cookies_enc)
         self.gate = gate or RateGate("baidu", min_interval=1.0, cooldown=30.0)
-        self._http = httpx.Client(
-            headers={"cookie": self.cookies, "user-agent": UA},
-            timeout=15.0,
-            # 请求计数（网盘日志页 / 风控预警）：挂在传输层，业务方法零侵入
-            event_hooks={"request": [reqstat.hook("baidu")]},
-        )
+        self._http = _shared_client(self.cookies)
 
     def _get(self, url: str, params: dict | None = None) -> dict:
         self.gate.wait()

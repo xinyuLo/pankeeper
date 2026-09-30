@@ -10,8 +10,9 @@ import LazyDirTree from '@/components/LazyDirTree.vue'
 import { accountStore, ACCOUNT_STATUS_VIEW, type AccountRow } from '@/api/mock/accounts'
 import { MAIN_ORDER, DRIVE_META } from '@/api/mock/meta'
 import { ddStore } from '@/api/mock/dd'
-import { addAccount, checkAccount, clearAccount, getSummary, listAccounts, saveCredential, setDriveNotify, type AccountSummary } from '@/api/modules/accounts'
+import { addAccount, checkAccount, deleteAccount, getSummary, listAccounts, saveCredential, setDriveNotify, type AccountSummary } from '@/api/modules/accounts'
 import { listDdItems, saveDdItem, setDefaultDir } from '@/api/modules/dd'
+import { getFilesList } from '@/api/modules/files'
 import type { DdItem, MainDriveType } from '@/types/model'
 
 /** 卡片列表：多账号平铺，按平台固定顺序 + 同平台按 id 排 */
@@ -53,7 +54,7 @@ const addSaving = ref(false)
 const addType = ref<MainDriveType>('baidu')
 const addAlias = ref('')
 const addCookies = ref('')
-const ADD_PLATFORMS = [
+const ADD_PLATFORMS: { value: MainDriveType; label: string }[] = [
   { value: 'baidu', label: '百度网盘' },
   { value: 'quark', label: '夸克网盘' },
   { value: '115', label: '115 网盘' },
@@ -64,18 +65,42 @@ async function onAddSave() {
     message.warning('请先粘贴 Cookie')
     return
   }
+  const type = addType.value
+  const cookies = addCookies.value.trim()
+  const alias = addAlias.value.trim()
   addSaving.value = true
+  // 乐观插入临时卡：弹窗立刻关，卡片按钮区显示「正在检测连通性」；
+  // 后端验证完 listAccounts 整体替换 store，临时卡自动被真卡换掉
+  const tempId = -Date.now()
+  const meta = DRIVE_META[type]
+  accountStore.accounts.push({
+    id: tempId, type, alias, nickname: '', short: meta.name, color: meta.color,
+    cred_kind: 'Cookie', note: '', status: 'unset', last_check: '从未配置', notify: false, summary: null,
+  })
+  verifyingId.value = tempId
+  addOpen.value = false
   try {
-    const { nickname } = await addAccount(addType.value, addCookies.value.trim(), addAlias.value.trim())
-    addOpen.value = false
+    const { nickname } = await addAccount(type, cookies, alias)
+    message.success(`账号已添加并验证通过（${nickname}）`)
     addCookies.value = ''
     addAlias.value = ''
-    message.success(`账号已添加并验证通过（${nickname}）`)
+    // 新卡的 id：刷新后同平台 id 最大的那条；loading 保持到容量/会员也拉回来
+    const mine = accountStore.accounts.filter((x) => x.type === type)
+    const fresh = mine.length ? mine[mine.length - 1] : null
+    if (fresh) {
+      verifyingId.value = fresh.id
+      await loadSummary(fresh.id)
+    }
   } catch (e: unknown) {
     const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
     message.error(detail || '添加失败')
+    // 验证失败：撤掉临时卡（真实模式 listAccounts 会整体替换，mock 模式得手动摘）
+    const pos = accountStore.accounts.findIndex((x) => x.id === tempId)
+    if (pos >= 0) accountStore.accounts.splice(pos, 1)
+    await listAccounts().catch(() => {})
   } finally {
     addSaving.value = false
+    verifyingId.value = null
   }
 }
 
@@ -94,6 +119,8 @@ onMounted(async () => {
 const bdOpen = ref(false)
 const bdType = ref<MainDriveType>('quark')
 const bdPath = ref('')
+const bdFid = ref('') // 树里选中的目录 fid（预热缓存用；没点选就保存时回落按路径预热）
+const bdTree = ref<InstanceType<typeof LazyDirTree> | null>(null)
 const bdSaving = ref(false)
 const bdTitle = computed(() => `默认目标目录 · ${DRIVE_META[bdType.value]?.full || bdType.value}`)
 
@@ -105,12 +132,31 @@ function defaultDirOf(type: MainDriveType): DdItem | null {
 function openBaseDir(a: AccountRow) {
   bdType.value = a.type
   bdPath.value = defaultDirOf(a.type)?.path || '/'
+  bdFid.value = ''
   bdOpen.value = true
 }
 
-/** 树里点选目录：只记选择（高亮），点弹窗「保存到此处」才落库 */
-function onTreePick(path: string) {
+/** 树里点选目录：只记选择（高亮），点弹窗「保存到此处」才落库+预热缓存 */
+function onTreePick(path: string, fid: string) {
   bdPath.value = path
+  bdFid.value = fid
+}
+
+/* 弹窗标题栏「刷新」：绕过后端缓存直连重拉根层 */
+const bdRefreshing = ref(false)
+async function onRefreshTree() {
+  bdRefreshing.value = true
+  try {
+    await bdTree.value?.reload()
+  } finally {
+    bdRefreshing.value = false
+  }
+}
+
+/** 把目录内容拉进后端缓存（dir_cache，缓存优先）：有 fid 按 fid 预热（和树展开同一个 key），
+ *  没 fid（打开就保存旧路径）回落按路径解析预热。 */
+async function warmDirCache(type: MainDriveType, fid: string, path: string) {
+  await getFilesList(type, fid || '0', fid ? '' : path)
 }
 
 async function onConfirmBaseDir() {
@@ -119,34 +165,50 @@ async function onConfirmBaseDir() {
     return
   }
   bdSaving.value = true
+  const type = bdType.value
+  const fid = bdFid.value
+  const path = bdPath.value
   try {
-    const item = defaultDirOf(bdType.value)
+    const item = defaultDirOf(type)
     if (item) {
-      await saveDdItem({ ...item, path: bdPath.value }) // 更新默认条，保留 QMS/STRM 关联
+      await saveDdItem({ ...item, path }) // 更新默认条，保留 QMS/STRM 关联
     } else {
-      const others = ddStore.items.filter((x) => x.type === bdType.value)
+      const others = ddStore.items.filter((x) => x.type === type)
       if (others.length === 0) {
         // 一条都没有：新建即默认（后端对首条自动 is_default）
-        await saveDdItem({ id: 0, type: bdType.value, account: 'main', sort: 1, name: '默认目录', path: bdPath.value, is_default: true, qms_on: false, qms_id: null, strm_id: null })
+        await saveDdItem({ id: 0, type, account: 'main', sort: 1, name: '默认目录', path, is_default: true, qms_on: false, qms_id: null, strm_id: null })
       } else {
         // 边缘：有条目但无默认 —— 更新第一条并设为默认
         const first = others[0]
-        await saveDdItem({ ...first, path: bdPath.value })
+        await saveDdItem({ ...first, path })
         await setDefaultDir(first.id)
       }
     }
-    bdOpen.value = false
-    message.success('默认目标目录已保存')
   } catch (e: unknown) {
     const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
     message.error(detail || '保存失败')
-  } finally {
     bdSaving.value = false
+    return
+  }
+  // 配置落库即预热缓存：提示「正在缓存 → 缓存成功/失败」，不再弹「已保存」
+  bdOpen.value = false
+  bdSaving.value = false
+  const hide = message.loading('正在缓存文件夹信息…', 0)
+  try {
+    await warmDirCache(type, fid, path)
+    message.success('缓存成功')
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(`缓存失败：${detail || '目录拉取出错'}`, 5)
+  } finally {
+    hide()
   }
 }
 
 /* ===== 卡片动作 ===== */
 const checking = ref<number | null>(null)
+/** 正在「保存并验证」的账号：按钮区整个换成 loading + 正在检测连通性（新增时是临时卡的负数 id） */
+const verifyingId = ref<number | null>(null)
 
 async function onCheck(a: AccountRow) {
   checking.value = a.id
@@ -229,23 +291,28 @@ async function onCredSave() {
     return
   }
   if (!credAcc.value) return
-  credSaving.value = true
+  const acc = credAcc.value
+  const cookies = credCookies.value.trim()
+  credOpen.value = false
+  // 弹窗立刻关，卡片按钮区进「正在检测连通性」；成功才清输入，失败重开弹窗还能改
+  verifyingId.value = acc.id
   try {
-    const { nickname } = await saveCredential(credAcc.value.id, credCookies.value.trim())
-    credOpen.value = false
+    const { nickname } = await saveCredential(acc.id, cookies)
+    credCookies.value = ''
     message.success(`凭据已保存并验证通过（${nickname}）`)
-    await loadSummary(credAcc.value.id)
+    await loadSummary(acc.id)
   } catch (e: unknown) {
     const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
     message.error(detail || '凭据验证失败')
   } finally {
-    credSaving.value = false
+    verifyingId.value = null
   }
 }
 
 async function onClear(a: AccountRow) {
-  await clearAccount(a.id)
-  message.success(`已清空「${a.alias || DRIVE_META[a.type].full}」凭据，状态置为未配置`)
+  // 没有凭据的空壳卡片没有存在的意义：清空 = 直接删除账号卡片（后端同删一行）
+  await deleteAccount(a.id)
+  message.success(`已删除「${a.alias || DRIVE_META[a.type].full}」账号卡片`)
 }
 </script>
 
@@ -256,7 +323,7 @@ async function onClear(a: AccountRow) {
       <a-button type="primary" @click="addOpen = true">＋ 新增网盘</a-button>
     </div>
     <div class="accgrid">
-      <div v-for="a in rows" :key="a.type" class="acc" :class="{ off: a.status === 'unset' }" :style="{ '--acc': a.color }">
+      <div v-for="a in rows" :key="a.id" class="acc" :class="{ off: a.status === 'unset' }" :style="{ '--acc': a.color }">
         <div class="acchead">
           <div class="accname">
             <span class="chip" :style="{ background: a.color }">{{ a.short }}</span>
@@ -323,49 +390,65 @@ async function onClear(a: AccountRow) {
           </div>
         </div>
         <div class="accbtns">
-          <a-button type="primary" size="small" @click="onConfig(a)">配置凭据</a-button>
-          <a-button size="small" :loading="checking === a.id" @click="onCheck(a)">检测连通</a-button>
-          <a-popconfirm
-            v-if="a.status !== 'unset'"
-            title="确定清空该网盘的凭据？清空后状态变为未配置，需重新绑定。"
-            ok-text="清空"
-            cancel-text="取消"
-            @confirm="onClear(a)"
-          >
-            <a-button size="small" danger>清空</a-button>
-          </a-popconfirm>
+          <template v-if="verifyingId === a.id">
+            <span class="acc-checking"><a-spin size="small" />正在检测连通性…</span>
+          </template>
+          <template v-else>
+            <a-button type="primary" size="small" @click="onConfig(a)">配置凭据</a-button>
+            <a-button size="small" :loading="checking === a.id" @click="onCheck(a)">检测连通</a-button>
+            <a-popconfirm
+              v-if="a.status !== 'unset'"
+              title="确定删除该账号？凭据密文一并删除，需重新添加绑定。"
+              ok-text="删除"
+              cancel-text="取消"
+              @confirm="onClear(a)"
+            >
+              <a-button size="small" danger>删除</a-button>
+            </a-popconfirm>
+          </template>
         </div>
       </div>
     </div>
 
 
 
-    <!-- 新增网盘：选择要接入的网盘（未适配的置灰） -->
     <!-- 新增账号：选平台 + 别名 + 粘贴 Cookie，后端保存即验证 -->
-    <a-modal v-model:open="addOpen" :width="440" title="新增账号" :footer="null">
-      <div class="formrow">
-        <label>平台</label>
-        <div class="ctl">
-          <a-select v-model:value="addType" :options="ADD_PLATFORMS" style="width: 200px" />
+    <a-modal v-model:open="addOpen" :width="480" title="新增账号" :footer="null">
+      <div class="acc-add">
+        <div class="acc-add-label">选择平台</div>
+        <div class="acc-add-plates">
+          <button
+            v-for="p in ADD_PLATFORMS"
+            :key="p.value"
+            type="button"
+            class="acc-add-plate"
+            :class="{ on: addType === p.value }"
+            :style="{ '--pc': DRIVE_META[p.value].color }"
+            @click="addType = p.value"
+          >
+            <i class="acc-add-ic">{{ DRIVE_META[p.value].name }}</i>
+            <span>{{ p.label }}</span>
+          </button>
         </div>
-      </div>
-      <div class="formrow">
-        <label>账号别名</label>
-        <div class="ctl">
-          <a-input v-model:value="addAlias" style="width: 260px" placeholder="可选，如：百度-大号" />
-        </div>
-      </div>
-      <div class="formrow">
-        <label>Cookie</label>
+        <div class="acc-add-label">账号别名<span class="acc-add-opt">可选，方便区分同平台多个账号</span></div>
+        <a-input v-model:value="addAlias" placeholder="如：百度-大号" allow-clear />
+        <div class="acc-add-label">Cookie</div>
         <a-textarea
           v-model:value="addCookies"
           :rows="5"
-          placeholder="从网盘网页版 F12 → 网络 → 任一请求的请求头里复制整串 Cookie 粘贴到下面。"
+          placeholder="粘贴整串 Cookie，例如：UID=...; CID=...; SEID=...; __pus=...; __puus=..."
         />
-      </div>
-      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px">
-        <a-button @click="addOpen = false">取消</a-button>
-        <a-button type="primary" :loading="addSaving" @click="onAddSave">保存并验证</a-button>
+        <div class="acc-add-hint">
+          获取方式：登录网盘网页版 → 按 <b>F12</b> 打开开发者工具 → <b>网络</b> 标签 → 刷新页面
+          → 点任一请求 → 在请求头里复制完整 Cookie。凭据加密存储，任何接口都不会回显明文。
+        </div>
+        <div class="acc-add-foot">
+          <span>保存后会立即连接网盘验证，失败会提示原因</span>
+          <div class="acc-add-btns">
+            <a-button @click="addOpen = false">取消</a-button>
+            <a-button type="primary" :loading="addSaving" @click="onAddSave">保存并验证</a-button>
+          </div>
+        </div>
       </div>
     </a-modal>
 
@@ -392,17 +475,23 @@ async function onClear(a: AccountRow) {
     <a-modal
       :open="bdOpen"
       :width="480"
-      :title="bdTitle"
       ok-text="保存到此处"
       :confirm-loading="bdSaving"
       :destroy-on-close="true"
       @ok="onConfirmBaseDir"
       @update:open="(v: boolean) => (bdOpen = v)"
     >
+      <template #title>
+        <div class="bd-titlebar">
+          <span>{{ bdTitle }}</span>
+          <!-- 绕过后端目录缓存直连重拉根层：网盘侧刚建/删了文件夹时用 -->
+          <a-button size="small" :loading="bdRefreshing" @click="onRefreshTree">刷新</a-button>
+        </div>
+      </template>
       <p class="small" style="color: var(--text3); margin-bottom: 10px">
         点文件夹名选中目标目录，点左侧箭头展开子目录；保存写入「转存配置」的默认条目。
       </p>
-      <LazyDirTree :key="bdType" :type="bdType" @select="onTreePick" />
+      <LazyDirTree ref="bdTree" :key="bdType" :type="bdType" @select="onTreePick" />
       <p class="bd-picked">已选目录：<b>{{ bdPath || '/' }}</b></p>
     </a-modal>
 
@@ -422,6 +511,15 @@ async function onClear(a: AccountRow) {
   color: var(--text3);
 }
 .bd-picked b { color: var(--primary); font-weight: 500; }
+
+/* 目录弹窗标题栏：标题 + 刷新按钮（按钮贴右侧，挨着关闭 X） */
+.bd-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-right: 6px;
+}
 
 .acc {
   position: relative;
@@ -476,5 +574,106 @@ async function onClear(a: AccountRow) {
 .acchead .accname .acc-tag {
   font-size: 12px;
   font-weight: 500;
+}
+
+/* ===== 新增账号弹窗（acc-add- 前缀页面私有） ===== */
+.acc-add-label {
+  margin: 14px 0 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text2);
+}
+.acc-add-label:first-child {
+  margin-top: 2px;
+}
+.acc-add-opt {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text3);
+}
+/* 平台选块：品牌色图标方块 + 名称，选中染品牌色边框和浅底（颜色经 --pc 传入） */
+.acc-add-plates {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.acc-add-plate {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  font-size: 13px;
+  color: var(--text2);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+}
+.acc-add-plate:hover {
+  border-color: color-mix(in srgb, var(--pc) 55%, var(--border));
+}
+.acc-add-plate.on {
+  border-color: var(--pc);
+  background: color-mix(in srgb, var(--pc) 8%, var(--surface-2));
+  box-shadow: 0 0 0 1px var(--pc);
+  color: var(--text1, var(--text2));
+  font-weight: 500;
+}
+/* 图标方块：与首页/卡片同款圆角短名块 */
+.acc-add-ic {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--pc);
+  color: #fff;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+/* 获取方式提示块 */
+.acc-add-hint {
+  margin-top: 8px;
+  padding: 8px 11px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  border-left: 3px solid var(--primary);
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text3);
+}
+.acc-add-hint b {
+  color: var(--text2);
+  font-weight: 600;
+}
+/* 底栏：左说明右按钮 */
+.acc-add-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+}
+.acc-add-foot > span {
+  font-size: 12px;
+  color: var(--text3);
+}
+.acc-add-btns {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+/* 保存并验证进行中：按钮区整体替换成 loading 文案 */
+.acc-checking {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--text3);
 }
 </style>

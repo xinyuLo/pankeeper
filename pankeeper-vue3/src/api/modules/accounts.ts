@@ -65,20 +65,7 @@ export function checkAccount(accId: number): Promise<CheckResult> {
   return post<CheckResult>(`/accounts/${accId}/check`)
 }
 
-/** 清空凭据：状态置回未配置（等同删除密文，不可恢复） */
-export async function clearAccount(accId: number): Promise<void> {
-  if (USE_MOCK) {
-    const row = accountStore.accounts.find((a) => a.id === accId)
-    if (row) {
-      row.status = 'unset'
-      row.last_check = '从未配置'
-    }
-    return mockDelay(undefined)
-  }
-  await del(`/accounts/${accId}/credential`)
-}
-
-/** 删除整个账号（卡片随之消失） */
+/** 删除整个账号（卡片随之消失）。没有凭据的空壳卡片不保留——清空即删除 */
 export async function deleteAccount(accId: number): Promise<void> {
   if (USE_MOCK) {
     accountStore.accounts = accountStore.accounts.filter((a) => a.id !== accId)

@@ -23,7 +23,7 @@ def get_cache_config(_user=CurrentUser):
     used_mb = round(stats.get("bytes", 0) / 1024 / 1024, 1)
     pct = min(100, round(used_mb / total_mb * 100))
     mem = {"pct": pct, "usedMb": used_mb, "totalMb": total_mb}
-    return {"cfg": cfg, "mem": mem}
+    return {"cfg": cfg, "mem": mem, "stats": stats}
 
 
 @router.put("/cache/config")
@@ -68,13 +68,13 @@ def refresh_all(_user=CurrentUser):
 
 @router.get("/files/list")
 def list_files(type: str = "quark", parent: str = "0", path: str = "", force_refresh: bool = False, _user=CurrentUser):
-    """转存弹窗目录浏览：按父目录拉一层，缓存 key=(type, account, cid)。"""
-    from ..security import decrypt_credential  # noqa: F401
+    """转存弹窗目录浏览：按父目录拉一层，缓存 key=(type, account, cid)。
 
-    with SessionLocal() as db:
-        adapter = make_adapter_for(db, type)
+    adapter（解密+client）只在真正要打网盘时才构造——缓存命中时零开销。"""
 
     def load():
+        with SessionLocal() as db:
+            adapter = make_adapter_for(db, type)
         if type == "quark":
             if parent == "0" and path:
                 # 按路径浏览：逐级解析到 fid（懒加载契约：前端只传父层）

@@ -41,7 +41,8 @@ def _make_adapter(drive_type: str, acc_id: int | None = None) -> CloudAdapter:
                 raise AdapterError("转存任务指定的账号不存在")
         else:
             acc = s.query(Account).filter(Account.type == drive_type).order_by(Account.id).first()
-    if acc is None or acc.status == "unset" or not acc.cookies_enc:
+    # 同 deps.make_adapter_for：凭据是否配置只看 cookies_enc，不看 status
+    if acc is None or not acc.cookies_enc:
         raise AdapterError(f"{drive_type} 账号未配置凭据，请先到「网盘连接」绑定")
     return cls(acc.cookies_enc)
 

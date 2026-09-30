@@ -148,12 +148,11 @@ def delete_account(acc_id: int, _user=CurrentUser):
 
 @router.delete("/{acc_id}/credential")
 def delete_credential(acc_id: int, _user=CurrentUser):
+    """清空凭据。没有凭据的空壳卡片没有存在意义（前端不展示）——直接删整个账号，
+    与 DELETE /{acc_id} 同义；保留端点只为兼容旧调用方。"""
     with SessionLocal() as db:
         acc = _acc_or_404(db, acc_id)
-        acc.cookies_enc = ""
-        acc.status = "unset"
-        acc.nickname = ""
-        acc.last_check = "从未配置"
+        db.delete(acc)
         db.commit()
     return {"ok": True}
 

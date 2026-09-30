@@ -10,6 +10,7 @@ import type { CSSProperties } from 'vue'
 import type { AccountStatus, MainDriveType, PaTask } from '@/types/model'
 import { paStore } from '@/api/mock/tasks'
 import { accountStore, firstAccountOf } from '@/api/mock/accounts'
+import { DRIVE_META } from '@/api/mock/meta'
 import { getDriveLogs, type DriveLogData } from '@/api/modules/driveLogs'
 import { useThemeStore } from '@/store/theme'
 import { useAuthStore } from '@/store/auth'
@@ -181,7 +182,9 @@ interface PanView {
 
 const pans = computed<PanView[]>(() =>
   DB_TYPES.map((type) => {
-    const acct = firstAccountOf(type) ?? { short: type, color: "", status: "unset", last_check: "从未配置", summary: null }
+    // 没建过账号也要出卡片：短名/品牌色回落到平台静态元信息，不能拿空色把图标渲染没
+    const meta = DRIVE_META[type]
+    const acct = firstAccountOf(type) ?? { short: meta.name, color: meta.color, status: "unset" as AccountStatus, last_check: "从未配置", summary: null }
     const s = summaryOf(type)
     const lt = s.latest
     return {
