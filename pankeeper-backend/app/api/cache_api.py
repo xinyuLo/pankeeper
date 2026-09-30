@@ -166,7 +166,7 @@ def _warm_walk(type: str) -> None:
             if job["done"] >= WARM_MAX_DIRS or depth > WARM_MAX_DEPTH:
                 job["message"] = f"已达上限（{WARM_MAX_DIRS} 个目录 / {WARM_MAX_DEPTH} 层），其余浏览时按需缓存"
                 break
-            payload = dir_cache.get_or_load((type, "main", key_id), lambda k=key_id: _load_dir_payload(type, k, ""))
+            payload = dir_cache.get_or_load((type, "main", key_id), lambda: _load_dir_payload(type, None, key_id, ""))
             job["done"] += 1
             job["total"] = max(job["total"], job["done"])
             for it in payload:
