@@ -5,16 +5,14 @@
  * dd- 前缀私有样式在本文件 <style scoped>；数据直接读写 ddStore（内存态），
  * 增删改走 api/modules/dd.ts（mockDelay 包一层，后端就绪后只换实现）。
  * ===================================================================== */
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
+import LazyDirTree from '@/components/LazyDirTree.vue'
 import { ddStore, ddFind } from '@/api/mock/dd'
 import { DD_MEDIA, MAIN_ORDER, DRIVE_META } from '@/api/mock/meta'
-import { DD_TREES } from '@/api/mock/tree'
 import { accountStore } from '@/api/mock/accounts'
-import { getFilesList } from '@/api/modules/files'
-import { USE_MOCK } from '@/api/http'
 import { saveDdItem, deleteDdItem, setDefaultDir, listDdItems, listQmsPaths, listStrmPaths } from '@/api/modules/dd'
-import type { DdItem, DdQmsPath, DdStrmPath, MainDriveType, TreeNode } from '@/types/model'
+import type { DdItem, DdQmsPath, DdStrmPath, MainDriveType } from '@/types/model'
 
 /* ===== 列表态 ===== */
 const active = ref<MainDriveType>('baidu')
@@ -61,7 +59,6 @@ const fSort = ref(1)
 const fQmsOn = ref(false)
 const fQmsId = ref<number | undefined>(undefined)
 const fStrmId = ref(0) // 0 = 不生成 STRM（select 没法用 null 当选项值，用 0 哨兵）
-const treeOpen = ref(false)
 
 const typeOptions = MAIN_ORDER.map((k) => ({ value: k, label: DRIVE_META[k].full }))
 /** 所属账号：真实账号列表（网盘连接页配的），不是 mock 的假号 */
@@ -83,15 +80,44 @@ const strmOptions = computed(() => [
   ...strmPaths.value.map((p) => ({ value: p.id, label: `#${p.id} · ${p.remote_path}` })),
 ])
 
-// 开着 QMS 却没选目录时，自动选中第一项（原型 ddRenderQms 同款兜底）
-watch(fQmsOn, (on) => {
-  if (on && fQmsId.value == null && qmsPaths.value.length) fQmsId.value = qmsPaths.value[0].id
-})
 
 async function loadQmsStrmPaths() {
   // QMS 未启用/连不上时静默置空：下拉显示"暂无可选"，不挡住表单其他项
   qmsPaths.value = await listQmsPaths().catch(() => [])
   strmPaths.value = await listStrmPaths().catch(() => [])
+}
+
+/* ===== 目录选择弹窗（与网盘连接页/任务弹窗统一）：LazyDirTree 真实目录，只显示文件夹 ===== */
+const bdOpen = ref(false)
+const bdPath = ref('')
+const bdTree = ref<InstanceType<typeof LazyDirTree> | null>(null)
+const bdRefreshing = ref(false)
+const bdType = computed<MainDriveType>(() => fType.value)
+const bdAccId = computed<number | null>(() => {
+  const n = Number(fAcc.value)
+  return Number.isFinite(n) && n > 0 ? n : null
+})
+/** LazyDirTree 的 key：类型/账号变了整树重建 */
+const bdKey = computed(() => `${bdType.value}/${bdAccId.value ?? 'def'}`)
+
+function onBdPick(path: string) {
+  bdPath.value = path
+}
+async function onBdRefresh() {
+  bdRefreshing.value = true
+  try {
+    await bdTree.value?.reload()
+  } finally {
+    bdRefreshing.value = false
+  }
+}
+function onPickOk() {
+  if (!bdPath.value) {
+    message.warning('请先在树里选择一个目录')
+    return
+  }
+  fPath.value = bdPath.value
+  bdOpen.value = false
 }
 
 function openEditor(id: number | null) {
@@ -110,9 +136,7 @@ function openEditor(id: number | null) {
   fQmsOn.value = it ? !!it.qms_on : false
   fQmsId.value = it?.qms_id ?? undefined
   fStrmId.value = it?.strm_id ?? 0
-  expanded.value = new Set()
-  // ⚠️ 必须重置树展开态与按钮文案，否则第二次打开显示「收起目录」、点一下反而把树收起来（原型踩过）
-  treeOpen.value = false
+  bdPath.value = fPath.value
   modalOpen.value = true
   loadQmsStrmPaths()
 }
@@ -122,9 +146,6 @@ function onTypeChange() {
   const firstAcc = accountStore.accounts.find((a) => a.type === fType.value)
   fAcc.value = String(firstAcc?.id ?? '')
   fPath.value = ''
-  expanded.value = new Set()
-  remoteRows.value = []
-  fidByPath.value = {}
 }
 
 /* ===== 目录树（dd-tnode 结构，扁平化渲染：缩进 = 深度 × 18px，视觉与原型嵌套版一致） ===== */
@@ -135,98 +156,6 @@ interface FlatNode {
   hasKids: boolean
 }
 const expanded = ref(new Set<string>())
-
-/* ===== 真实模式：远程目录（按需懒加载，fid 记在 path→fid 映射里） ===== */
-const remoteRows = ref<FlatNode[]>([])
-const remoteLoading = ref(false)
-const fidByPath = ref<Record<string, string>>({})
-
-async function loadRemoteRoot(force = false) {
-  if (remoteLoading.value) return
-  remoteLoading.value = true
-  try {
-    const items = await getFilesList(fType.value, '0', '/', force)
-    const rows: FlatNode[] = []
-    for (const it of items) {
-      const p = '/' + it.name
-      if (it.is_dir) fidByPath.value[p] = it.fid
-      rows.push({ path: p, name: it.name, depth: 0, hasKids: it.is_dir })
-    }
-    remoteRows.value = rows
-  } catch {
-    remoteRows.value = []
-  } finally {
-    remoteLoading.value = false
-  }
-}
-
-async function loadRemoteKids(parent: string) {
-  const fid = fidByPath.value[parent]
-  if (!fid) return
-  try {
-    const items = await getFilesList(fType.value, fid)
-    const depth = parent.split('/').filter(Boolean).length
-    const rows: FlatNode[] = []
-    for (const it of items) {
-      const p = parent === '/' ? '/' + it.name : parent + '/' + it.name
-      if (it.is_dir) fidByPath.value[p] = it.fid
-      rows.push({ path: p, name: it.name, depth: depth, hasKids: it.is_dir })
-    }
-    // 插到父节点之后（保持深度序）
-    const list = remoteRows.value
-    const idx = list.findIndex((r) => r.path === parent)
-    list.splice(idx + 1, 0, ...rows)
-  } catch {
-    /* 加载失败：收起即可重试 */
-  }
-}
-
-const flatTree = computed<FlatNode[]>(() => {
-  if (!USE_MOCK) return remoteRows.value
-  const out: FlatNode[] = []
-  const walk = (nodes: TreeNode[], parent: string, depth: number) => {
-    for (const nd of nodes) {
-      // 原型拼路径规则：根层直接 /xxx，往下逐级接
-      const full = parent === '/' ? '/' + nd.name : parent + '/' + nd.name
-      const hasKids = !!(nd.kids && nd.kids.length)
-      out.push({ path: full, name: nd.name, depth, hasKids })
-      if (hasKids && expanded.value.has(full)) walk(nd.kids!, full, depth + 1)
-    }
-  }
-  walk(DD_TREES[fType.value] || [], '/', 0)
-  return out
-})
-
-async function toggleNode(p: string) {
-  if (!USE_MOCK) {
-    const s = new Set(expanded.value)
-    if (s.has(p)) {
-      s.delete(p)
-      expanded.value = s
-      return
-    }
-    s.add(p)
-    expanded.value = s
-    // 该节点子层还没拉过：拉一次（有 fid 才是真实目录）
-    if (fidByPath.value[p] && !remoteRows.value.some((r) => r.path.startsWith(p + '/'))) {
-      await loadRemoteKids(p)
-    }
-    return
-  }
-  const s = new Set(expanded.value)
-  if (s.has(p)) s.delete(p)
-  else s.add(p)
-  expanded.value = s
-}
-
-function pickPath(p: string) {
-  fPath.value = p
-}
-
-function toggleTree() {
-  treeOpen.value = !treeOpen.value
-  if (treeOpen.value && !USE_MOCK && remoteRows.value.length === 0) loadRemoteRoot()
-}
 
 /* ===== 进页面：拉真实转存配置 + QMS/STRM 路径列表（此前页面渲染的一直是 mock 假数据） ===== */
 onMounted(async () => {
@@ -396,7 +325,7 @@ async function confirmEditor() {
   >
     <div class="dd-field">
       <label class="dd-label">名称<i>*</i></label>
-      <a-input v-model:value="fName" :maxlength="20" placeholder="你自己起的别名，如「电视剧」「电影」" />
+      <a-input v-model:value="fName" :maxlength="20" />
       <div class="dd-tip">这个名字会出现在搜索结果「快速转存」的下拉框里。</div>
     </div>
 
@@ -419,23 +348,8 @@ async function confirmEditor() {
     <div class="dd-field">
       <label class="dd-label">网盘路径<i>*</i></label>
       <div class="dd-pick">
-        <a-input :value="fPath" readonly placeholder="尚未选择，点右侧「浏览」从目录树里选" />
-        <a-button type="primary" ghost @click="toggleTree">{{ treeOpen ? '收起目录' : '浏览' }}</a-button>
-      </div>
-      <div v-if="treeOpen" class="dd-tree">
-        <div
-          v-for="row in flatTree"
-          :key="row.path"
-          class="dd-tnode"
-          :class="{ on: fPath === row.path }"
-          :style="{ paddingLeft: 8 + row.depth * 18 + 'px' }"
-          @click="pickPath(row.path)"
-        >
-          <span class="dd-tico" @click.stop="row.hasKids && toggleNode(row.path)">
-            {{ row.hasKids ? (expanded.has(row.path) ? '▾' : '▸') : '·' }}
-          </span>
-          <span>{{ row.name }}</span>
-        </div>
+        <a-input :value="fPath" readonly />
+        <a-button type="primary" ghost @click="bdOpen = true">浏览</a-button>
       </div>
     </div>
 
@@ -471,6 +385,26 @@ async function confirmEditor() {
       <a-button type="primary" @click="confirmEditor">保存</a-button>
     </template>
   </a-modal>
+    <!-- 目录选择弹窗：与网盘连接页/任务弹窗同款（LazyDirTree，只显示文件夹，带刷新） -->
+    <a-modal
+      :open="bdOpen"
+      :width="480"
+      title="选择网盘目录"
+      :destroy-on-close="true"
+      ok-text="选定此处"
+      @ok="onPickOk"
+      @update:open="(v: boolean) => (bdOpen = v)"
+    >
+      <div class="bd-titlebar">
+        <span>{{ DRIVE_META[bdType]?.full || '' }}</span>
+        <a-button size="small" :loading="bdRefreshing" @click="onBdRefresh">刷新</a-button>
+      </div>
+      <p class="small" style="color: var(--text3); margin-bottom: 10px">
+        点文件夹名选中目标目录，点左侧箭头展开子目录。
+      </p>
+      <LazyDirTree ref="bdTree" :key="bdKey" :type="bdType" :acc-id="bdAccId" @select="onBdPick" />
+      <p class="bd-picked">已选目录：<b>{{ bdPath || '/' }}</b></p>
+    </a-modal>
 </template>
 
 <style scoped>
@@ -615,19 +549,26 @@ async function confirmEditor() {
   height: 28px;
   padding: 0 10px;
   font-size: 13px;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--primary) 35%, var(--border));
   border-radius: 6px;
-  background: var(--card);
+  background: color-mix(in srgb, var(--primary) 8%, var(--card));
   cursor: pointer;
-  color: var(--text);
+  color: var(--primary);
   transition: all 0.15s;
 }
 .dd-op:hover {
   border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 16%, var(--card));
   color: var(--primary);
+}
+.dd-op-del {
+  border-color: color-mix(in srgb, var(--error) 35%, var(--border));
+  background: color-mix(in srgb, var(--error) 8%, var(--card));
+  color: var(--error);
 }
 .dd-op-del:hover {
   border-color: var(--error);
+  background: color-mix(in srgb, var(--error) 16%, var(--card));
   color: var(--error);
 }
 .dd-empty {
@@ -845,4 +786,8 @@ html[data-theme='dark'] .dd-tnode.on {
   .dd-modal-wrap .ant-modal-body { padding: 14px 16px; }
   .dd-modal-wrap .ant-modal-footer { padding: 12px 16px; }
 }
+/* 目录弹窗标题栏 + 已选回显（与网盘连接页同款） */
+.bd-titlebar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-right: 34px; }
+.bd-picked { margin: 12px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); font-size: 12.5px; color: var(--text3); }
+.bd-picked b { color: var(--primary); font-weight: 500; }
 </style>

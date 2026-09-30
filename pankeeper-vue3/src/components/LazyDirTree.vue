@@ -23,6 +23,8 @@ const props = defineProps<{
   nodes?: DirNode[]
   /** 递归模式：本层对应的父路径 */
   pathBase?: string
+  /** 浏览哪个账号的目录；空 = 该类型默认账号（后端缓存按账号隔离） */
+  accId?: number | null
 }>()
 
 const emit = defineEmits<{ (e: 'select', path: string, fid: string): void }>()
@@ -40,7 +42,7 @@ async function refreshLayer(
   oldNodes: DirNode[],
   commit: (nodes: DirNode[]) => void,
 ) {
-  const items = await getFilesList(props.type, parent, parentPath === '/' ? '/' : '', true)
+  const items = await getFilesList(props.type, parent, parentPath === '/' ? '/' : '', true, props.accId ?? null)
   const oldByFid = new Map(oldNodes.map((n) => [n.fid, n]))
   const nodes = items.map((it) => toNode(it, parentPath))
   for (const n of nodes) {
@@ -78,8 +80,9 @@ async function loadRoot(force = false) {
   root.loading = true
   root.error = ''
   try {
-    const items = await getFilesList(props.type, '0', '/', force)
-    root.items = items.map((it) => toNode(it, '/'))
+    const items = await getFilesList(props.type, '0', '/', force, props.accId ?? null)
+    // 目录选择器只关心文件夹：文件一律过滤
+    root.items = items.filter((it) => it.is_dir).map((it) => toNode(it, '/'))
   } catch (e: unknown) {
     root.error = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail || '目录加载失败'
   } finally {
@@ -100,8 +103,8 @@ async function toggle(n: DirNode) {
   }
   n.loading = true
   try {
-    const items = await getFilesList(props.type, n.fid)
-    n.kids = items.map((it) => toNode(it, n.path))
+    const items = await getFilesList(props.type, n.fid, '', false, props.accId ?? null)
+    n.kids = items.filter((it) => it.is_dir).map((it) => toNode(it, n.path))
     n.loaded = true
     n.open = true
   } catch (e: unknown) {
@@ -125,9 +128,9 @@ onMounted(() => {
 /* 切换网盘（同一弹窗复用组件）必须整树重载：
  * 否则会残留上一个网盘的目录列表和错误信息——「夸克弹窗里显示百度的报错」就是这么来的。 */
 watch(
-  () => props.type,
+  () => [props.type, props.accId],
   () => {
-    if (props.nodes) return // 递归子层：type 随父级一起变，重建交给父级
+    if (props.nodes) return // 递归子层：type/accId 随父级一起变，重建交给父级
     selectedPath.value = ''
     root.items = []
     loadRoot()

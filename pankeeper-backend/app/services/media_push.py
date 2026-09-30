@@ -32,15 +32,17 @@ FAILED_STATUS = {"scrape_failed", "rename_failed"}
 def watch_and_spawn(ctx: dict) -> None:
     """QMS 刮削触发成功后调用。推送未启用时直接返回，否则后台守护。
 
-    ctx: {drive, task, names, qms_ok: bool, strm_ok: bool | None}
+    ctx: {drive, task, names, qms_ok: bool, strm_ok: bool | None, source: str}
     - names：转存的文件名（QMS 记录的 file_name 与之对应）
     - qms_ok/strm_ok：engine 里的"触发"结果（刮削/生成的最终成败以记录为准）
     - strm_ok=None 表示该目录没配 STRM 联动，信息条不显示该项
+    - source：search / auto，决定走「搜索转存」还是「自动转存」推送开关
     """
     cfg = get_group("settings")["notify"]
     if not cfg.get("enabled") or not cfg.get("sendkey"):
         return
-    if not cfg.get("on_done", True):
+    flag = "on_auto" if ctx.get("source") == "auto" else "on_search"
+    if not cfg.get(flag, True):
         return
     if not ctx.get("names"):
         return
@@ -54,7 +56,7 @@ def _watch(ctx: dict) -> None:
     if renamed:
         body, title = _build(renamed)
         if body:
-            notify.push(title, f"{header}\n\n{body}", kind="done", short="简介")
+            notify.push(title, f"{header}\n\n{body}", kind=f"{ctx.get('source', 'search')}_done", short="简介")
             return
     _fallback(ctx, records)
 
@@ -227,4 +229,4 @@ def _fallback(ctx: dict, records: list[dict]) -> None:
         mark = f"（{failed[n]}）" if n in failed else ""
         lines.append(f"- {n}{mark}")
     body = "\n".join(lines)
-    notify.push(f"{ctx.get('task', '转存')} · 转存完成", f"{_header(ctx, records)}\n\n{body}", kind="done")
+    notify.push(f"{ctx.get('task', '转存')} · 转存完成", f"{_header(ctx, records)}\n\n{body}", kind=f"{ctx.get('source', 'search')}_done")

@@ -154,7 +154,7 @@ async function onDelete() {
 
 /* ===== 手动触发弹窗（trigMask）=====
  * 两个下拉首项都是「（不触发）」；都空拦下不关；
- * 只选谁触发谁（立即）；都选 → QMS 立即 + STRM 真 setTimeout 10 秒。 */
+ * 只选谁触发谁（立即）；都选 → QMS 立即 + STRM 真 setTimeout 15 秒。 */
 const trigOpen = ref(false)
 const trigQms = ref('')
 const trigStrm = ref('')
@@ -208,8 +208,8 @@ async function confirmTrig() {
       window.setTimeout(async () => {
         recordsStore.strmPending = false
         await triggerStrm(s.id, sTxt)
-        message.success(`已触发 STRM 生成 → ${sTxt}（与 QMS 间隔 10 秒）`)
-      }, 10000)
+        message.success(`已触发 STRM 生成 → ${sTxt}（与 QMS 间隔 15 秒）`)
+      }, 15000)
     } else {
       await triggerStrm(s.id, sTxt)
       message.success('已触发 STRM 生成 → ' + sTxt)
@@ -357,7 +357,7 @@ async function confirmTrig() {
     <!-- 手动触发弹窗：QMS / STRM 都可空，选哪个触发哪个；都选时隔 10 秒触发第二个 -->
     <a-modal v-model:open="trigOpen" title="手动触发" :width="480" ok-text="立即触发" cancel-text="取消" @ok="confirmTrig">
       <div class="rk-tip">
-        选择要触发的目标，<b>可以选空</b>；两个都选时先触发 QMS，间隔 10 秒后自动触发 STRM。
+        选择要触发的目标，<b>可以选空</b>；两个都选时先触发 QMS，间隔 15 秒后自动触发 STRM。
       </div>
       <div class="rk-field">
         <label>QMS 刮削目录</label>

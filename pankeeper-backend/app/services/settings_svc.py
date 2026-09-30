@@ -31,9 +31,9 @@ DEFAULTS: dict[str, dict[str, Any]] = {
             "enabled": False,
             "sendkey": "",
             "webhook": "",
-            "on_done": True,
-            "on_fail": True,
-            "on_part": True,
+            # 推送时机三开关：自动转存 / 搜索转存 / 凭据过期告警
+            "on_auto": True,
+            "on_search": True,
             "on_cred": True,
         },
         "qms": {

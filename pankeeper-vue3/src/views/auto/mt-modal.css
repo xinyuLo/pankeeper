@@ -138,6 +138,19 @@
   min-width: 64px;
   justify-content: center;
 }
+.mt-btn-soft {
+  background: color-mix(in srgb, var(--primary) 10%, var(--card));
+  border-color: color-mix(in srgb, var(--primary) 35%, var(--border));
+  color: var(--primary);
+}
+.mt-btn-soft:hover {
+  background: color-mix(in srgb, var(--primary) 18%, var(--card));
+  border-color: var(--primary);
+  color: var(--primary);
+}
+html[data-theme='dark'] .mt-btn-soft {
+  background: color-mix(in srgb, var(--primary) 20%, var(--card));
+}
 .mt-btn-link { border: none; background: transparent; color: var(--primary); height: 30px; padding: 0 6px; }
 .mt-btn-link:hover { text-decoration: underline; }
 .mt-icon-btn {

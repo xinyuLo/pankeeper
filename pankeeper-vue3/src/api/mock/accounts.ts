@@ -9,6 +9,8 @@ import type { AccountInfo, AccountSummary, MainDriveType } from '@/types/model'
 export interface AccountRow extends AccountInfo {
   /** 账号 id（后端主键，凭据/检测/通知/摘要都按它） */
   id: number
+  /** 该类型下的默认账号（转存/调度未指定账号时用它） */
+  is_default?: boolean
   /** 网盘昵称（探活时后端取回） */
   nickname: string
   /** 别名（用户起，如「百度-大号」）；空则展示用昵称 */

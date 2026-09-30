@@ -160,6 +160,9 @@ class QueueEngine:
                 "shareUrl": item.get("share_url") or item.get("shareUrl") or "",
                 "shareCode": item.get("share_code") or item.get("shareCode") or "",
                 "includeSubdirs": bool(item.get("include_subdirs", True)),
+                # 任务来源：search=搜索转存（默认）/ auto=自动转存（定时调度入队时带）。
+                # 推送按它分流：notify.on_search / notify.on_auto 两个开关。
+                "source": item.get("source") or "search",
             }
             self.state["tasks"].append(t)
             pos = sum(1 for x in self.state["tasks"] if x["status"] in ("wait", "run"))
@@ -293,6 +296,7 @@ class QueueEngine:
                 "names": [e["name"] for e in result.transferred],
                 "qms_ok": ok,
                 "strm_ok": strm_ok,
+                "source": t.get("source", "search"),
             })
         return qms_snap, strm_snap
 
@@ -362,7 +366,7 @@ class QueueEngine:
             )
             s.commit()
         if status == "fail":
-            notify.push("转存失败", f"{t['name']}：{message or '未知原因'}", kind="fail")
+            notify.push("转存失败", f"{t['name']}：{message or '未知原因'}", kind=f"{t.get('source', 'search')}_fail")
 
     # ---------- 便捷入口（API 层用） ----------
 

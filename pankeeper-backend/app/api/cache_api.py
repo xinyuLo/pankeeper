@@ -35,10 +35,27 @@ def put_cache_config(body: dict, _user=CurrentUser):
 
 @router.get("/cache/trees")
 def list_cache_trees(_user=CurrentUser):
-    """裸数组返回（前端 CacheTree[]），id = "type/account/cid" 组合键。"""
+    """裸数组返回（前端 CacheTree[]），id = "type/account/cid" 组合键。
+
+    acc 键里存的是 "main"（默认账号）或账号 id 字符串——对外统一解析成
+    账号显示名（别名/昵称），不然列表里一排 main/2 用户看不懂。"""
+    from ..db import SessionLocal
+    from ..models import Account
+
     entries = dir_cache.list_entries()
+    with SessionLocal() as db:
+        accs = {a.id: a for a in db.query(Account).all()}
+    dmap = get_group("default_accounts") or {}
     for e in entries:
         e["id"] = f"{e['type']}/{e['acc']}/{e['path']}"
+        acc = e["acc"]
+        row = None
+        if acc == "main":
+            did = dmap.get(e["type"])
+            row = accs.get(did) if did else next((a for a in accs.values() if a.type == e["type"]), None)
+        elif str(acc).isdigit():
+            row = accs.get(int(acc))
+        e["acc_name"] = (row.alias or row.nickname or f"{e['type']}#{row.id}") if row else acc
     return entries
 
 
@@ -68,17 +85,23 @@ def refresh_all(_user=CurrentUser):
 
 
 @router.get("/files/list")
-def list_files(type: str = "quark", parent: str = "0", path: str = "", force_refresh: bool = False, _user=CurrentUser):
-    """转存弹窗目录浏览：按父目录拉一层，缓存 key=(type, account, cid)。
+def list_files(type: str = "quark", parent: str = "0", path: str = "", force_refresh: bool = False, acc_id: int | None = None, _user=CurrentUser):
+    """转存弹窗目录浏览：按父目录拉一层，缓存 key=(type, account, parent)。
 
-    adapter（解密+client）只在真正要打网盘时才构造——缓存命中时零开销。"""
-    return dir_cache.get_or_load((type, "main", parent), lambda: _load_dir_payload(type, parent, path), force=force_refresh)
+    acc_id 空 = 该类型默认账号（缓存键记作 "main"）；指定账号则键里带账号 id，
+    同一网盘不同账号的目录缓存互不串。"""
+    acc_key = str(acc_id) if acc_id else "main"
+    return dir_cache.get_or_load(
+        (type, acc_key, parent),
+        lambda: _load_dir_payload(type, acc_id, parent, path),
+        force=force_refresh,
+    )
 
 
-def _load_dir_payload(type: str, parent: str, path: str):
+def _load_dir_payload(type: str, acc_id: int | None, parent: str, path: str):
     """拉取并映射一层目录（/files/list 与全树预热共用）。调用方负责包进 dir_cache.get_or_load。"""
     with SessionLocal() as db:
-        adapter = make_adapter_for(db, type)
+        adapter = make_adapter_for(db, type, acc_id)
     if type == "quark":
         if parent == "0" and path:
             # 按路径浏览：逐级解析到 fid（懒加载契约：前端只传父层）

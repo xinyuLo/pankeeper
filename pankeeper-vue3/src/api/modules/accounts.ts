@@ -34,6 +34,7 @@ export function listAccounts(): Promise<AccountRow[]> {
         nickname: r.nickname,
         last_check: r.last_check,
         notify: !!r.notify,
+        is_default: !!(r as { is_default?: boolean }).is_default,
         summary: r.summary,
       })),
     )
@@ -87,6 +88,20 @@ export async function saveCredential(accId: number, cookies: string, alias = '')
   const { nickname } = await put<{ ok: boolean; nickname: string }>(`/accounts/${accId}/credential`, { cookies, alias })
   await listAccounts()
   return { nickname }
+}
+
+/** 修改账号别名（卡片名/各处下拉显示用它；空串 = 清除别名回落昵称） */
+export async function setAlias(accId: number, alias: string): Promise<void> {
+  if (USE_MOCK) return mockDelay(undefined)
+  await put(`/accounts/${accId}/alias`, { alias })
+  await listAccounts()
+}
+
+/** 设为/取消该类型的默认账号（再点取消，回落该类型 id 最小的账号） */
+export async function setDefaultAccount(accId: number): Promise<void> {
+  if (USE_MOCK) return mockDelay(undefined)
+  await put(`/accounts/${accId}/set-default`)
+  await listAccounts()
 }
 
 /** 账号粒度的「失效通知」开关：探活失败时是否发 Server 酱。

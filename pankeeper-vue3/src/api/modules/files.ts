@@ -17,7 +17,8 @@ export function getFilesList(
   parent = '0',
   path = '',
   force = false,
+  accId: number | null = null,
 ): Promise<DirItem[]> {
   if (USE_MOCK) return Promise.reject(new Error('mock 模式无真实目录，请切换真实后端'))
-  return get<DirItem[]>('/files/list', { params: { type, parent, path, force_refresh: force } })
+  return get<DirItem[]>('/files/list', { params: { type, parent, path, force_refresh: force, acc_id: accId || undefined } })
 }

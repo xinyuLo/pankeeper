@@ -24,6 +24,7 @@ def _row(t: PaTask) -> dict:
     return {
         "id": t.id,
         "type": t.type,
+        "acc_id": t.acc_id,
         "name": t.name,
         "enabled": t.enabled,
         "share_url": t.share_url,
@@ -52,6 +53,7 @@ def _row(t: PaTask) -> dict:
 
 class PaBody(BaseModel):
     type: str = "baidu"
+    acc_id: int | None = None  # 用哪个账号跑；空=该类型默认账号
     name: str
     enabled: bool = True
     share_url: str = ""
@@ -72,6 +74,7 @@ class PaBody(BaseModel):
 
 def _apply(t: PaTask, body: PaBody) -> None:
     t.type = body.type
+    t.acc_id = body.acc_id
     t.name = body.name
     t.enabled = body.enabled
     t.share_url = body.share_url

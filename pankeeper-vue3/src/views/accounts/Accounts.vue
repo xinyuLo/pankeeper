@@ -10,7 +10,7 @@ import LazyDirTree from '@/components/LazyDirTree.vue'
 import { accountStore, ACCOUNT_STATUS_VIEW, type AccountRow } from '@/api/mock/accounts'
 import { MAIN_ORDER, DRIVE_META } from '@/api/mock/meta'
 import { ddStore } from '@/api/mock/dd'
-import { addAccount, checkAccount, deleteAccount, getSummary, listAccounts, saveCredential, setDriveNotify, type AccountSummary } from '@/api/modules/accounts'
+import { addAccount, checkAccount, deleteAccount, getSummary, listAccounts, saveCredential, setAlias, setDefaultAccount, setDriveNotify, type AccountSummary } from '@/api/modules/accounts'
 import { listDdItems, saveDdItem, setDefaultDir } from '@/api/modules/dd'
 import { getFilesList } from '@/api/modules/files'
 import { warmTrees, warmStatus } from '@/api/modules/cache'
@@ -28,6 +28,46 @@ const rows = computed<AccountRow[]>(() => {
 /** 状态 → tag 类名/文案/圆点（connected/expired/unset 三态映射） */
 function view(status: string) {
   return ACCOUNT_STATUS_VIEW[status]
+}
+
+/** 同类型账号数：多于 1 个才显示「默认」切换标签 */
+function sameTypeCount(type: string): number {
+  return accountStore.accounts.filter((a) => a.type === type).length
+}
+
+/* ===== 别名：卡片行内「修改」打开小弹窗；保存后整列刷新（卡片标题/各处下拉同步） ===== */
+const aliasOpen = ref(false)
+const aliasAcc = ref<AccountRow | null>(null)
+const aliasText = ref('')
+const aliasSaving = ref(false)
+function openAlias(a: AccountRow) {
+  aliasAcc.value = a
+  aliasText.value = a.alias || ''
+  aliasOpen.value = true
+}
+async function onAliasSave() {
+  if (!aliasAcc.value) return
+  aliasSaving.value = true
+  try {
+    await setAlias(aliasAcc.value.id, aliasText.value.trim())
+    aliasOpen.value = false
+    message.success(aliasText.value.trim() ? '别名已保存' : '别名已清除')
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '保存失败')
+  } finally {
+    aliasSaving.value = false
+  }
+}
+
+async function onSetDefault(a: AccountRow) {
+  try {
+    await setDefaultAccount(a.id)
+    message.success(a.is_default ? `已取消「${a.alias || a.nickname}」的默认标记（回落该网盘第一个账号）` : `已把「${a.alias || a.nickname}」设为默认账号`)
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '设置失败')
+  }
 }
 
 /* ===== 失效通知开关（网盘粒度，Server 酱）。
@@ -362,7 +402,22 @@ async function onClear(a: AccountRow) {
             <span class="tag acc-tag" :class="view(a.status).cls">
               <span class="dot" :class="view(a.status).dot"></span>{{ view(a.status).label }}
             </span>
+            <!-- 默认账号：转存/调度未指定账号时用它；点击切换（同类型多账号时才有意义） -->
+            <span
+              v-if="sameTypeCount(a.type) > 1"
+              class="tag acc-tag def-tag"
+              :class="{ on: a.is_default }"
+              title="默认账号：转存与定时任务未指定账号时用它；点击切换"
+              @click="onSetDefault(a)"
+            >{{ a.is_default ? '★ 默认' : '☆ 设默认' }}</span>
           </div>
+        </div>
+        <div class="kv">
+          <span>别名</span>
+          <b>
+            {{ a.alias || '—' }}
+            <a-button type="link" size="small" style="padding: 0 2px; height: auto" @click="openAlias(a)">修改</a-button>
+          </b>
         </div>
         <div class="kv">
           <span>会员</span>
@@ -372,7 +427,6 @@ async function onClear(a: AccountRow) {
           </b>
           <b v-else style="color: var(--text3)">—</b>
         </div>
-        <div class="kv"><span>凭据类型</span><b>{{ a.cred_kind }}</b></div>
         <div class="kv"><span>上次检测</span><b>{{ a.last_check }}</b></div>
         <div class="kv">
           <span>默认目标目录</span>
@@ -525,6 +579,20 @@ async function onClear(a: AccountRow) {
       <LazyDirTree ref="bdTree" :key="bdType" :type="bdType" @select="onTreePick" />
       <p class="bd-picked">已选目录：<b>{{ bdPath || '/' }}</b></p>
     </a-modal>
+    <!-- 别名编辑小弹窗 -->
+    <a-modal
+      v-model:open="aliasOpen"
+      :width="380"
+      :title="aliasAcc ? `修改别名 · ${aliasAcc.alias || DRIVE_META[aliasAcc.type].full}` : '修改别名'"
+      :confirm-loading="aliasSaving"
+      ok-text="保存"
+      @ok="onAliasSave"
+    >
+      <a-input v-model:value="aliasText" allow-clear />
+      <p class="small" style="color: var(--text3); margin: 10px 0 0">
+        别名用于区分同网盘的多个账号；可留空。
+      </p>
+    </a-modal>
 
   </div>
 </template>
@@ -606,6 +674,19 @@ async function onClear(a: AccountRow) {
 .acchead .accname .acc-tag {
   font-size: 12px;
   font-weight: 500;
+}
+/* 默认账号标签：可点击切换；on 态品牌色实底 */
+.accname .def-tag {
+  cursor: pointer;
+  color: var(--text3);
+  border: 1px dashed var(--border);
+  background: transparent;
+  user-select: none;
+}
+.accname .def-tag.on {
+  color: #fff;
+  background: var(--acc);
+  border: 1px solid var(--acc);
 }
 
 /* ===== 新增账号弹窗（acc-add- 前缀页面私有） ===== */
