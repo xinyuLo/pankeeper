@@ -80,6 +80,11 @@ def _migrate_columns() -> None:
             ("compare_path", "TEXT DEFAULT ''"),
             ("acc_id", "INTEGER"),
         ],
+        "queue_tasks": [
+            ("acc_id", "INTEGER"),
+            ("pa_task_id", "INTEGER"),
+            ("exclude_json", "TEXT DEFAULT '[]'"),
+        ],
     }
     with engine.connect() as conn:
         for table, columns in plan.items():

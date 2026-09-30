@@ -58,6 +58,7 @@ def make_adapter_for(db: OrmSession, drive_type: str, acc_id: int | None = None)
     """
     from .adapters.baidu import BaiduClient
     from .adapters.base import AdapterError
+    from .adapters.pan115 import Pan115Adapter
     from .adapters.quark import QuarkAdapter
 
     if acc_id is not None:
@@ -74,6 +75,8 @@ def make_adapter_for(db: OrmSession, drive_type: str, acc_id: int | None = None)
         return QuarkAdapter(acc.cookies_enc)
     if acc.type == "baidu":
         return BaiduClient(acc.cookies_enc)
+    if acc.type == "115":
+        return Pan115Adapter(acc.cookies_enc)
     raise HTTPException(status_code=400, detail=f"网盘 {acc.type} 适配器尚未实现")
 
 

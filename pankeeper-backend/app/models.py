@@ -135,6 +135,10 @@ class QueueTaskRow(Base):
     share_url: Mapped[str] = mapped_column(Text, default="")
     share_code: Mapped[str] = mapped_column(Text, default="")
     include_subdirs: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 自动任务链路（M3）：调度器入队时带上，完成后回写 PaTask 状态 + RunHistory
+    acc_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 指定账号；空=该类型默认
+    pa_task_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 来源 PaTask（自动任务才有）
+    exclude_json: Mapped[str] = mapped_column(Text, default="[]")  # 排除清单（文件名列表）
 
 
 class Setting(Base):

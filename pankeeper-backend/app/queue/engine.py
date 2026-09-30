@@ -16,10 +16,12 @@ import threading
 import time
 from typing import Any, Callable
 
+from ..adapters.baidu import BaiduClient
 from ..adapters.base import AdapterError, CloudAdapter, CredentialExpired, ShareBanned, TaskSpec
+from ..adapters.pan115 import Pan115Adapter
 from ..adapters.quark import QuarkAdapter
 from ..db import SessionLocal
-from ..models import Account, DdItem, QueueTaskRow, Record
+from ..models import Account, DdItem, PaTask, QueueTaskRow, Record, RunHistory
 from ..services import notify, qms
 from ..services import media_push
 from ..services.settings_svc import get_group
@@ -28,7 +30,7 @@ KEEP_DONE = 30 * 60  # 已完成任务保留 30 分钟（秒）
 MAX_LOGS = 40
 TICK = 0.5
 
-ADAPTERS: dict[str, type[CloudAdapter]] = {"quark": QuarkAdapter}
+ADAPTERS: dict[str, type[CloudAdapter]] = {"quark": QuarkAdapter, "baidu": BaiduClient, "115": Pan115Adapter}
 
 
 def _make_adapter(drive_type: str, acc_id: int | None = None) -> CloudAdapter:
@@ -79,6 +81,9 @@ class QueueEngine:
                 row.share_url = t.get("shareUrl", "")
                 row.share_code = t.get("shareCode", "")
                 row.include_subdirs = t.get("includeSubdirs", True)
+                row.acc_id = t.get("accId")
+                row.pa_task_id = t.get("paTaskId")
+                row.exclude_json = json.dumps(t.get("excludeNames") or [], ensure_ascii=False)
             s.commit()
 
     def restore(self) -> None:
@@ -104,6 +109,9 @@ class QueueEngine:
                         "shareUrl": r.share_url,
                         "shareCode": r.share_code,
                         "includeSubdirs": r.include_subdirs,
+                        "accId": r.acc_id,
+                        "paTaskId": r.pa_task_id,
+                        "excludeNames": json.loads(r.exclude_json or "[]"),
                     }
                 )
                 self.state["seq"] = max(self.state["seq"], r.id)
@@ -163,6 +171,11 @@ class QueueEngine:
                 # 任务来源：search=搜索转存（默认）/ auto=自动转存（定时调度入队时带）。
                 # 推送按它分流：notify.on_search / notify.on_auto 两个开关。
                 "source": item.get("source") or "search",
+                # 自动任务链路：指定账号 / 来源 PaTask / 排除清单
+                "accId": item.get("acc_id"),
+                "paTaskId": item.get("pa_task_id"),
+                "excludeNames": list(item.get("exclude_names") or []),
+                "comparePath": item.get("compare_path") or "",
             }
             self.state["tasks"].append(t)
             pos = sum(1 for x in self.state["tasks"] if x["status"] in ("wait", "run"))
@@ -216,7 +229,14 @@ class QueueEngine:
             self._finish(t, "fail")
             return
 
-        spec = TaskSpec(share_url=t["shareUrl"], share_code=t["shareCode"], save_dir=t["path"], include_subdirs=t["includeSubdirs"])
+        spec = TaskSpec(
+            share_url=t["shareUrl"],
+            share_code=t["shareCode"],
+            save_dir=t["path"],
+            include_subdirs=t["includeSubdirs"],
+            exclude_names=set(t.get("excludeNames") or []),
+            compare_path=t.get("comparePath") or "",
+        )
         if not spec.share_url:
             self._push_log(t, "ERROR", "任务缺少分享链接（shareUrl），无法转存")
             self._finish(t, "fail")
@@ -243,6 +263,7 @@ class QueueEngine:
                 self._push_log(t, "INFO", f"按规则重命名 {result.renamed} 项")
         except ShareBanned as e:
             self._push_log(t, "ERROR", f"分享已失效：{e}（已熔断，后续不再请求该链接）")
+            self._mark_pa_banned(t, str(e))
             self._finish(t, "fail", f"分享失效：{e}")
             return
         except CredentialExpired as e:
@@ -316,6 +337,17 @@ class QueueEngine:
         while time.time() < deadline:
             time.sleep(TICK)
 
+    def _mark_pa_banned(self, t: dict, reason: str) -> None:
+        """自动任务的分享死了：标记熔断，调度器看到 ban_reason 就不再入队（省风控暴露）。"""
+        task_id = t.get("paTaskId")
+        if not task_id:
+            return
+        with SessionLocal() as s:
+            pa = s.get(PaTask, task_id)
+            if pa and not pa.ban_reason:
+                pa.ban_reason = reason[:200]
+                s.commit()
+
     def _mark_account_expired(self, drive_type: str, acc_id: int | None = None) -> None:
         """标记凭据失效，并**只在「由好变坏」时推送一次**。
 
@@ -365,8 +397,45 @@ class QueueEngine:
                 )
             )
             s.commit()
+        self._sync_pa_task(t, status, result)
         if status == "fail":
             notify.push("转存失败", f"{t['name']}：{message or '未知原因'}", kind=f"{t.get('source', 'search')}_fail")
+
+    def _sync_pa_task(self, t: dict, status: str, result) -> None:
+        """自动任务（带 paTaskId）完成/失败后回写任务状态与执行历史。
+
+        add/skip 统计只有成功路径才有 TransferResult；入队即拒（缺链接/无适配器）
+        的失败 result 为 None，历史里记 0 即可——失败原因已在任务日志里。
+        """
+        task_id = t.get("paTaskId")
+        if not task_id:
+            return
+        add = result.add if result else 0
+        skip = result.skip if result else 0
+        fail = result.fail if result else 0
+        with SessionLocal() as s:
+            pa = s.get(PaTask, task_id)
+            if pa is None:
+                return
+            pa.last_run = time.strftime("%m-%d %H:%M")
+            pa.last_status = "success" if status == "done" else "fail"
+            pa.last_result = f"新增 {add} / 跳过 {skip} / 失败 {fail}" if status == "done" else t["logs"][-1]["txt"] if t["logs"] else "失败"
+            if status == "done":
+                pa.ban_reason = ""
+            s.add(
+                RunHistory(
+                    task_id=task_id,
+                    started=time.strftime("%m-%d %H:%M"),
+                    finished=time.strftime("%m-%d %H:%M"),
+                    status="success" if status == "done" else "fail",
+                    add=add,
+                    skip=skip,
+                    fail=fail,
+                    excl=len(t.get("excludeNames") or []),
+                    logs_json=json.dumps(t["logs"], ensure_ascii=False),
+                )
+            )
+            s.commit()
 
     # ---------- 便捷入口（API 层用） ----------
 
