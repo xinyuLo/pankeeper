@@ -23,7 +23,7 @@ python -m venv .venv
 
 数据落在 `data/pankeeper.db`（WAL），密钥自动生成在 `data/*.key`（**记得备份/加入 .gitignore，已忽略**）。
 
-## 已实现（M1）
+## 已实现（M1–M3）
 
 | 领域 | 说明 |
 | --- | --- |
@@ -34,9 +34,24 @@ python -m venv .venv
 | QMS 触发 | 转存成功且有新增文件 → 按目标目录前缀匹配转存配置的 qms_id/strm_id → 延迟可配 → `POST /api/scrape/pathes/start` / `sync/path/start`（X-API-Key 鉴权）；**详细刮削日志/队列在 QMS 侧**，本服务只记触发快照 |
 | 转存记录 | 快照制（结果/QMS·STRM 状态/执行日志），手动转存不接推送（交互契约） |
 | 目录树缓存 | 按目录 LRU + TTL + 水位降级 + singleflight + 命中率统计（LitePan 同构模型，原创实现） |
-| 网盘连接 | Cookie 加密存库（Fernet），接口只回状态绝不回明文；保存即验证、每日探活待 M3 |
+| 网盘连接 | Cookie 加密存库（Fernet），接口只回状态绝不回明文；保存即验证 |
+| 每日探活 | 每日定时验证 Cookie（时间可配/可关），失效标记 + 推送（仅由好变坏）；顺路刷新容量/会员缓存 + PanSou 健康度 |
+| 自动转存 | PaTask cron 调度（APScheduler，5 段 cron）：触发→校验/输入侧去重→入队（source=auto）；完成回写 last_status + RunHistory；分享失效自动熔断（ban_reason），更新链接自动恢复；`POST /api/pa/tasks/:id/run` 立即运行、`GET /api/pa/next-runs` 下次执行时间 |
+| 百度 adapter | 完整转存链路（原创实现）：提取码验证（BDCLND）→ 分享页 yunData 解析 → /share/list 子目录递归 → MD5 优先 + 文件名去重（对比目录 compare_path 可配）→ 逐级建目录（errno 12=已存在）→ share/transfer（-65 等 10s 整组重试，fsidlist ≤500/组）→ filemanager 重命名；死链熔断/Cookie 失效分流 |
 
-**M3 待做**：百度 adapter（自写客户端）、115 adapter（p115client）、自动转存任务 cron 调度、Server 酱推送时机完善。
+| 115 adapter | 完整转存链路（webapi 路线，不依赖 p115client）：分享解析（115/115cdn/anxia + receive_code）→ share/snap 翻页到 count（文件夹优先 fid 可整目录接收）→ 文件名去重（对比目录 compare_path 可配）→ files/add 逐级建目录 → share/receive 整组接收（「文件已接收」判幂等成功）；**验证码=已被风控，停下报警不硬闯**；每请求 ≥1s 串行门 + 406 退避 |
+
+**M3 完成**。M4 剩余：Server 酱推送时机打磨、搜索历史/健康度页、记录清理/重试。
+
+## M3 实现说明
+
+- **调度与转存解耦**：pa_scheduler 只做「到点入队」，不发任何网盘请求——转存全走队列引擎
+  （限速/熔断/去重由 adapter 与 RateGate 负责），调度器自身故障不产生风控暴露。
+- **输入侧去重**：同一分享链接还有 wait/run 任务在队时，cron 到点自动跳过本次。
+- **排除清单**：PaTask.exclude_json 存文件名列表 → TaskSpec.exclude_names 按 basename 过滤
+  （目录条目同样适用，可整目录排除）。
+- **MD5 去重基线**：百度分享文件自带 md5，优先与 compare_path（空则 save_dir）现有文件 md5
+  集合比对——解决「改名后重复转存」；对比目录读取失败时降级为不去重（任务不炸）。
 
 ## 环境踩坑记录（重要）
 

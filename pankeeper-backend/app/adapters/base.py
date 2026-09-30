@@ -34,6 +34,8 @@ class ShareFile:
     path: str = "" 
     # 目标名（正则/重命名后），None 表示沿用原名
     target_name: str | None = None
+    # 分享侧文件 MD5（百度直接返回；MD5 优先去重的依据，夸克没有就留空）
+    md5: str = ""
 
 
 @dataclass
@@ -55,6 +57,8 @@ class TaskSpec:
     include_subdirs: bool = True
     rename_map: dict[str, str] = field(default_factory=dict)  # 原名 → 目标名
     exclude_names: set[str] = field(default_factory=set)
+    # MD5 对比基线目录（自动任务的去重对比路径；空=用 save_dir）
+    compare_path: str = ""
 
 
 class CloudAdapter(ABC):

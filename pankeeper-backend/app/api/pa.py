@@ -109,6 +109,7 @@ def create_task(body: PaBody, _user=CurrentUser):
         _apply(t, body)
         db.add(t)
         db.commit()
+        _reschedule()
         return _row(t)
 
 
@@ -120,6 +121,7 @@ def update_task(task_id: int, body: PaBody, _user=CurrentUser):
             raise HTTPException(status_code=404, detail="任务不存在")
         _apply(t, body)
         db.commit()
+        _reschedule()
         return _row(t)
 
 
@@ -188,7 +190,33 @@ def delete_task(task_id: int, _user=CurrentUser):
         if t:
             db.delete(t)
             db.commit()
+    _reschedule()
     return {"ok": True}
+
+
+def _reschedule() -> None:
+    from ..services.pa_scheduler import sync_jobs
+
+    sync_jobs()
+
+
+@router.post("/tasks/{task_id}/run")
+def run_task_now(task_id: int, _user=CurrentUser):
+    """立即运行一次（忽略 enabled/熔断，但不忽略输入侧去重之外的东西——手动点就是要跑）。"""
+    from ..services.pa_scheduler import run_task
+
+    res = run_task(task_id, force=True)
+    if not res["queued"]:
+        raise HTTPException(status_code=400, detail=res["reason"])
+    return res
+
+
+@router.get("/next-runs")
+def next_runs(_user=CurrentUser):
+    """各自动任务的下一次 cron 执行时间。"""
+    from ..services.pa_scheduler import next_run_times
+
+    return next_run_times()
 
 
 @router.put("/tasks/{task_id}/enabled")
@@ -199,4 +227,5 @@ def toggle_task(task_id: int, _user=CurrentUser):
             raise HTTPException(status_code=404, detail="任务不存在")
         t.enabled = not t.enabled
         db.commit()
+        _reschedule()
         return {"enabled": t.enabled}

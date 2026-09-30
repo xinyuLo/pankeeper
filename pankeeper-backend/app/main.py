@@ -120,6 +120,11 @@ def create_app() -> FastAPI:
         from .services.healthcheck import start_scheduler
 
         start_scheduler()
+
+        # 自动转存任务 cron 调度（M3）
+        from .services.pa_scheduler import start_pa_scheduler
+
+        start_pa_scheduler()
         print("[init] PanKeeper 后端就绪" + ("（含前端静态托管）" if WEB_DIR.is_dir() else ""))
 
     return app
