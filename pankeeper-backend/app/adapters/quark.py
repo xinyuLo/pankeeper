@@ -9,8 +9,10 @@
 """
 from __future__ import annotations
 
+import hashlib
 import random
 import re
+import threading
 import time
 from datetime import datetime
 
@@ -56,6 +58,27 @@ def extract_share(url: str) -> dict:
     return out
 
 
+# httpx.Client() 在 Windows 上构造一次 ~0.5s（SSL 上下文加载），而 adapter 每个
+# 请求都会新建 —— client 必须按账号（Cookie）复用，进程生命周期内不关闭。
+_CLIENTS: dict[str, httpx.Client] = {}
+_CLIENT_LOCK = threading.Lock()
+
+
+def _shared_client(cookies: str) -> httpx.Client:
+    key = hashlib.sha1(cookies.encode()).hexdigest()
+    with _CLIENT_LOCK:
+        cli = _CLIENTS.get(key)
+        if cli is None:
+            cli = httpx.Client(
+                headers={"cookie": cookies, "content-type": "application/json", "user-agent": UA},
+                timeout=20.0,
+                # 请求计数（网盘日志页 / 风控预警）：挂在传输层，业务方法零侵入
+                event_hooks={"request": [reqstat.hook("quark")]},
+            )
+            _CLIENTS[key] = cli
+        return cli
+
+
 class QuarkAdapter(CloudAdapter):
     type = "quark"
 
@@ -63,12 +86,7 @@ class QuarkAdapter(CloudAdapter):
         self.cookies = decrypt_credential(cookies_enc)
         self.gate = gate or RateGate("quark", min_interval=0.8, cooldown=30.0)
         self._stoken = ""  # list_share 取一次，save 批次复用
-        self._http = httpx.Client(
-            headers={"cookie": self.cookies, "content-type": "application/json", "user-agent": UA},
-            timeout=20.0,
-            # 请求计数（网盘日志页 / 风控预警）：挂在传输层，业务方法零侵入
-            event_hooks={"request": [reqstat.hook("quark")]},
-        )
+        self._http = _shared_client(self.cookies)
 
     # ---------- 基础请求 ----------
 

@@ -25,7 +25,10 @@ const props = defineProps<{
   pathBase?: string
 }>()
 
-const emit = defineEmits<{ (e: 'select', path: string): void }>()
+const emit = defineEmits<{ (e: 'select', path: string, fid: string): void }>()
+
+/** 暴露给调用方：强制刷新根层（绕过后端目录缓存直连重拉） */
+defineExpose({ reload: () => loadRoot(true) })
 
 function toNode(it: DirItem, parentPath: string): DirNode {
   return {
@@ -82,11 +85,11 @@ async function toggle(n: DirNode) {
   }
 }
 
-/** 点行：只选中（发 select 事件），要不要保存交给调用方决定。 */
+/** 点行：只选中（发 select 事件，带 fid 供调用方做目录预热），要不要保存交给调用方决定。 */
 function pick(n: DirNode) {
   if (!n.is_dir) return
   selectedPath.value = n.path
-  emit('select', n.path)
+  emit('select', n.path, n.fid)
 }
 
 onMounted(() => {
@@ -123,7 +126,7 @@ watch(
         <span class="ldt-name">{{ n.name }}</span>
       </div>
       <div v-if="n.is_dir && n.open && n.loaded" class="ldt-kids">
-        <LazyDirTree :type="type" :nodes="n.kids" :path-base="n.path" @select="(p: string) => emit('select', p)" />
+        <LazyDirTree :type="type" :nodes="n.kids" :path-base="n.path" @select="(p: string, f: string) => emit('select', p, f)" />
       </div>
     </template>
   </template>
@@ -152,7 +155,7 @@ watch(
           <span class="ldt-name">{{ n.name }}</span>
         </div>
         <div v-if="n.is_dir && n.open && n.loaded" class="ldt-kids">
-          <LazyDirTree :type="type" :nodes="n.kids" :path-base="n.path" @select="(p: string) => emit('select', p)" />
+          <LazyDirTree :type="type" :nodes="n.kids" :path-base="n.path" @select="(p: string, f: string) => emit('select', p, f)" />
         </div>
       </template>
     </template>

@@ -66,7 +66,9 @@ def make_adapter_for(db: OrmSession, drive_type: str, acc_id: int | None = None)
             raise HTTPException(status_code=404, detail="账号不存在")
     else:
         acc = db.query(Account).filter(Account.type == drive_type).order_by(Account.id).first()
-    if acc is None or acc.status == "unset" or not acc.cookies_enc:
+    # 只看 cookies_enc：status 是"最近一次验证的结果"，新增账号保存即验证时
+    # status 还是建号默认的 unset，凭据其实已写入，不能拿来当"未配置"判据
+    if acc is None or not acc.cookies_enc:
         raise HTTPException(status_code=400, detail=f"{drive_type} 账号未配置凭据")
     if acc.type == "quark":
         return QuarkAdapter(acc.cookies_enc)
