@@ -161,7 +161,11 @@ def test_search(body: dict, _user=CurrentUser):
 
 @router.post("/settings/notify/test")
 def test_notify(body: dict, _user=CurrentUser):
-    ok, msg = notify.test_sendkey(body.get("sendkey") or "")
+    # 掩码值（****开头）= 没改 → 用库里已保存的 sendkey 测，别把掩码当真 key 发
+    sendkey = (body.get("sendkey") or "").strip()
+    if sendkey.startswith("****"):
+        sendkey = get_group("settings")["notify"].get("sendkey") or ""
+    ok, msg = notify.test_sendkey(sendkey)
     return {"ok": ok, "message": msg}
 
 
@@ -173,10 +177,12 @@ def qms_health(_user=CurrentUser):
 
 @router.post("/settings/qms/test")
 def test_qms(body: dict, _user=CurrentUser):
-    # 用传入的 url/apikey（输入框正在编辑的值）测，未传才回落到已保存配置——与 pansou 的测试语义一致
+    # 用传入的 url/apikey（输入框正在编辑的值）测，未传才回落到已保存配置——与 pansou 的测试语义一致。
+    # 掩码值（****开头）等于"没改"：不能当真 key 发出去（QMS 会 401），回落已保存的。
+    apikey = (body.get("apikey") or "").strip()
     ok, msg = qms.test_connection(
         url=(body.get("url") or "").strip() or None,
-        apikey=(body.get("apikey") or "").strip() or None,
+        apikey=None if apikey.startswith("****") else (apikey or None),
     )
     return {"ok": ok, "message": msg}
 

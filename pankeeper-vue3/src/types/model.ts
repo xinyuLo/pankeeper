@@ -14,6 +14,8 @@ export type MainDriveType = 'baidu' | 'quark' | '115'
 export interface PaTask {
   id: number
   type: MainDriveType
+  /** 用哪个账号跑；null = 该类型默认账号 */
+  acc_id: number | null
   name: string
   enabled: boolean
   share_url: string

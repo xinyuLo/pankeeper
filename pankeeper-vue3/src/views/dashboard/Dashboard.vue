@@ -249,7 +249,7 @@ function goManage(type: MainDriveType) {
 const curList = computed(() => tasksOf(curTab.value))
 const curSummary = computed(() => summaryOf(curTab.value))
 /** 空状态文案用：当前 tab 对应的网盘名 */
-const curTabName = computed(() => (firstAccountOf(curTab.value)?.alias || firstAccountOf(curTab.value)?.short || curTab.value) + '网盘')
+const curTabName = computed(() => firstAccountOf(curTab.value)?.alias || firstAccountOf(curTab.value)?.short || curTab.value)
 
 /* 排序后第一个启用项 = 这个网盘最近一条要触发的任务（首页不摆全量表格） */
 const curRow = computed(() => {
@@ -341,11 +341,11 @@ onMounted(async () => {
         <div class="db-hero-act">
           <button type="button" class="db-btn" @click="goSearch">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></svg>
-            搜索转存
+            搜索
           </button>
           <button type="button" class="db-btn is-primary" @click="goNewTask">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
-            新建定时任务
+            定时任务
           </button>
         </div>
       </div>
@@ -403,9 +403,13 @@ onMounted(async () => {
               <span v-if="p.vip" class="db-vip">{{ p.vip.name }}<i v-if="p.vip.expires"> · {{ p.vip.expires }}</i></span>
               <span v-if="p.cap" class="db-cap-txt">{{ gb(p.cap.used) }} / {{ gb(p.cap.total) }} GB</span>
             </div>
+            <!-- 无数据：空占位行（只保行高，无任何视觉元素） -->
+            <div v-else class="db-pan-meta db-pan-meta-ph"></div>
             <div v-if="p.cap" class="db-cap-bar" :title="usedPct(p.cap) + '% 已使用'">
               <i :style="{ width: usedPct(p.cap) + '%' }"></i>
             </div>
+            <!-- 未配置/没拿到摘要：占位条兜住高度，三张卡不至于参差 -->
+            <div v-else class="db-cap-bar db-cap-ph" title="配置凭据后显示容量"></div>
             <!-- 最近一条任务的简报 -->
             <div v-if="p.latest && p.pill && p.res" class="db-last">
               <div class="db-last-hd">
@@ -628,7 +632,17 @@ onMounted(async () => {
 /* 卡片顶部的品牌色静态细条（动态转圈/扫描线按需求移除，保留一眼区分平台的标识） */
 .db-pan::before {
   content: ''; position: absolute; left: 0; right: 0; top: 0; height: 3px;
+  /* 渐变加宽一倍做往复滑动：亮段在卡片顶条上缓慢来回 */
   background: linear-gradient(90deg, transparent, var(--db-c) 35%, var(--db-c) 65%, transparent);
+  background-size: 200% 100%;
+  animation: dbSweep 7s ease-in-out infinite alternate;
+}
+@keyframes dbSweep {
+  from { background-position: 0% 0; }
+  to { background-position: 100% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .db-pan::before { animation: none; }
 }
 .db-pan:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); border-color: var(--db-c); }
 .db-pan.is-off { opacity: 0.72; }
@@ -730,10 +744,25 @@ onMounted(async () => {
   background: var(--split); margin-bottom: 10px;
 }
 .db-cap-bar i {
-  display: block; height: 100%; border-radius: 3px;
+  display: block; height: 100%; border-radius: 3px; position: relative; overflow: hidden;
   background: var(--db-c, #1677ff); opacity: 0.85;
   transition: width 0.4s cubic-bezier(0.22, 0.61, 0.36, 1);
 }
+/* 填充条上的高光流动：一段白色微光沿品牌色填充缓慢扫过 */
+.db-cap-bar i::after {
+  content: ''; position: absolute; top: 0; bottom: 0; left: -40%; width: 40%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.5), transparent);
+  animation: dbCapFlow 2.6s ease-in-out infinite;
+}
+@keyframes dbCapFlow {
+  to { left: 110%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .db-cap-bar i::after { animation: none; }
+}
+/* 占位 meta 行：保住行高（与真实 meta 行同 margin），内部无内容 */
+.db-pan-meta-ph { min-height: 20px; visibility: hidden; }
+/* 占位条：一根静默空轨道，只为对齐行高 */
 html[data-theme='dark'] .db-vip { color: #ffc069; }
 /* 迷你统计的成功/失败数（原型是内联 style，这里收成类并补暗色覆盖） */
 .db-mini b.m-ok { color: #389e0d; }

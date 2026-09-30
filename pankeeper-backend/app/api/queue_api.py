@@ -25,6 +25,8 @@ class EnqueueBody(BaseModel):
     share_url: str = ""
     share_code: str = ""
     include_subdirs: bool = True
+    # 任务来源：search（默认，搜索转存）/ auto（定时调度）；决定推送走哪个开关
+    source: str = "search"
 
 
 @router.post("/tasks")

@@ -403,11 +403,10 @@ onUnmounted(() => {
           <template v-else><span class="pkdot-live"></span>已检索 {{ countsBy.all }} 条</template>
         </span>
       </div>
-    </div>
 
-    <!-- 统计卡：跟随当前 tab 动态渲染；换 key 重放出场动画；数字滚动 -->
-    <!-- 检索 loading 条：仅检索中展示，贴在筛选卡下边框 -->
-    <div v-if="busy" class="pk-strip" aria-hidden="true"><i class="pk-strip-fill"></i></div>
+      <!-- 检索流动条：贴住筛选卡底边，仅检索中展示 -->
+      <div v-if="busy" class="pk-strip" aria-hidden="true"><i class="pk-strip-fill"></i></div>
+    </div>
 
     <div v-if="statCards.length" :key="statEpoch" class="statline enter" :class="{ single: active !== 'all' }">
       <div
@@ -567,7 +566,7 @@ onUnmounted(() => {
  * ===================================================================== */
 
 /* 无内边距卡片：表格/卡片列表自己管留白，避免与卡内 padding 叠加错位 */
-.st-flush { padding: 0; }
+.st-flush { padding: 0; position: relative; overflow: hidden; }
 .st-mb { margin-bottom: 16px; }
 .st-flex1 { flex: 1; }
 .st-res { overflow: hidden; }

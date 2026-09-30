@@ -1002,20 +1002,21 @@ html[data-theme='dark'] .engine-pill.bad { color: #ffc53d; }
 
 /* ===== 搜索页：检索活动条（空闲呼吸 / 检索扫掠 / 完成闪光） ===== */
 .pk-strip {
-  position: relative;
-  height: 4px;
-  border-radius: 100px;
+  /* 贴住筛选卡底边：绝对定位铺满卡宽，高度 3px，随卡片圆角裁切 */
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
   overflow: hidden;
-  /* 贴住筛选卡下边框（卡是 margin-bottom:16px 的白卡），不用时整条隐藏 */
-  margin: -3px 0 16px;
+  border-radius: 0 0 10px 10px;
 }
 .pk-strip-fill {
   position: absolute;
   inset: 0 auto 0 0;
   width: 42%;
-  border-radius: 100px;
   background: linear-gradient(90deg, transparent, var(--primary) 50%, #69c0ff 75%, transparent);
-  animation: pkStripSweep 1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  animation: pkStripSweep 2.4s cubic-bezier(0.45, 0, 0.55, 1) infinite;
 }
 @keyframes pkStripSweep {
   0% { transform: translateX(-130%); }

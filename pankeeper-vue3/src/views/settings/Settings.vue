@@ -51,9 +51,8 @@ const notify = reactive<NotifyCfg>({
   enabled: false,
   sendkey: '',
   webhook: '',
-  on_done: true,
-  on_fail: true,
-  on_part: true,
+  on_auto: true,
+  on_search: true,
   on_cred: true,
 })
 const qms = reactive<QmsCfg>({ enabled: true, url: '', apikey: '', tmdb_api_key: '', tmdb_proxy: '', act_strm: true, act_emby: true })
@@ -382,7 +381,7 @@ async function onRemoveAvatar() {
             <div class="ctl">
               <a-input-password v-model:value="notify.sendkey" style="width: 320px" placeholder="SCT…" @blur="flushSave('notify')" />
               <a-button @click="onTestSendkey">发送测试</a-button>
-              <span class="muted small">仅通知自动转存的任务</span>
+              <span class="muted small">按下方「推送时机」开关通知自动/搜索转存与凭据告警</span>
             </div>
             <div class="sc-help">
               <a href="https://sc3.ft07.com/" target="_blank" rel="noopener noreferrer">配置说明</a>
@@ -399,9 +398,8 @@ async function onRemoveAvatar() {
         <div class="formrow">
           <label>推送时机</label>
           <div class="ctl st-gap18">
-            <a-checkbox v-model:checked="notify.on_done">转存完成</a-checkbox>
-            <a-checkbox v-model:checked="notify.on_fail">转存失败</a-checkbox>
-            <a-checkbox v-model:checked="notify.on_part">部分失败</a-checkbox>
+            <a-checkbox v-model:checked="notify.on_auto">自动转存</a-checkbox>
+            <a-checkbox v-model:checked="notify.on_search">搜索转存</a-checkbox>
             <a-checkbox v-model:checked="notify.on_cred">凭据过期告警</a-checkbox>
           </div>
         </div>

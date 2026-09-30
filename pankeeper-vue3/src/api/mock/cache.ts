@@ -30,7 +30,10 @@ export interface CacheCfg {
 export interface CacheTree {
   id: number
   type: MainDriveType
+  /** 缓存键里的账号占位（main / 账号 id），内部用 */
   acc: string
+  /** 账号显示名（别名/昵称，后端解析好的），列表展示用 */
+  acc_name?: string
   path: string
   entries: number
   size: string
