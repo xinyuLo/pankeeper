@@ -13,6 +13,7 @@ import { ddStore } from '@/api/mock/dd'
 import { addAccount, checkAccount, deleteAccount, getSummary, listAccounts, saveCredential, setDriveNotify, type AccountSummary } from '@/api/modules/accounts'
 import { listDdItems, saveDdItem, setDefaultDir } from '@/api/modules/dd'
 import { getFilesList } from '@/api/modules/files'
+import { warmTrees, warmStatus } from '@/api/modules/cache'
 import type { DdItem, MainDriveType } from '@/types/model'
 
 /** 卡片列表：多账号平铺，按平台固定顺序 + 同平台按 id 排 */
@@ -91,6 +92,7 @@ async function onAddSave() {
       verifyingId.value = fresh.id
       await loadSummary(fresh.id)
     }
+    await warmAll(type) // 验证通过即全树预热，后续选目录全吃缓存
   } catch (e: unknown) {
     const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
     message.error(detail || '添加失败')
@@ -159,6 +161,33 @@ async function warmDirCache(type: MainDriveType, fid: string, path: string) {
   await getFilesList(type, fid || '0', fid ? '' : path)
 }
 
+/** 全树预热：后台跑（受网盘限速，可能要几分钟），这里轮询进度并用 message 汇报。
+ *  保存 Cookie 验证通过后调用——之后所有选目录/转存的地方都吃缓存。 */
+async function warmAll(type: MainDriveType) {
+  const hide = message.loading('正在缓存文件夹…', 0)
+  try {
+    await warmTrees(type)
+    for (let i = 0; i < 600; i++) { // 上限 10 分钟，正常几十秒
+      const st = await warmStatus(type)
+      if (st.status === 'done') {
+        message.success(st.message ? `缓存成功（${st.done} 个文件夹，${st.message}）` : `缓存成功（${st.done} 个文件夹）`, 4)
+        return
+      }
+      if (st.status === 'error') {
+        message.error(`缓存失败：${st.message || '未知错误'}`, 5)
+        return
+      }
+      await new Promise((r) => setTimeout(r, 1000))
+    }
+    message.warning('缓存还在后台跑，已转入静默；可稍后在「网盘日志 → 缓存」查看', 5)
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(`缓存失败：${detail || '请求失败'}`, 5)
+  } finally {
+    hide()
+  }
+}
+
 async function onConfirmBaseDir() {
   if (!bdPath.value) {
     message.warning('请先在树里选择一个目录')
@@ -176,7 +205,7 @@ async function onConfirmBaseDir() {
       const others = ddStore.items.filter((x) => x.type === type)
       if (others.length === 0) {
         // 一条都没有：新建即默认（后端对首条自动 is_default）
-        await saveDdItem({ id: 0, type, account: 'main', sort: 1, name: '默认目录', path, is_default: true, qms_on: false, qms_id: null, strm_id: null })
+        await saveDdItem({ id: null, type, account: 'main', sort: 1, name: '默认目录', path, is_default: true, qms_on: false, qms_id: null, strm_id: null })
       } else {
         // 边缘：有条目但无默认 —— 更新第一条并设为默认
         const first = others[0]
@@ -191,6 +220,7 @@ async function onConfirmBaseDir() {
     return
   }
   // 配置落库即预热缓存：提示「正在缓存 → 缓存成功/失败」，不再弹「已保存」
+  await listDdItems().catch(() => {}) // 同步 store：不然下次保存还走"新建"分支，撞同名检查
   bdOpen.value = false
   bdSaving.value = false
   const hide = message.loading('正在缓存文件夹信息…', 0)
@@ -301,6 +331,7 @@ async function onCredSave() {
     credCookies.value = ''
     message.success(`凭据已保存并验证通过（${nickname}）`)
     await loadSummary(acc.id)
+    await warmAll(acc.type) // 验证通过即全树预热，后续选目录全吃缓存
   } catch (e: unknown) {
     const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
     message.error(detail || '凭据验证失败')
@@ -391,7 +422,7 @@ async function onClear(a: AccountRow) {
         </div>
         <div class="accbtns">
           <template v-if="verifyingId === a.id">
-            <span class="acc-checking"><a-spin size="small" />正在检测连通性…</span>
+            <span class="acc-checking"><a-spin size="small" />正在验证 Cookie…</span>
           </template>
           <template v-else>
             <a-button type="primary" size="small" @click="onConfig(a)">配置凭据</a-button>
@@ -512,13 +543,14 @@ async function onClear(a: AccountRow) {
 }
 .bd-picked b { color: var(--primary); font-weight: 500; }
 
-/* 目录弹窗标题栏：标题 + 刷新按钮（按钮贴右侧，挨着关闭 X） */
+/* 目录弹窗标题栏：标题 + 刷新按钮（右侧留出关闭 X 的位置，别挤在一起） */
 .bd-titlebar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding-right: 6px;
+  /* antd 关闭 X 占位约 22px + 间距 */
+  padding-right: 34px;
 }
 
 .acc {

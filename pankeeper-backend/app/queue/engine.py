@@ -21,6 +21,7 @@ from ..adapters.quark import QuarkAdapter
 from ..db import SessionLocal
 from ..models import Account, DdItem, QueueTaskRow, Record
 from ..services import notify, qms
+from ..services import media_push
 from ..services.settings_svc import get_group
 
 KEEP_DONE = 30 * 60  # 已完成任务保留 30 分钟（秒）
@@ -274,14 +275,25 @@ class QueueEngine:
         qms_snap = {"st": "成功" if ok else f"失败 · {msg}", "cls": "t-ok" if ok else "t-bad"}
         self._push_log(t, "INFO" if ok else "ERROR", f"QMS 刮削任务 #{link['qms_id']} 触发{'成功' if ok else '失败'}：{msg or '详见 QMS 侧日志'}")
 
-        if not link.get("strm_id") or not ok:
-            return qms_snap, strm_snap
-        self._sleep_phase(t, "waitstrm", int(cfg.get("strm", 10)), f"QMS 触发完成，{cfg.get('strm', 10)} 秒后触发 STRM 生成")
-        t["phase"] = "strm"
-        t["phaseStart"] = int(time.time() * 1000)
-        ok2, msg2 = qms.trigger_strm(link["strm_id"])
-        strm_snap = {"st": "成功" if ok2 else f"失败 · {msg2}", "cls": "t-ok" if ok2 else "t-bad"}
-        self._push_log(t, "INFO" if ok2 else "ERROR", f"STRM 同步 #{link['strm_id']} 触发{'成功' if ok2 else '失败'}：{msg2 or '详见 QMS 侧日志'}")
+        strm_ok: bool | None = None
+        if link.get("strm_id") and ok:
+            self._sleep_phase(t, "waitstrm", int(cfg.get("strm", 10)), f"QMS 触发完成，{cfg.get('strm', 10)} 秒后触发 STRM 生成")
+            t["phase"] = "strm"
+            t["phaseStart"] = int(time.time() * 1000)
+            ok2, msg2 = qms.trigger_strm(link["strm_id"])
+            strm_ok = ok2
+            strm_snap = {"st": "成功" if ok2 else f"失败 · {msg2}", "cls": "t-ok" if ok2 else "t-bad"}
+            self._push_log(t, "INFO" if ok2 else "ERROR", f"STRM 同步 #{link['strm_id']} 触发{'成功' if ok2 else '失败'}：{msg2 or '详见 QMS 侧日志'}")
+
+        if ok:
+            # 联动推送：等 QMS 刮削完成后查记录 + TMDB 拼富文本推送（后台守护，不阻塞队列）
+            media_push.watch_and_spawn({
+                "drive": t["type"],
+                "task": name_head,
+                "names": [e["name"] for e in result.transferred],
+                "qms_ok": ok,
+                "strm_ok": strm_ok,
+            })
         return qms_snap, strm_snap
 
     def _match_dd_link(self, path: str) -> dict | None:

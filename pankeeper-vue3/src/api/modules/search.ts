@@ -50,10 +50,16 @@ export interface EngineHealth {
   channels: number | null
 }
 
-/** 检索引擎健康度（不含地址，IP 属隐私） */
+/** 检索引擎健康度（不含地址，IP 属隐私）。实时探测，结果由后端写进缓存 */
 export function getEngineHealth(): Promise<EngineHealth> {
   if (USE_MOCK) return mockDelay({ ok: true, plugins: 76, channels: 90 })
   return get<EngineHealth>('/search/health')
+}
+
+/** 上一次探测的缓存状态（每日探活/设置页测试时刷新）：首屏渲染用，不现场打网盘 */
+export function getEngineHealthCached(): Promise<{ ok: boolean | null; checked_at: string }> {
+  if (USE_MOCK) return mockDelay({ ok: true, checked_at: '' })
+  return get<{ ok: boolean | null; checked_at: string }>('/search/health-cached')
 }
 
 export function getPanSouAddr(): Promise<string> {

@@ -11,7 +11,7 @@ import PkPager from '@/components/PkPager.vue'
 import QuickTransferModal from './QuickTransferModal.vue'
 import TransferModal, { type TransferTarget } from './TransferModal.vue'
 import { useIsMobile } from '@/composables/useIsMobile'
-import { getInitialResults, getPanSouAddr, getSearchChannels, getSearchResults, type SearchChannel, getEngineHealth } from '@/api/modules/search'
+import { getInitialResults, getPanSouAddr, getSearchChannels, getSearchResults, type SearchChannel, getEngineHealth, getEngineHealthCached } from '@/api/modules/search'
 import { getSettings, saveSearchSrc } from '@/api/modules/settings'
 import { listDdItems } from '@/api/modules/dd'
 import { DRIVE_META } from '@/api/mock/meta'
@@ -33,15 +33,18 @@ const router = useRouter()
 
 const kw = ref('')
 const channels = ref<SearchChannel[]>([])
-/** PanSou 服务地址（后端下发，不暴露给用户）；空 = 未配置，整个搜索功能不可用 */
+/** PanSou 服务地址（后端下发，不暴露给用户）；空 = 未配置，整个搜索功能不可用。
+ *  addrReady 之前不算"未配置"——否则进页一瞬间会闪"未配置/离线"引导。 */
 const addr = ref('')
-const pansouMissing = computed(() => !addr.value.trim())
+const addrReady = ref(false)
+const pansouMissing = computed(() => addrReady.value && !addr.value.trim())
 
 /** 未配置 PanSou 时的引导：带路径说清楚去哪儿填 */
 function goPansouCfg() {
   router.push({ name: 'settings' })
 }
-/** 引擎状态胶囊（右上角）：不暴露地址，IP 属隐私 */
+/** 引擎状态胶囊（右上角）：先吃后端缓存立即定调，再用实时探测静默覆盖。
+ *  缓存由每日探活 + 设置页"测试 PanSou"刷新。不暴露地址，IP 属隐私 */
 const engineOk = ref<boolean | null>(null)
 const results = ref<SearchResultItem[]>([])
 /** 各网盘是否配过转存目录（快速转存按钮的前置条件，账号级配置在「转存配置」页） */
@@ -49,14 +52,18 @@ const ddTypes = ref(new Set<DriveType>())
 
 onMounted(async () => {
   // 首屏走缓存结果（无检索动效），等价原型打开页面时 window.results 已在
-  const [chs, a, rows, dds] = await Promise.all([
+  const [chs, a, rows, dds, cached] = await Promise.all([
     getSearchChannels(),
     getPanSouAddr(),
     getInitialResults(),
     listDdItems(),
+    getEngineHealthCached(),
   ])
   channels.value = chs
   addr.value = a
+  addrReady.value = true
+  // 缓存状态先渲染（不再闪"离线"），随后实时探测静默覆盖
+  engineOk.value = cached.ok
   getEngineHealth().then((h) => (engineOk.value = h.ok)).catch(() => (engineOk.value = false))
   results.value = rows
   ddTypes.value = new Set<DriveType>(dds.map((x) => x.type))

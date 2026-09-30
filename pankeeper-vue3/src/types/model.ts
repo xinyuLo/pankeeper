@@ -100,9 +100,14 @@ export interface DdItem {
   strm_id: number | null
 }
 
+/** 保存载荷：新建时 id 传 null（后端自增分配），更新时带已入库的正数 id。
+ *  ⚠️ 别再用 id:0 之类的魔法值表示新建——0 是合法主键时它就是 bug 温床。 */
+export type DdItemDraft = Omit<DdItem, 'id'> & { id?: number | null }
+
 export interface DdQmsPath {
   id: number
-  media_type: 'tv' | 'movie'
+  /** 中文媒体类型（电影/剧集），来自 qMediaSync media_type 映射 */
+  media_type: string
   source_path: string
 }
 

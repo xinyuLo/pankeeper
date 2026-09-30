@@ -28,9 +28,40 @@ def pansou_addr(_user=CurrentUser):
 
 @router.get("/health")
 def engine_health(_user=CurrentUser):
-    """检索引擎健康度（透传 pansou /api/health，不含任何地址信息）。"""
+    """检索引擎健康度（透传 pansou /api/health，不含任何地址信息）。结果写进缓存。"""
     h = pansou.health()
-    return {"ok": h.get("ok", False), "plugins": h.get("plugins"), "channels": h.get("channels")}
+    ok = h.get("ok", False)
+    _save_health_cache(ok, ok and h.get("plugins"), h.get("channels"))
+    return {"ok": ok, "plugins": h.get("plugins"), "channels": h.get("channels")}
+
+
+@router.get("/health-cached")
+def engine_health_cached(_user=CurrentUser):
+    """上一次探测的缓存状态（每日探活/页面测试时刷新）。首屏渲染用，不现场打网盘。"""
+    from ..services.settings_svc import get_group
+
+    h = get_group("pansou_health")
+    return {"ok": h.get("ok"), "plugins": h.get("plugins"), "checked_at": h.get("checked_at", "")}
+
+
+def _save_health_cache(ok: bool, plugins=None, channels=None) -> None:
+    """把 PanSou 在线状态落进 settings（pansou_health 组）。失败吞掉，不影响主流程。"""
+    try:
+        from datetime import datetime
+
+        from ..services.settings_svc import save_group
+
+        save_group(
+            "pansou_health",
+            {
+                "ok": bool(ok),
+                "plugins": plugins,
+                "channels": channels,
+                "checked_at": datetime.now().strftime("%m-%d %H:%M"),
+            },
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @router.get("/channels")

@@ -133,12 +133,43 @@ def run_check(force: bool = False) -> dict:
     for acc in skipped:
         _refresh_summary(acc.id, acc.type, acc.display_name)
 
+    _check_pansou()
+
     return {
         "checked": checked,
         "failed": failed,
         "skipped": [f"{a.type}#{a.id} {a.display_name}" for a in skipped],
         "at": stamp,
     }
+
+
+def _check_pansou() -> None:
+    """PanSou 在线状态跟着每日探活一起刷新（结果写 pansou_health 缓存）。
+
+    用 requests 而非 httpx（理由同 pansou 模块注释）；未配置也落一条 ok=False，
+    让前端首屏能区分"没配"和"检测中"。"""
+    import requests
+
+    from ..services.settings_svc import get_group, save_group
+
+    url = (get_group("settings")["search"].get("pansou_url") or "").rstrip("/")
+    ok, plugins = False, None
+    if url:
+        try:
+            resp = requests.get(f"{url}/api/health", timeout=8)
+            data = resp.json()
+            ok = True
+            plugins = data.get("plugin_count")
+        except (requests.RequestException, ValueError) as e:
+            print(f"[health] PanSou 探测失败：{e}")
+    else:
+        print("[health] PanSou 未配置，跳过探测")
+    try:
+        from ..api.search import _save_health_cache
+
+        _save_health_cache(ok, ok and plugins)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _prune_stats() -> None:

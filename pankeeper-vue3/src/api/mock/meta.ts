@@ -1,4 +1,4 @@
-import type { DriveType, MainDriveType, DdAccount } from '@/types/model'
+import type { DriveType, MainDriveType } from '@/types/model'
 
 /** 网盘元信息（名称/品牌色/标签色），原型 META 原样移植 */
 export const DRIVE_META: Record<DriveType, { name: string; color: string; full: string; tag: string }> = {
@@ -14,15 +14,6 @@ export const DRIVE_META: Record<DriveType, { name: string; color: string; full: 
 /** 转存/自动转存固定顺序 */
 export const MAIN_ORDER: MainDriveType[] = ['baidu', 'quark', '115']
 
-/** mock 账号（转存配置按账号作用域） */
-export const DD_ACCOUNTS: Record<MainDriveType, DdAccount[]> = {
-  baidu: [
-    { id: 'bd_main', label: '主账号 138****6688' },
-    { id: 'bd_sub', label: '小号 xinyu_bd' },
-  ],
-  quark: [{ id: 'qk_main', label: '主账号 185****2233' }],
-  '115': [{ id: 'p115_main', label: '主账号 xinyu115' }],
-}
 
 /** QMS 媒体类型中文 */
-export const DD_MEDIA: Record<'tv' | 'movie', string> = { tv: '剧集', movie: '电影' }
+export const DD_MEDIA: Record<string, string> = { tv: '剧集', movie: '电影' }

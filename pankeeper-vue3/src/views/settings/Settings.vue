@@ -56,7 +56,7 @@ const notify = reactive<NotifyCfg>({
   on_part: true,
   on_cred: true,
 })
-const qms = reactive<QmsCfg>({ enabled: true, url: '', apikey: '', act_strm: true, act_emby: true })
+const qms = reactive<QmsCfg>({ enabled: true, url: '', apikey: '', tmdb_api_key: '', tmdb_proxy: '', act_strm: true, act_emby: true })
 const security = reactive<SecurityCfg>({ username: 'admin', session_days: 7 })
 
 /** 初始数据灌入完成前关闭自动保存：Object.assign 本身会触发 watch，不能让「进页面」变成一次保存 */
@@ -437,6 +437,20 @@ async function onRemoveAvatar() {
           <label>API Key</label>
           <div class="ctl">
             <a-input-password v-model:value="qms.apikey" style="width: 280px" @blur="flushSave('qms')" />
+          </div>
+        </div>
+        <div class="formrow">
+          <label>TMDB API Key</label>
+          <div class="ctl">
+            <a-input-password v-model:value="qms.tmdb_api_key" style="width: 280px" @blur="flushSave('qms')" />
+            <span class="muted small">转存完成的推送通知用它查封面/剧照（themoviedb.org 免费申请）</span>
+          </div>
+        </div>
+        <div class="formrow">
+          <label>TMDB 代理</label>
+          <div class="ctl">
+            <a-input v-model:value="qms.tmdb_proxy" style="width: 280px" placeholder="http://192.168.2.77:7890" @blur="flushSave('qms')" />
+            <span class="muted small">服务端连不上 TMDB 时填，留空直连</span>
           </div>
         </div>
         <div class="formrow">

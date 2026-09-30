@@ -62,7 +62,10 @@ def create_item(body: DdBody, _user=CurrentUser):
             raise HTTPException(status_code=400, detail="同账号下已存在同名目录")
         # 每账号唯一默认：该账号第一条自动设默认
         count = db.query(DdItem).filter(DdItem.type == body.type, DdItem.account == body.account).count()
-        row = DdItem(**body.model_dump(), is_default=count == 0)
+        # 新建一律主键自增：前端契约 id=0 表示"新建"，原样插入会撞已有 id=0 的行
+        data = body.model_dump()
+        data.pop("id", None)
+        row = DdItem(**data, is_default=count == 0)
         db.add(row)
         db.commit()
         return _row(row)

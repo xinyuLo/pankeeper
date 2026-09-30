@@ -85,6 +85,25 @@ class DirTreeCache:
         with self._lock:
             self._store.pop(key, None)
 
+    def update(self, key: tuple, fn) -> None:
+        """就地更新缓存项：fn(data) -> data，保留剩余 TTL 并 LRU 置顶。
+
+        写后局部更新用——转存/建删文件后把变化直接写进已缓存的目录列表，
+        避免一次小改动就整层回源。key 不存在/已过期/更新抛错一律静默跳过
+        （回源是懒加载兜底，这里只做锦上添花）。"""
+        try:
+            with self._lock:
+                hit = self._store.get(key)
+                if not hit or hit[1] <= time.time():
+                    return
+                data, exp = hit
+                new_data = fn(data)
+                if new_data is not None:
+                    self._store[key] = (new_data, exp)
+                    self._store.move_to_end(key)
+        except Exception:  # noqa: BLE001 —— 同 bump：缓存辅助逻辑不能影响业务
+            pass
+
     def clear(self) -> int:
         with self._lock:
             n = len(self._store)

@@ -9,7 +9,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .api import accounts, auth, cache_api, dd, drive_logs, pa, queue_api, records, search, settings as settings_api
+from .api import accounts, auth, cache_api, dd, drive_logs, pa, qms_api, queue_api, records, search, settings as settings_api
 from .api.auth import ensure_admin
 from .db import init_db
 from .deps import is_local_request
@@ -67,6 +67,7 @@ def create_app() -> FastAPI:
     app.include_router(accounts.router)
     app.include_router(dd.router)
     app.include_router(search.router)
+    app.include_router(qms_api.router)
     app.include_router(queue_api.router)
     app.include_router(records.router)
     app.include_router(pa.router)

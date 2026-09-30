@@ -20,6 +20,7 @@ import httpx
 
 from ..security import decrypt_credential
 from ..services import reqstat
+from ..services.dircache import dir_cache
 from .base import (
     AdapterError,
     CloudAdapter,
@@ -284,7 +285,27 @@ class QuarkAdapter(CloudAdapter):
             done += len(batch)
             on_progress(min(99, int(done / total * 100)))
         on_progress(100)
+        self._patch_target_cache(spec, to_fid, result)
         return result
+
+    def _patch_target_cache(self, spec: TaskSpec, to_fid: str, result: TransferResult) -> None:
+        """转存成功后把新增条目就地追加进目标目录的缓存列表（写后不回源）。
+
+        只在目标目录已有缓存时生效（update 对 miss 静默跳过）；拿不到 fid 的
+        条目跳过——树展开时反正会按需回源。"""
+        entries = [
+            {"fid": t["fid"], "name": t["name"], "is_dir": False, "size": 0}
+            for t in result.transferred
+            if t.get("fid")
+        ]
+        if not entries:
+            return
+
+        def _append(data):
+            have = {d.get("name") for d in data if isinstance(d, dict)}
+            return list(data) + [e for e in entries if e["name"] not in have]
+
+        dir_cache.update(("quark", "main", to_fid), _append)
 
     def _save_batch(self, batch: list[ShareFile], to_fid: str, spec: TaskSpec, result: TransferResult, on_log) -> None:
         data = self._req(

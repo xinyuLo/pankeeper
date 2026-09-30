@@ -4,7 +4,7 @@
  */
 import { del, get, mockDelay, post, put, USE_MOCK } from '../http'
 import { ddStore, ddQmsPaths, ddStrmPaths, ddGetDefault, ddHasConfig, ddFind } from '../mock/dd'
-import type { DdItem, DdQmsPath, DdStrmPath } from '@/types/model'
+import type { DdItem, DdItemDraft, DdQmsPath, DdStrmPath } from '@/types/model'
 
 export function listDdItems(): Promise<DdItem[]> {
   if (USE_MOCK) return mockDelay(ddStore.items)
@@ -30,14 +30,19 @@ export function findDdItem(id: number): Promise<DdItem | null> {
   return get<DdItem | null>(`/dd/items/${id}`)
 }
 
-export async function saveDdItem(item: DdItem): Promise<void> {
+export async function saveDdItem(item: DdItemDraft): Promise<void> {
   if (USE_MOCK) {
-    const idx = ddStore.items.findIndex((x) => x.id === item.id)
-    if (idx >= 0) ddStore.items[idx] = { ...item }
-    else ddStore.items.push({ ...item, id: ++ddStore.seq })
+    if (item.id != null) {
+      const idx = ddStore.items.findIndex((x) => x.id === item.id)
+      if (idx >= 0) ddStore.items[idx] = item as DdItem
+      else ddStore.items.push({ ...(item as DdItem), id: ++ddStore.seq })
+    } else {
+      ddStore.items.push({ ...(item as DdItem), id: ++ddStore.seq })
+    }
     return mockDelay(undefined)
   }
-  if (item.id) await put(`/dd/items/${item.id}`, item)
+  // 新建 = id 为 null/缺省（后端自增分配）；id:0 魔法值已废弃——0 是合法主键时它就是 bug 温床
+  if (item.id != null) await put(`/dd/items/${item.id}`, item)
   else await post('/dd/items', item)
   await listDdItems() // 写后回读，store 与后端对齐（含后端分配的 id / 自动设默认）
 }
@@ -67,10 +72,12 @@ export async function setDefaultDir(id: number): Promise<void> {
 
 export function listQmsPaths(): Promise<DdQmsPath[]> {
   if (USE_MOCK) return mockDelay(ddQmsPaths)
-  return get<DdQmsPath[]>('/qms/paths')
+  // 后端透传 qMediaSync GET /api/scrape/pathes；media_type 已映射成中文（电影/剧集）
+  return get<DdQmsPath[]>('/qms/scrape-pathes')
 }
 
 export function listStrmPaths(): Promise<DdStrmPath[]> {
   if (USE_MOCK) return mockDelay(ddStrmPaths)
-  return get<DdStrmPath[]>('/strm/paths')
+  // 后端透传 qMediaSync GET /api/sync/path-list
+  return get<DdStrmPath[]>('/qms/sync-pathes')
 }
