@@ -22,6 +22,7 @@ import { FolderOutlined } from '@ant-design/icons-vue'
 import PkTree from '@/components/PkTree.vue'
 import LazyDirTree from '@/components/LazyDirTree.vue'
 import { USE_MOCK } from '@/api/http'
+import { getRootDirs } from '@/api/modules/accounts'
 import ShareTree from './ShareTree.vue'
 import { pkQueue } from '@/queue/engine'
 import { DRIVE_META } from '@/api/mock/meta'
@@ -32,6 +33,10 @@ const props = defineProps<{ open: boolean; target: TransferTarget | null }>()
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>()
 
 const DEFAULT_DIR = USE_MOCK ? '/我的资源/影视/电视剧/国产剧' : '/'
+
+/** 真实模式的目录树落点：网盘连接页配置了「默认根目录」就以它为根，只显示其子目录 */
+const rootDir = ref('')
+const rootDirs = ref<Record<string, string>>({})
 /** 只有三大盘支持真实目录浏览；其余盘允许直接转存（目标目录自动创建） */
 const isMainDrive = computed(() => !!props.target && (['baidu', 'quark', '115'] as string[]).includes(props.target.type))
 
@@ -116,13 +121,16 @@ const includeSub = ref(true)
 const postQms = ref(true)
 
 /** 每次打开重置：分享树收起、勾选清空、目标位置回默认国产剧 */
-watch(
+  watch(
   () => props.open,
-  (v) => {
+  async (v) => {
     if (!v) return
     checked.value = new Set()
     shareOpen.value = false
-    selectedDir.value = DEFAULT_DIR
+    // 打开即选中锁定根（默认根目录）；没配置就回退原来的默认
+    if (!USE_MOCK) rootDirs.value = await getRootDirs().catch(() => ({}))
+    rootDir.value = rootDirs.value[props.target?.type || ''] || ''
+    selectedDir.value = rootDir.value || DEFAULT_DIR
     includeSub.value = true
     postQms.value = true
   },
@@ -196,6 +204,7 @@ function start() {
             v-if="!USE_MOCK && isMainDrive"
             ref="mineTree"
             :type="target!.type as MainDriveType"
+            :root-path="rootDir"
             @select="(p: string) => (selectedDir = p)"
           />
           <div v-else-if="!USE_MOCK" class="small" style="color: var(--text3); padding: 12px 0">

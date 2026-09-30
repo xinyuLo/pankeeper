@@ -16,6 +16,7 @@ import {
   extractShareCode,
   getDrillDirs,
   getPaExtras,
+  parseShare,
   savePaTask,
   type PaDrillDir,
   type PaExtras,
@@ -44,6 +45,7 @@ const cron = ref('0 3 * * *')
 /* 正则过滤：只做匹配过滤；文件名改名交给 QMS 刮削统一处理（正则改名已砍）。
  * 空规则保存时忽略 → 空数组。 */
 const regPat = ref('')
+const parsing = ref(false)
 const drillOn = ref(false)
 const drill = ref<string[]>([])
 
@@ -65,11 +67,15 @@ const strmPaths = ref<DdStrmPath[]>([])
 const drillDirs = ref<PaDrillDir[]>([])
 
 function qmsLabel(p: DdQmsPath): string {
-  return `#${p.id} · ${DD_MEDIA[p.media_type]} · ${p.source_path}`
+  // 真实接口的 media_type 已是中文（电影/剧集），mock 是 tv/movie——两边都兼容
+  return `#${p.id} · ${DD_MEDIA[p.media_type] || p.media_type || '未分类'} · ${p.source_path}`
 }
 function strmLabel(p: DdStrmPath): string {
   return `#${p.id} · ${p.remote_path}`
 }
+/* a-select 选项（label 统一走 qmsLabel/strmLabel） */
+const qmsOpts = computed(() => qmsPaths.value.map((p) => ({ value: p.id, label: qmsLabel(p) })))
+const strmOpts = computed(() => strmPaths.value.map((p) => ({ value: p.id, label: strmLabel(p) })))
 
 /* cron 实时人话（空 → 未设置） */
 const cronTextValue = computed(() => cronHuman(cron.value, '未设置'))
@@ -80,10 +86,24 @@ watch(shareUrl, (v) => {
   if (code) shareCode.value = code
 })
 
-function onParse() {
-  const code = extractShareCode(shareUrl.value)
+async function onParse() {
+  const url = shareUrl.value.trim()
+  if (!url) {
+    message.warning('请先输入分享链接')
+    return
+  }
+  const code = extractShareCode(url)
   if (code) shareCode.value = code
-  message.success(code ? `解析成功，共 36 个文件 · 提取码 ${code}` : '解析成功，共 36 个文件')
+  try {
+    parsing.value = true
+    const r = await parseShare(props.type, url, shareCode.value.trim())
+    message.success(`解析成功，共 ${r.count} 个文件`)
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '解析失败：链接无效或网盘连接异常')
+  } finally {
+    parsing.value = false
+  }
 }
 
 
@@ -177,8 +197,8 @@ async function onSave() {
     regex: regPat.value.trim() ? [{ pat: regPat.value.trim(), rep: '' }] : [], // 正则改名已砍（QMS 刮削统一改名），只留匹配过滤
     drill_on: drillOn.value,
     drill: [...drill.value],
-    qms_id: postQms.value ? qmsId.value : null,
-    strm_id: postQms.value ? strmId.value : null,
+  qms_id: postQms.value ? qmsId.value ?? null : null,
+  strm_id: postQms.value ? strmId.value ?? null : null,
   }
   const saved = await savePaTask(task, extras)
   message.success(`保存成功：${saved.name}`)
@@ -308,14 +328,21 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
                 </label>
               </div>
               <div v-if="postQms" style="margin-top: 10px">
-                <select v-model="qmsId" class="mt-select" style="margin-bottom: 8px">
-                  <option v-for="p in qmsPaths" :key="p.id" :value="p.id">{{ qmsLabel(p) }}</option>
-                </select>
-                <select v-model="strmId" class="mt-select">
-                  <option :value="null">不生成 STRM</option>
-                  <option v-for="p in strmPaths" :key="p.id" :value="p.id">{{ strmLabel(p) }}</option>
-                </select>
-                <div class="mt-hint">自动转存完成 → 15 秒后触发 QMS 整理 → 整理完成 → 15 秒后触发 STRM 生成；不需要 STRM 就选「不生成」。</div>
+                <a-select
+                  v-model:value="qmsId"
+                  :options="qmsOpts"
+                  style="width: 100%; margin-bottom: 8px"
+                  :placeholder="qmsPaths.length ? '选择 QMS 刮削目录' : 'QMS 未连接或没有刮削目录'"
+                  allow-clear
+                />
+                <a-select
+                  v-model:value="strmId"
+                  :options="strmOpts"
+                  style="width: 100%"
+                  :placeholder="strmPaths.length ? '选择 STRM 同步目录' : 'QMS 未连接或没有同步目录'"
+                  allow-clear
+                />
+                <div class="mt-hint">自动转存完成 → 15 秒后触发 QMS 整理 → 整理完成 → 15 秒后触发 STRM 生成；不需要 STRM 就不选。</div>
               </div>
             </div>
           </div>

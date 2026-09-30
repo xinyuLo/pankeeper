@@ -162,7 +162,7 @@ const qmsPaths = ref<DdQmsPath[]>([])
 const strmPaths = ref<DdStrmPath[]>([])
 
 function qmsLabel(p: DdQmsPath): string {
-  return `#${p.id} · ${DD_MEDIA[p.media_type]} · ${p.source_path}`
+  return `#${p.id} · ${DD_MEDIA[p.media_type] || p.media_type || '未分类'} · ${p.source_path}`
 }
 function strmLabel(p: DdStrmPath): string {
   return `#${p.id} · ${p.remote_path}`

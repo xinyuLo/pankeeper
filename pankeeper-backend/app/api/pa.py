@@ -183,6 +183,39 @@ def task_share_files(task_id: int, _user=CurrentUser):
     return {"total": total, "tree": root}
 
 
+class ParseBody(BaseModel):
+    type: str = "baidu"
+    share_url: str = ""
+    share_code: str = ""
+
+
+@router.post("/parse-share")
+def parse_share(body: ParseBody, _user=CurrentUser):
+    """解析分享链接：验证有效性并返回文件数（任务弹窗「解析」按钮数据源）。
+
+    只列分享根一层（include_subdirs=False），控制请求量——这里只是「验一下链接活没活」，
+    完整清单是转存执行时的事。
+    """
+    from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, TaskSpec
+    from ..deps import make_adapter_for
+
+    if not (body.share_url or "").strip():
+        raise HTTPException(status_code=400, detail="请先输入分享链接")
+    db = SessionLocal()
+    try:
+        adapter = make_adapter_for(db, body.type)
+        files = adapter.list_share(TaskSpec(share_url=body.share_url.strip(), share_code=body.share_code.strip(), include_subdirs=False))
+    except ShareBanned as e:
+        raise HTTPException(status_code=410, detail=f"分享已失效：{e}")
+    except CredentialExpired as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except AdapterError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    finally:
+        db.close()
+    return {"count": sum(1 for f in files if not f.is_dir), "total": len(files)}
+
+
 @router.delete("/tasks/{task_id}")
 def delete_task(task_id: int, _user=CurrentUser):
     with SessionLocal() as db:
