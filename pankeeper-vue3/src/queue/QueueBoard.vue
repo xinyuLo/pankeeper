@@ -24,6 +24,7 @@ function metaOf(t: QueueTask) {
 function statusOf(t: QueueTask): { cls: string; txt: string } {
   if (t.status === 'wait') return { cls: 'pkq-st-wait', txt: '排队中' }
   if (t.status === 'done') return { cls: 'pkq-st-done', txt: '已完成' }
+  if (t.status === 'warn') return { cls: 'pkq-st-warn', txt: '链接已失效' }
   if (t.status === 'fail') return { cls: 'pkq-st-fail', txt: '失败' }
   const m: Record<string, string> = {
     transfer: '转存中',
@@ -41,7 +42,7 @@ const focusId = computed(() => {
   let latestDone = 0
   for (const t of tasks.value) {
     if (t.status === 'run' && t.id > latestRun) latestRun = t.id
-    if (t.status === 'done' && t.id > latestDone) latestDone = t.id
+    if ((t.status === 'done' || t.status === 'warn') && t.id > latestDone) latestDone = t.id
   }
   return latestRun || latestDone
 })
@@ -94,7 +95,7 @@ pkQueue.onChange(() => {
         </div>
 
         <div v-if="t.status === 'run'" class="progress pkq-bar"><i :style="{ width: t.progress + '%' }"></i></div>
-        <div v-else-if="t.status === 'done'" class="pq-pct">进度 100%</div>
+        <div v-else-if="t.status === 'done' || t.status === 'warn'" class="pq-pct">进度 100%</div>
         <div v-else class="pq-pct">等待空闲线程</div>
 
         <div

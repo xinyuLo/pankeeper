@@ -16,6 +16,7 @@ import { getSettings, saveSearchSrc } from '@/api/modules/settings'
 import { listDdItems } from '@/api/modules/dd'
 import { ddStore } from '@/api/mock/dd'
 import { DRIVE_META } from '@/api/mock/meta'
+import { loadSearchCache, saveSearchCache } from '@/views/search/searchCache'
 import type { DriveType, SearchResultItem } from '@/types/model'
 
 /* 手机（<768px）渲染卡片列表代替结果表——393px 宽塞不下 5 列表格 */
@@ -69,6 +70,14 @@ onMounted(async () => {
   engineOk.value = cached.ok
   getEngineHealth().then((h) => (engineOk.value = h.ok)).catch(() => (engineOk.value = false))
   results.value = rows
+  // 有跨页保留的上次搜索：整体恢复（关键词/结果/tab/耗时），不动首屏缓存
+  const cachedSearch = loadSearchCache()
+  if (cachedSearch) {
+    kw.value = cachedSearch.kw
+    active.value = cachedSearch.active
+    elapsed.value = cachedSearch.elapsed
+    results.value = cachedSearch.results
+  }
   renderStats()
 })
 
@@ -350,6 +359,8 @@ function onJump(r: SearchResultItem) {
 onUnmounted(() => {
   window.clearInterval(scanTimer)
   cancelAnimationFrame(rollRaf)
+  // 快照当前搜索状态，回页面时原样恢复（searchCache.ts 模块级缓存）
+  saveSearchCache({ kw: kw.value, results: results.value, active: active.value, elapsed: elapsed.value })
 })
 </script>
 
@@ -410,13 +421,16 @@ onUnmounted(() => {
       <div v-if="busy" class="pk-strip" aria-hidden="true"><i class="pk-strip-fill"></i></div>
     </div>
 
+    <!-- 统计卡：除耗时外都可点 = 切网盘 tab（与上方 pktabs 同一 handler）。
+         手机上 tab 那排隐藏（见样式 media），统计卡就是手机端的网盘筛选入口 -->
     <div v-if="statCards.length" :key="statEpoch" class="statline enter" :class="{ single: active !== 'all' }">
       <div
         v-for="it in statCards"
         :key="it.key"
         class="stat"
-        :class="{ wide: active !== 'all' }"
+        :class="{ wide: active !== 'all', clickable: it.key !== 'elapsed', sel: it.key !== 'elapsed' && active === it.key }"
         :style="it.accent ? { '--pk-accent': it.accent } : undefined"
+        @click="it.key !== 'elapsed' && setTab(it.key as TabKey)"
       >
         <b>{{ statShown[it.key] ?? it.value }}</b>
         <span>{{ it.label }}</span>
@@ -785,6 +799,15 @@ table.st-table { table-layout: fixed; }
   max-width: 420px;
   text-align: center;
   line-height: 1.7;
+}
+
+/* ===== 统计卡（搜索页侧的补充态；.stat 基础样式在 pk.css） ===== */
+/* 手机（<768px）：网盘 tab 那排隐藏——筛选条只留频道管理 + 引擎状态；
+   切网盘走下面的统计卡（可点，当前 tab 有描边高亮），别在 393px 宽里塞 8 个 tab */
+@media (max-width: 767px) {
+  .pktabs {
+    display: none;
+  }
 }
 
 /* 系统开启「减弱动态效果」时全部关闭 */

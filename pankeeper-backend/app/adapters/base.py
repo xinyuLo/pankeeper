@@ -59,6 +59,9 @@ class TaskSpec:
     exclude_names: set[str] = field(default_factory=set)
     # MD5 对比基线目录（自动任务的去重对比路径；空=用 save_dir）
     compare_path: str = ""
+    # 只转存分享内这些相对路径（勾选清单；None/空 = 全部）。
+    # 目录条目也按路径匹配：勾了目录 = 转该目录整棵子树（bdsavePro new_files 语义）
+    only_paths: set[str] | None = None
 
 
 class CloudAdapter(ABC):
