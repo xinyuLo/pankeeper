@@ -143,6 +143,7 @@ html[data-theme='dark'] .card { border-color: rgba(255, 255, 255, 0.04); }
 .t-uc { color: #10239e; background: #f0f5ff; border-color: #adc6ff; }
 .t-ok { color: #237804; background: #f6ffed; border-color: #b7eb8f; }
 .t-bad { color: #a8071a; background: #fff1f0; border-color: #ffa39e; }
+.t-warn { color: #d48806; background: #fffbe6; border-color: #ffe58f; }
 .t-off { color: var(--text3); background: #fafafa; border-color: var(--border); }
 html[data-theme='dark'] .t-baidu { color: #69b1ff; background: rgba(22, 119, 255, 0.16); border-color: rgba(22, 119, 255, 0.45); }
 html[data-theme='dark'] .t-quark { color: #5cdbd3; background: rgba(19, 194, 194, 0.16); border-color: rgba(19, 194, 194, 0.45); }
@@ -153,6 +154,7 @@ html[data-theme='dark'] .t-xunlei { color: #87e8de; background: rgba(45, 183, 24
 html[data-theme='dark'] .t-uc { color: #adc6ff; background: rgba(89, 126, 247, 0.16); border-color: rgba(89, 126, 247, 0.45); }
 html[data-theme='dark'] .t-ok { color: #95de64; background: rgba(82, 196, 26, 0.16); border-color: rgba(82, 196, 26, 0.45); }
 html[data-theme='dark'] .t-bad { color: #ff9c9c; background: rgba(255, 77, 79, 0.16); border-color: rgba(255, 77, 79, 0.45); }
+html[data-theme='dark'] .t-warn { color: #ffc53d; background: rgba(250, 173, 20, 0.16); border-color: rgba(250, 173, 20, 0.45); }
 html[data-theme='dark'] .t-off { color: var(--text3); background: rgba(255, 255, 255, 0.06); border-color: var(--border); }
 
 .dot {
@@ -250,6 +252,10 @@ html[data-theme='dark'] .tabs > div.on { background: var(--primary); border-colo
   transition: transform 0.18s, box-shadow 0.18s;
 }
 .stat:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08); }
+/* 可点统计卡（搜索页：点卡片 = 切网盘 tab，与上方 pktabs 同一 handler；耗时卡不可点） */
+.stat.clickable { cursor: pointer; }
+.stat.clickable:active { transform: scale(0.97); } /* 按压反馈：手机上点了要有反应 */
+.stat.sel { box-shadow: inset 0 0 0 2px var(--primary), var(--shadow); } /* 当前 tab 高亮描边 */
 .stat::before {
   content: '';
   position: absolute;
@@ -557,6 +563,8 @@ html[data-theme='dark'] .vip-tag { color: #b39cf8; }
 .pkq-st-wait { background: var(--split); color: var(--text3); }
 .pkq-st-done { background: rgba(82, 196, 26, 0.12); color: #389e0d; }
 .pkq-st-fail { background: rgba(207, 19, 34, 0.1); color: var(--error); }
+.pkq-st-warn { background: rgba(250, 173, 20, 0.14); color: #d48806; }
+html[data-theme='dark'] .pkq-st-warn { color: #ffc53d; }
 html[data-theme='dark'] .pkq-st-done { color: #73d13d; }
 .pq-main { flex: 1; min-width: 0; }
 .pq-name { font-size: 13.5px; font-weight: 500; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }

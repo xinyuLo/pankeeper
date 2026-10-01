@@ -13,7 +13,7 @@ import type { QueueCfg, QueueState, QueueTask } from '@/types/model'
  * ===================================================================== */
 
 const CFG_DEF: QueueCfg = { threads: 1, gap: 5, qms: 10, strm: 10 }
-const KEEP_DONE = 30 * 60 * 1000
+const KEEP_DONE = 60 * 60 * 1000 // 完成任务保留 1 小时，之后出队——历史去「转存记录」查
 
 type Listener = (s: QueueState) => void
 const listeners: Listener[] = []
@@ -241,7 +241,9 @@ export const pkQueue = {
   onChange(fn: Listener) {
     listeners.push(fn)
   },
-  /** 入队，返回排队位次（第几位）。真实转存必须带 share_url/share_code。 */
+  /** 入队，返回排队位次（第几位）。真实转存必须带 share_url/share_code。
+   *  acc_id：指定转存账号（来自转存配置条目的 account）；空=该类型默认账号。
+   *  file_paths：勾选清单（分享内相对路径）；空=全部。 */
   enqueue(item: {
     name?: string
     type?: string
@@ -251,6 +253,8 @@ export const pkQueue = {
     share_url?: string
     share_code?: string
     include_subdirs?: boolean
+    acc_id?: number | null
+    file_paths?: string[]
   }): number {
     if (USE_MOCK) {
       const s = stateMock()

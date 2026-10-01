@@ -1,53 +1,31 @@
-"""转存队列引擎（真实版）。
+"""转存队列引擎（骨架层）——只管排队，不管转存怎么做。
+
+职责边界（2026-10-01 拆分，别再往回塞）：
+- 本文件：入队 / 状态 / 持久化恢复 / worker 线程调度 / 分发
+- 业务流程：app/transfer/manual.py（搜索页手动）与 auto.py（定时任务），
+  两条路径各自完整、刻意不共享代码——推送/回写/熔断规则不同
+- 网盘 API：app/adapters/ 下每盘一个独立文件（baidu/quark/pan115），构造入口 factory.py
 
 对齐前端契约（PanKeeper-vue3/src/queue/engine.ts 的状态形状与阶段机）：
 - 所有转存动作只做一件事：入队；串行慢跑，阶段机 transfer→waitqms→qms→waitstrm→strm→done
 - 线程数/转存间隔/QMS、STRM 延迟读 queue_cfg，改完对新任务生效
-- 已完成任务保留 30 分钟后出队
+- 已完成任务保留 1 小时后出队（历史在「转存记录」）
 - 内存是权威 + SQLite queue_tasks 快照，重启恢复（run 中断的任务回 wait，去重保证幂等）
-
-与原型 mock 的差异：transfer 阶段跑真实 adapter，QMS/STRM 是真实 HTTP 触发（QMS 侧有自己的日志队列，
-这里只记录触发结果快照）。
 """
 from __future__ import annotations
 
 import json
 import threading
 import time
-from typing import Any, Callable
+from typing import Any
 
-from ..adapters.baidu import BaiduClient
-from ..adapters.base import AdapterError, CloudAdapter, CredentialExpired, ShareBanned, TaskSpec
-from ..adapters.pan115 import Pan115Adapter
-from ..adapters.quark import QuarkAdapter
 from ..db import SessionLocal
-from ..models import Account, DdItem, PaTask, QueueTaskRow, Record, RunHistory
-from ..services import notify, qms
-from ..services import media_push
+from ..models import QueueTaskRow
 from ..services.settings_svc import get_group
+from ..transfer import run_auto, run_manual
 
-KEEP_DONE = 30 * 60  # 已完成任务保留 30 分钟（秒）
-MAX_LOGS = 40
+KEEP_DONE = 60 * 60  # 已完成任务保留 1 小时（秒），之后出队——历史去「转存记录」查
 TICK = 0.5
-
-ADAPTERS: dict[str, type[CloudAdapter]] = {"quark": QuarkAdapter, "baidu": BaiduClient, "115": Pan115Adapter}
-
-
-def _make_adapter(drive_type: str, acc_id: int | None = None) -> CloudAdapter:
-    cls = ADAPTERS.get(drive_type)
-    if cls is None:
-        raise AdapterError(f"网盘 {drive_type} 的适配器尚未实现（当前支持：{'/'.join(ADAPTERS)}）")
-    with SessionLocal() as s:
-        if acc_id is not None:
-            acc = s.get(Account, acc_id)
-            if acc is None or acc.type != drive_type:
-                raise AdapterError("转存任务指定的账号不存在")
-        else:
-            acc = s.query(Account).filter(Account.type == drive_type).order_by(Account.id).first()
-    # 同 deps.make_adapter_for：凭据是否配置只看 cookies_enc，不看 status
-    if acc is None or not acc.cookies_enc:
-        raise AdapterError(f"{drive_type} 账号未配置凭据，请先到「网盘连接」绑定")
-    return cls(acc.cookies_enc)
 
 
 class QueueEngine:
@@ -121,7 +99,7 @@ class QueueEngine:
     def _prune(self, now_ms: int) -> None:
         before = len(self.state["tasks"])
         self.state["tasks"] = [
-            t for t in self.state["tasks"] if not (t["status"] == "done" and t["doneAt"] and now_ms - t["doneAt"] > KEEP_DONE * 1000)
+            t for t in self.state["tasks"] if not (t["status"] in ("done", "warn", "fail") and t["doneAt"] and now_ms - t["doneAt"] > KEEP_DONE * 1000)
         ]
         if len(self.state["tasks"]) != before:
             with SessionLocal() as s:
@@ -140,11 +118,11 @@ class QueueEngine:
         with self._cond:
             self._cond.wait(timeout)
 
-    # ---------- 日志/进度（transfer 阶段回调） ----------
+    # ---------- 日志（转存流程层回调用） ----------
 
-    def _push_log(self, t: dict, lv: str, txt: str) -> None:
+    def push_log(self, t: dict, lv: str, txt: str) -> None:
         t["logs"].append({"lv": lv, "txt": txt})
-        if len(t["logs"]) > MAX_LOGS:
+        if len(t["logs"]) > 40:
             t["logs"].pop(0)
 
     # ---------- 对外 API ----------
@@ -169,13 +147,16 @@ class QueueEngine:
                 "shareCode": item.get("share_code") or item.get("shareCode") or "",
                 "includeSubdirs": bool(item.get("include_subdirs", True)),
                 # 任务来源：search=搜索转存（默认）/ auto=自动转存（定时调度入队时带）。
-                # 推送按它分流：notify.on_search / notify.on_auto 两个开关。
+                # 决定走 manual.py 还是 auto.py 流程（推送/回写/熔断规则不同）
                 "source": item.get("source") or "search",
                 # 自动任务链路：指定账号 / 来源 PaTask / 排除清单
                 "accId": item.get("acc_id"),
                 "paTaskId": item.get("pa_task_id"),
                 "excludeNames": list(item.get("exclude_names") or []),
                 "comparePath": item.get("compare_path") or "",
+                # 勾选清单（搜索页分享树勾选；空=全部）。注意：不持久化，
+                # 重启恢复的任务勾选丢失回全量——有 MD5/名字去重兜底，宁可多查不少删
+                "filePaths": list(item.get("file_paths") or []),
             }
             self.state["tasks"].append(t)
             pos = sum(1 for x in self.state["tasks"] if x["status"] in ("wait", "run"))
@@ -201,8 +182,8 @@ class QueueEngine:
             try:
                 self._run_task(task, cfg)
             except Exception as e:  # 兜底：任何异常不让 worker 死掉
-                self._push_log(task, "ERROR", f"引擎异常：{e}")
-                self._finish(task, "fail")
+                self.push_log(task, "ERROR", f"引擎异常：{e}")
+                self._fail_task(task, f"引擎异常：{e}")
             self._persist()
 
     def _claim(self, cfg: dict) -> dict | None:
@@ -216,222 +197,40 @@ class QueueEngine:
                     t["status"] = "run"
                     t["phase"] = "transfer"
                     t["phaseStart"] = now_ms
-                    self._push_log(t, "STEP", "轮到它了，开始转存")
+                    self.push_log(t, "STEP", "轮到它了，开始转存")
                     return t
             return None
 
     def _run_task(self, t: dict, cfg: dict) -> None:
-        name_head = t["name"].split(".")[0]
-        try:
-            adapter = _make_adapter(t["type"], t.get("acc_id"))
-        except AdapterError as e:
-            self._push_log(t, "ERROR", str(e))
-            self._finish(t, "fail")
-            return
+        """按来源分发到对应流程文件——本层不做任何转存业务判断。"""
+        if t.get("source") == "auto":
+            run_auto(self, t, cfg)
+        else:
+            run_manual(self, t, cfg)
 
-        spec = TaskSpec(
-            share_url=t["shareUrl"],
-            share_code=t["shareCode"],
-            save_dir=t["path"],
-            include_subdirs=t["includeSubdirs"],
-            exclude_names=set(t.get("excludeNames") or []),
-            compare_path=t.get("comparePath") or "",
-        )
-        if not spec.share_url:
-            self._push_log(t, "ERROR", "任务缺少分享链接（shareUrl），无法转存")
-            self._finish(t, "fail")
-            return
-
-        try:
-            self._push_log(t, "INFO", f"解析分享链接：{t['shareUrl'][:60]}")
-            files = adapter.list_share(spec)
-            t["files"] = len(files)
-            total_size = sum(f.size for f in files)
-            self._push_log(t, "INFO", f"获取分享内文件清单，共 {len(files)} 项（{total_size / 1024**3:.1f} GB）")
-            self._push_log(t, "STEP", f"开始转存：{name_head} …")
-
-            def on_progress(p: int) -> None:
-                with self._lock:
-                    t["progress"] = p
-
-            def on_log(txt: str) -> None:
-                self._push_log(t, "INFO", txt)
-
-            result = adapter.save_files(files, spec, on_progress, on_log)
-            self._push_log(t, "STEP", f"转存完成：新增 {result.add} / 跳过 {result.skip} / 失败 {result.fail}")
-            if result.renamed:
-                self._push_log(t, "INFO", f"按规则重命名 {result.renamed} 项")
-        except ShareBanned as e:
-            self._push_log(t, "ERROR", f"分享已失效：{e}（已熔断，后续不再请求该链接）")
-            self._mark_pa_banned(t, str(e))
-            self._finish(t, "fail", f"分享失效：{e}")
-            return
-        except CredentialExpired as e:
-            self._push_log(t, "ERROR", str(e))
-            self._mark_account_expired(t["type"], t.get("acc_id"))
-            self._finish(t, "fail", str(e))
-            return
-        except AdapterError as e:
-            self._push_log(t, "ERROR", f"转存失败：{e}")
-            self._finish(t, "fail", str(e))
-            return
-
-        # ---- 转存成功，走 QMS/STRM 联动（阶段机照前端契约，延迟可配） ----
-        qms_snap, strm_snap = self._run_media_chain(t, cfg, result)
-        self._finish(t, "done", qms_snap=qms_snap, strm_snap=strm_snap, result=result)
-
-    def _run_media_chain(self, t: dict, cfg: dict, result) -> tuple[dict, dict]:
-        """触发 QMS / STRM。链接来源：转存配置里 qms_on 的目录（按目标路径前缀匹配）。"""
-        link = self._match_dd_link(t["path"])
-        qms_snap = {"st": "未执行", "cls": "t-off"}
-        strm_snap = {"st": "未执行", "cls": "t-off"}
-        if link is None:
-            self._push_log(t, "INFO", "该目录未配置 QMS 联动，跳过刮削")
-            return qms_snap, strm_snap
-        if result.add == 0:
-            self._push_log(t, "INFO", "没有新增文件，不触发 QMS（在库文件刮削无意义）")
-            return qms_snap, strm_snap
-
-        self._sleep_phase(t, "waitqms", int(cfg.get("qms", 10)), f"等待 {cfg.get('qms', 10)} 秒后触发 QMS 刮削")
-        t["phase"] = "qms"
-        t["phaseStart"] = int(time.time() * 1000)
-        ok, msg = qms.trigger_scrape(link["qms_id"])
-        qms_snap = {"st": "成功" if ok else f"失败 · {msg}", "cls": "t-ok" if ok else "t-bad"}
-        self._push_log(t, "INFO" if ok else "ERROR", f"QMS 刮削任务 #{link['qms_id']} 触发{'成功' if ok else '失败'}：{msg or '详见 QMS 侧日志'}")
-
-        strm_ok: bool | None = None
-        if link.get("strm_id") and ok:
-            self._sleep_phase(t, "waitstrm", int(cfg.get("strm", 10)), f"QMS 触发完成，{cfg.get('strm', 10)} 秒后触发 STRM 生成")
-            t["phase"] = "strm"
-            t["phaseStart"] = int(time.time() * 1000)
-            ok2, msg2 = qms.trigger_strm(link["strm_id"])
-            strm_ok = ok2
-            strm_snap = {"st": "成功" if ok2 else f"失败 · {msg2}", "cls": "t-ok" if ok2 else "t-bad"}
-            self._push_log(t, "INFO" if ok2 else "ERROR", f"STRM 同步 #{link['strm_id']} 触发{'成功' if ok2 else '失败'}：{msg2 or '详见 QMS 侧日志'}")
-
-        if ok:
-            # 联动推送：等 QMS 刮削完成后查记录 + TMDB 拼富文本推送（后台守护，不阻塞队列）
-            media_push.watch_and_spawn({
-                "drive": t["type"],
-                "task": name_head,
-                "names": [e["name"] for e in result.transferred],
-                "qms_ok": ok,
-                "strm_ok": strm_ok,
-                "source": t.get("source", "search"),
-            })
-        return qms_snap, strm_snap
-
-    def _match_dd_link(self, path: str) -> dict | None:
-        with SessionLocal() as s:
-            for d in s.query(DdItem).filter(DdItem.qms_on.is_(True), DdItem.qms_id.isnot(None)).all():
-                if path == d.path or path.startswith(d.path.rstrip("/") + "/"):
-                    return {"qms_id": d.qms_id, "strm_id": d.strm_id}
-        return None
-
-    def _sleep_phase(self, t: dict, phase: str, seconds: int, log_txt: str) -> None:
-        self._push_log(t, "STEP", log_txt)
-        with self._lock:
-            t["phase"] = phase
-            t["phaseStart"] = int(time.time() * 1000)
-        deadline = time.time() + seconds
-        while time.time() < deadline:
-            time.sleep(TICK)
-
-    def _mark_pa_banned(self, t: dict, reason: str) -> None:
-        """自动任务的分享死了：标记熔断，调度器看到 ban_reason 就不再入队（省风控暴露）。"""
-        task_id = t.get("paTaskId")
-        if not task_id:
-            return
-        with SessionLocal() as s:
-            pa = s.get(PaTask, task_id)
-            if pa and not pa.ban_reason:
-                pa.ban_reason = reason[:200]
-                s.commit()
-
-    def _mark_account_expired(self, drive_type: str, acc_id: int | None = None) -> None:
-        """标记凭据失效，并**只在「由好变坏」时推送一次**。
-
-        凭据一直没更新的情况下，每次任务失败都推会变成每日骚扰——与每日探活
-        保持同一套语义：推一次，之后静默，直到凭据重新验证通过。
-        """
-        prev: str | None = None
-        display = drive_type
-        with SessionLocal() as s:
-            if acc_id is not None:
-                acc = s.get(Account, acc_id)
-            else:
-                acc = s.query(Account).filter(Account.type == drive_type).order_by(Account.id).first()
-            if acc:
-                prev = acc.status
-                display = acc.display_name
-                acc.status = "expired"
-                s.commit()
-        if prev is not None and prev != "expired" and notify.drive_enabled(str(acc_id) if acc_id else drive_type):
-            notify.push("凭据过期告警", f"{display} 凭据已失效，请到「网盘连接」重新绑定", kind="cred")
-
-    def _finish(self, t: dict, status: str, message: str = "", qms_snap: dict | None = None, strm_snap: dict | None = None, result=None) -> None:
+    def _fail_task(self, t: dict, message: str) -> None:
+        """worker 兜底用最简收尾：只改状态，业务层异常时不应走到这里。"""
         now_ms = int(time.time() * 1000)
         with self._lock:
-            t["status"] = status
+            t["status"] = "fail"
             t["doneAt"] = now_ms
             t["phase"] = ""
-            if status == "done":
-                t["progress"] = 100
-                self.state["lastDone"] = now_ms
             self._cond.notify_all()
-        # 记录快照（含手动任务；手动任务不接推送——交互契约）
+        from ..models import Record
+
         with SessionLocal() as s:
             s.add(
                 Record(
                     n=t["name"],
                     t=t["type"],
                     p=t["path"],
-                    st=("完成 %d/%d" % (result.add, t["files"] or result.add)) if status == "done" and result else (message or ("已完成" if status == "done" else "失败")),
-                    cls="t-ok" if status == "done" else "t-bad",
+                    st=message or "失败",
+                    cls="t-bad",
                     tm=time.strftime("%m-%d %H:%M"),
-                    qms_json=json.dumps(qms_snap or {"st": "未执行", "cls": "t-off"}, ensure_ascii=False),
-                    strm_json=json.dumps(strm_snap or {"st": "未执行", "cls": "t-off"}, ensure_ascii=False),
+                    qms_json=json.dumps({"st": "未执行", "cls": "t-off"}, ensure_ascii=False),
+                    strm_json=json.dumps({"st": "未执行", "cls": "t-off"}, ensure_ascii=False),
                     share_url=t.get("shareUrl", ""),
                     share_code=t.get("shareCode", ""),
-                    logs_json=json.dumps(t["logs"], ensure_ascii=False),
-                )
-            )
-            s.commit()
-        self._sync_pa_task(t, status, result)
-        if status == "fail":
-            notify.push("转存失败", f"{t['name']}：{message or '未知原因'}", kind=f"{t.get('source', 'search')}_fail")
-
-    def _sync_pa_task(self, t: dict, status: str, result) -> None:
-        """自动任务（带 paTaskId）完成/失败后回写任务状态与执行历史。
-
-        add/skip 统计只有成功路径才有 TransferResult；入队即拒（缺链接/无适配器）
-        的失败 result 为 None，历史里记 0 即可——失败原因已在任务日志里。
-        """
-        task_id = t.get("paTaskId")
-        if not task_id:
-            return
-        add = result.add if result else 0
-        skip = result.skip if result else 0
-        fail = result.fail if result else 0
-        with SessionLocal() as s:
-            pa = s.get(PaTask, task_id)
-            if pa is None:
-                return
-            pa.last_run = time.strftime("%m-%d %H:%M")
-            pa.last_status = "success" if status == "done" else "fail"
-            pa.last_result = f"新增 {add} / 跳过 {skip} / 失败 {fail}" if status == "done" else t["logs"][-1]["txt"] if t["logs"] else "失败"
-            if status == "done":
-                pa.ban_reason = ""
-            s.add(
-                RunHistory(
-                    task_id=task_id,
-                    started=time.strftime("%m-%d %H:%M"),
-                    finished=time.strftime("%m-%d %H:%M"),
-                    status="success" if status == "done" else "fail",
-                    add=add,
-                    skip=skip,
-                    fail=fail,
-                    excl=len(t.get("excludeNames") or []),
                     logs_json=json.dumps(t["logs"], ensure_ascii=False),
                 )
             )
