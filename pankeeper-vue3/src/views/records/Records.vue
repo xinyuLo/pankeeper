@@ -245,17 +245,17 @@ async function confirmTrig() {
           <a-button type="primary" ghost @click="openTrig">触发 QMS / STRM</a-button>
           <a-button danger ghost @click="onClearOld">清空三月前记录</a-button>
         </div>
-        <table v-if="!isMobile">
+        <table v-if="!isMobile" class="rk-table">
           <thead>
             <tr>
-              <th style="width: 30%">资源名称</th>
-              <th>来源</th>
-              <th>目标位置</th>
+              <th style="width: 24%">资源名称</th>
+              <th style="width: 64px">来源</th>
+              <th style="width: 160px">目标位置</th>
               <th>结果</th>
-              <th style="width: 150px">QMS 整理</th>
-              <th style="width: 150px">STRM 生成</th>
-              <th>时间</th>
-              <th style="width: 100px">操作</th>
+              <th style="width: 96px">QMS 整理</th>
+              <th style="width: 96px">STRM 生成</th>
+              <th style="width: 76px">时间</th>
+              <th style="width: 60px">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -267,10 +267,10 @@ async function confirmTrig() {
                 </div>
               </td>
               <td><span class="tag" :class="metaOf(r).tag">{{ metaOf(r).name }}</span></td>
-              <td class="small muted rk-path">{{ r.p }}</td>
-              <td><span class="tag" :class="r.cls" :title="r.st">{{ r.st }}</span></td>
-              <td><span class="tag" :class="r.qms.cls" :title="r.qms.st">{{ r.qms.st }}</span></td>
-              <td><span class="tag" :class="r.strm.cls" :title="r.strm.st">{{ r.strm.st }}</span></td>
+              <td class="small muted rk-path" :title="r.p">{{ r.p }}</td>
+              <td><span class="tag rk-tagclip" :class="r.cls" :title="r.st">{{ r.st }}</span></td>
+              <td><span class="tag rk-tagclip" :class="r.qms.cls" :title="r.qms.st">{{ r.qms.st }}</span></td>
+              <td><span class="tag rk-tagclip" :class="r.strm.cls" :title="r.strm.st">{{ r.strm.st }}</span></td>
               <td class="small muted rk-nowrap">{{ r.tm }}</td>
               <td><a-button type="link" size="small" class="rk-detail" @click="openDrawer(r)">详情</a-button></td>
             </tr>
@@ -401,12 +401,37 @@ async function confirmTrig() {
 }
 
 /* 表格单元格：路径走等宽、时间别折行 */
+/* 记录表：8 列挤一屏，左右内边距从全局 20px 收到 12px（全局值留给内容少的页） */
+/* table-layout: fixed 让表头的宽度声明生效——否则浏览器按内容分配，
+   一条超长结果文案就能把「目标位置」挤成 5 行（实测踩坑） */
+.rk-table {
+  table-layout: fixed;
+}
+.rk-table :deep(th),
+.rk-table :deep(td) {
+  padding-left: 12px;
+  padding-right: 12px;
+}
 .rk-path {
   font-family: var(--font-mono);
-  word-break: break-all;
+  /* 路径整条省略号，不要 word-break: break-all —— 它会把长路径硬折成 5 行 */
+  max-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .rk-nowrap {
   white-space: nowrap;
+}
+/* 结果/QMS/STRM 的 tag：文案可能很长（如「提取码验证失败：errno=-9（…）」），
+   在定宽列里必须截断，否则它顶着 .tag 的 nowrap 把整张表的列宽撑爆 */
+.rk-tagclip {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
 }
 .rk-detail {
   padding: 0;
