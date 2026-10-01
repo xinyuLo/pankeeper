@@ -220,10 +220,20 @@ class BaiduClient(CloudAdapter):
             )
         return self._share_cli
 
+    # 网页内部接口（api/create、api/filemanager、share/transfer 等）会校验请求
+    # 是否「从网盘页面发出的 XHR」：缺 X-Requested-With / Origin 一律回 errno=-6，
+    # 与 Cookie 是否有效无关。baidupcs_py 正是靠这三个头才跑得通。
+    _XHR_HEADERS = {
+        "X-Requested-With": "XMLHttpRequest",
+        "Origin": "https://pan.baidu.com",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+    }
+
     def _share_post(self, url: str, *, params: dict, data: dict, referer: str) -> dict:
         self.gate.wait()
+        headers = {**self._XHR_HEADERS, "referer": referer}
         try:
-            resp = self._share_session().post(url, params=params, data=data, headers={"referer": referer})
+            resp = self._share_session().post(url, params=params, data=data, headers=headers)
         except httpx.HTTPError as e:
             self.gate.on_failure()
             raise AdapterError(f"网络异常：{e}") from e
@@ -237,8 +247,10 @@ class BaiduClient(CloudAdapter):
 
     def _share_get(self, url: str, *, params: dict | None = None, referer: str) -> dict:
         self.gate.wait()
+        headers = {k: v for k, v in self._XHR_HEADERS.items() if k != "Content-Type"}
+        headers["referer"] = referer
         try:
-            resp = self._share_session().get(url, params=params, headers={"referer": referer})
+            resp = self._share_session().get(url, params=params, headers=headers)
         except httpx.HTTPError as e:
             self.gate.on_failure()
             raise AdapterError(f"网络异常：{e}") from e
