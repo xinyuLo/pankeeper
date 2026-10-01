@@ -37,7 +37,7 @@ export interface PaTask {
 }
 
 /** ===== 转存队列（docs/02 §2） ===== */
-export type QueueTaskStatus = 'wait' | 'run' | 'done' | 'fail'
+export type QueueTaskStatus = 'wait' | 'run' | 'done' | 'fail' | 'warn'
 export type QueuePhase = 'transfer' | 'waitqms' | 'qms' | 'waitstrm' | 'strm' | ''
 
 export interface QueueLogLine {
@@ -59,7 +59,7 @@ export interface QueueTask {
   progress: number
   /** 每阶段只发一次日志的标记 */
   flags: Record<string, number>
-  /** 完成时刻（出队计时：保留 30 分钟） */
+  /** 完成时刻（出队计时：保留 1 小时） */
   doneAt: number
   logs: QueueLogLine[]
 }
@@ -134,7 +134,7 @@ export interface RecordItem {
   t: DriveType
   p: string
   st: string
-  cls: 't-ok' | 't-bad' | 't-off'
+  cls: 't-ok' | 't-bad' | 't-off' | 't-warn'
   tm: string
   qms: RecordTag
   strm: RecordTag

@@ -120,13 +120,13 @@ def test_queue_enqueue_pos_and_snapshot():
     assert all(t["status"] in ("wait", "run") for t in snap["tasks"])
 
 
-def test_queue_prune_done_after_30min():
+def test_queue_prune_done_after_1h():
     eng = _fresh_engine()
     eng.enqueue({"name": "C", "type": "quark", "path": "/t", "share_url": "https://pan.quark.cn/s/c"})
     with eng._lock:
         t = eng.state["tasks"][-1]
         t["status"] = "done"
-        t["doneAt"] = int(time.time() * 1000) - 31 * 60 * 1000  # 31 分钟前完成
+        t["doneAt"] = int(time.time() * 1000) - 61 * 60 * 1000  # 61 分钟前完成
     eng.state_public()  # 内部会 prune
     assert all(x["name"] != "C" for x in eng.state["tasks"])
 

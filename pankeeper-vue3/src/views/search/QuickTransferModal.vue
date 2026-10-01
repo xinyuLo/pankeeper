@@ -8,6 +8,7 @@ import { message } from 'ant-design-vue'
 import { pkQueue } from '@/queue/engine'
 import { DRIVE_META, DD_MEDIA } from '@/api/mock/meta'
 import { listDdItems, listQmsPaths, listStrmPaths } from '@/api/modules/dd'
+import { listAccounts } from '@/api/modules/accounts'
 import { ddStore } from '@/api/mock/dd'
 import type { DdItem, DdQmsPath, DdStrmPath, DriveType, MainDriveType } from '@/types/model'
 
@@ -28,6 +29,8 @@ const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>()
 const items = computed<DdItem[]>(() => ddStore.items)
 const qmsPaths = ref<DdQmsPath[]>([])
 const strmPaths = ref<DdStrmPath[]>([])
+/** 账号 id → 显示名（别名优先，空则昵称）：保存位置下拉里标出「这条配置属于哪个账号」 */
+const accNames = ref<Record<string, string>>({})
 const selId = ref<number | null>(null)
 const rename = ref('')
 const renameRef = ref()
@@ -39,11 +42,19 @@ const options = computed<DdItem[]>(() =>
     .sort((a, b) => (a.sort || 0) - (b.sort || 0)),
 )
 
+function accLabel(it: DdItem): string {
+  return accNames.value[it.account] || ''
+}
+
 const selectOptions = computed(() =>
-  options.value.map((it) => ({
-    value: it.id,
-    label: `${it.name}　—　${it.path}${it.is_default ? '（默认）' : ''}`,
-  })),
+  options.value.map((it) => {
+    const acc = accLabel(it)
+    const name = acc ? `${acc} · ${it.name}` : it.name
+    return {
+      value: it.id,
+      label: `${name}　—　${it.path}${it.is_default ? '（默认）' : ''}`,
+    }
+  }),
 )
 
 const currentItem = computed<DdItem | null>(
@@ -70,6 +81,14 @@ watch(
     pinDefault() // 用 store 现成数据立即钉默认项，弹窗首帧就是完整表单
     // 后台静默刷新保存位置（写回 ddStore，items 是它的 computed 会自动更新）
     listDdItems().catch(() => {})
+    // 账号显示名：下拉里标所属账号（accNames 是普通对象，到货即渲染）
+    listAccounts()
+      .then((rows) => {
+        const m: Record<string, string> = {}
+        for (const r of rows) m[String(r.id)] = r.alias || r.nickname || `账号#${r.id}`
+        accNames.value = m
+      })
+      .catch(() => {})
     // QMS / STRM 最慢，各自到货各自填，绝不挡主表单渲染
     listQmsPaths().then((qs) => (qmsPaths.value = qs)).catch(() => {})
     listStrmPaths().then((ss) => (strmPaths.value = ss)).catch(() => {})
@@ -126,6 +145,9 @@ function onOk() {
     size: '—',
     share_url: props.shareUrl,
     share_code: props.shareCode,
+    // 转存配置条目属于哪个账号就用哪个转（account 是账号 id 字符串）；
+    // 空 = 该类型默认账号（后端兜底取 id 最小）
+    acc_id: it.account ? Number(it.account) : null,
   })
   message.success(`已加入转存队列 · 当前第 ${pos} 位，完成后去「转存记录 → 队列」看日志`)
   close()

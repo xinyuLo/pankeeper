@@ -284,27 +284,43 @@ class BaiduClient(CloudAdapter):
         不能依赖 httpx 自动收 Set-Cookie：百度对 BDCLND 会下发两份（domain 属性
         差异），请求头里出现重复 Cookie 时百度仍按未验证处理，页面拿不到 yunData。
         所以这里拿到 randsk 后清空 jar 重建：基础 cookie + 单份 BDCLND。
+
+        ⚠️ 头部纪律（2026-10-01 实测踩坑）：verify 是**同源 POST**——浏览器同源
+        请求本就不带 Origin。baidupcs_py 的 verify 也只发 UA + Referer（init 页形态）。
+        给 verify 加 XHR 三件套会被判异常回 errno=-7（链接明明是活的）。
+        transfer/api-create 则相反，必须带 XHR 头——两类接口纪律相反，别统一。
         """
         cli = self._share_session()
-        self.gate.wait()
-        try:
-            resp = cli.post(
-                "https://pan.baidu.com/share/verify",
-                params={"surl": surl, "t": int(time.time() * 1000), "channel": "chunlei", "web": 1, "bdstoken": "null", "clienttype": 0},
-                data={"pwd": pwd},
-                headers={"referer": f"https://pan.baidu.com/s/{surl}"},
-            )
-        except httpx.HTTPError as e:
-            self.gate.on_failure()
-            raise AdapterError(f"网络异常：{e}") from e
-        try:
-            body = resp.json()
-        except ValueError as e:
-            self.gate.on_failure()
-            raise AdapterError(f"响应非 JSON（HTTP {resp.status_code}）") from e
-        self.gate.on_success()
-        self._check_share_errno(body, "提取码验证")
-        bdclnd = body.get("randsk") or ""
+        last_body: dict = {}
+        # -7/-9/-62 常是风控抖动而非死链（baidupcs_py 把 -9 当验证码场景重试；
+        # bdsavePro 对全部 API 套 retry(1, 2~3s)）：隔 3s 重试一次再下结论
+        for attempt in range(2):
+            self.gate.wait()
+            try:
+                resp = cli.post(
+                    "https://pan.baidu.com/share/verify",
+                    params={"surl": surl, "t": int(time.time() * 1000), "channel": "chunlei", "web": 1, "bdstoken": "null", "clienttype": 0},
+                    data={"pwd": pwd},
+                    # 只带 UA + Referer（share/init 页形态），与 baidupcs_py 完全一致
+                    headers={"referer": f"https://pan.baidu.com/share/init?surl={surl}"},
+                )
+            except httpx.HTTPError as e:
+                self.gate.on_failure()
+                raise AdapterError(f"网络异常：{e}") from e
+            try:
+                body = resp.json()
+            except ValueError as e:
+                self.gate.on_failure()
+                raise AdapterError(f"响应非 JSON（HTTP {resp.status_code}）") from e
+            self.gate.on_success()
+            last_body = body
+            if body.get("errno") in (0, None):
+                break
+            if body.get("errno") in (-7, -9, -62) and attempt == 0:
+                time.sleep(3)
+                continue
+        self._check_share_errno(last_body, "提取码验证")
+        bdclnd = last_body.get("randsk") or ""
         if bdclnd:
             jar = dict(self._base_cookie_jar)
             jar["BDCLND"] = bdclnd
@@ -427,14 +443,25 @@ class BaiduClient(CloudAdapter):
         return out
 
     def list_dir_names(self, dir_path: str) -> set[str]:
-        return {self._basename(e) for e in self.list_dir(dir_path) if not int(e.get("isdir") or 0)}
+        """base 契约方法：只要名字。内部走 _dir_baselines 同一份请求。"""
+        names, _ = self._dir_baselines(dir_path)
+        return names
 
-    def _dir_md5s(self, dir_path: str) -> set[str]:
-        out = set()
+    def _dir_baselines(self, dir_path: str) -> tuple[set[str], set[str]]:
+        """一次 list_dir 同时收文件名与 MD5（去重基线）。
+
+        bdsavePro 的 list_local_files 同款语义：名字与 MD5 本就来自同一份列表，
+        分两次调只会把对百度目录接口的请求量翻倍——风控时代请求能省则省。
+        """
+        names: set[str] = set()
+        md5s: set[str] = set()
         for e in self.list_dir(dir_path):
-            if not int(e.get("isdir") or 0) and e.get("md5"):
-                out.add(str(e["md5"]).lower())
-        return out
+            if int(e.get("isdir") or 0):
+                continue
+            names.add(self._basename(e))
+            if e.get("md5"):
+                md5s.add(str(e["md5"]).lower())
+        return names, md5s
 
     @staticmethod
     def _basename(entry: dict) -> str:
@@ -458,7 +485,17 @@ class BaiduClient(CloudAdapter):
         raise AdapterError(f"建目录失败 {path}：errno={errno}")
 
     def _ensure_dirs(self, dirs: list[str]) -> None:
+        # bdsavePro _ensure_dir_tree_exists 语义：整树能 list 通 = 目录已存在，
+        # 一个 mkdir 都不用发（重复转存同目录时省掉整串 api/create）。
+        # 只有 list 失败（目录缺失）才逐级建；凭据失效必须原样上抛，别当"目录不存在"吞了。
         for d in dirs:
+            try:
+                self.list_dir(d)
+                continue
+            except CredentialExpired:
+                raise
+            except AdapterError:
+                pass
             parts = [p for p in d.strip("/").split("/") if p]
             cur = ""
             for p in parts:
@@ -472,14 +509,29 @@ class BaiduClient(CloudAdapter):
         result = TransferResult()
         save_list = [f for f in files if not f.is_dir and f.fid]
 
+        # 勾选清单过滤（bdsavePro new_files 语义）：勾了文件=只转这些；
+        # 勾了目录=该目录整棵子树（按分享内相对路径前缀匹配）
+        if spec.only_paths:
+            def _kept(f: ShareFile) -> bool:
+                for sel in spec.only_paths or set():
+                    sel = sel.strip("/")
+                    if not sel:
+                        continue
+                    if f.path == sel or f.path.startswith(sel + "/"):
+                        return True
+                return False
+            before = len(save_list)
+            save_list = [f for f in save_list if _kept(f)]
+            result.skip += before - len(save_list)
+
         # 去重（MD5 优先 → 文件名）：对比目录优先 compare_path，空则用 save_dir
         base = spec.compare_path or spec.save_dir
         existing: set[str] = set()
         md5s: set[str] = set()
         if base:
             try:
-                existing = self.list_dir_names(base)
-                md5s = self._dir_md5s(base)
+                # 名字与 MD5 同源：一次扫描拿全（原两遍 list_dir 是给风控送人头的写法）
+                existing, md5s = self._dir_baselines(base)
             except (AdapterError, CredentialExpired) as e:
                 on_log(f"对比目录 {base} 读取失败（{e}），本次不做去重基线比对")
         need = []
@@ -519,7 +571,8 @@ class BaiduClient(CloudAdapter):
         fsids = [int(f.fid) for f in group if str(f.fid).isdigit()]
         if not fsids:
             return
-        params = {"shareid": ctx["shareid"], "from": ctx["uk"], "bdstoken": ctx["bdstoken"], "channel": "chunlei", "clienttype": 0, "web": 1, "app_id": 250528}
+        # baidupcs_py 的 transfer 不带 app_id——它是网页内部接口，多传反而多一处暴露面
+        params = {"shareid": ctx["shareid"], "from": ctx["uk"], "bdstoken": ctx["bdstoken"], "channel": "chunlei", "clienttype": 0, "web": 1}
         data = {"path": target_dir, "fsidlist": json.dumps(fsids)}
         body = self._share_post("https://pan.baidu.com/share/transfer", params=params, data=data, referer=ctx["referer"])
         if body.get("errno") == -65:
@@ -544,6 +597,8 @@ class BaiduClient(CloudAdapter):
             target = f.target_name
             if not target or target == f.name:
                 continue
+            # rename 是写操作，连打最容易触发 -65：每条之间歇 0.5s（bdsavePro 同款间隔）
+            time.sleep(0.5)
             full = target_dir.rstrip("/") + "/" + f.name
             body = self._share_post(
                 "https://pan.baidu.com/rest/2.0/xpan/file",

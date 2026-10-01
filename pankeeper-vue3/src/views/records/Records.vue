@@ -1,15 +1,12 @@
 <script setup lang="ts">
-/* 转存记录页 —— 原型 _shell.html 记录段（tabs + 队列看板 + 全部记录表）的 Vue 移植。
- * 队列分段只做壳：看板本体在 @/queue/QueueBoard（引擎数据自动刷新）。
- * 全部记录：筛选/分页真实生效（内存过滤 + 切片）；记录是快照，抽屉展示转存当时的配置与结果。 */
+/* 转存记录页 —— 原型 _shell.html 记录段（全部记录表）的 Vue 移植。
+ * 队列入口已撤（右下角浮标侧边抽屉是唯一入口），本页只做记录：筛选/分页真实生效
+ * （内存过滤 + 切片）；记录是快照，抽屉展示转存当时的配置与结果。 */
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
-import QueueBoard from '@/queue/QueueBoard.vue'
 import PkPager from '@/components/PkPager.vue'
 import LogBox from '@/components/LogBox.vue'
 import { useIsMobile } from '@/composables/useIsMobile'
-import { queueView } from '@/queue/engine'
 import { DD_MEDIA, DRIVE_META, MAIN_ORDER } from '@/api/mock/meta'
 import { recordsStore } from '@/api/mock/records'
 import type { RecordRow } from '@/api/mock/records'
@@ -26,30 +23,15 @@ import {
 } from '@/api/modules/records'
 import type { DdQmsPath, DdStrmPath, QueueLogLine } from '@/types/model'
 
-/* ===== 分段 tab：默认全部记录；#queue 直达队列段（右下角浮标跳转用） ===== */
-const route = useRoute()
+/* ===== 全部记录：数据 + 筛选 + 分页 ===== */
 /* 手机（<768px）8 列表格换卡片列表，点卡片=开详情抽屉 */
 const isMobile = useIsMobile()
-const seg = ref<'queue' | 'records'>('records')
-// hash 是分段唯一事实源（同原型）：#queue → 队列段；hash 消失（如从别处切回 /records）回落记录段
-function applyHash() {
-  seg.value = route.hash === '#queue' ? 'queue' : 'records'
-}
-watch(() => route.hash, applyHash)
 
-// tab 上的排队数：wait + run；空队列显示 (空)（原型 pqQueueNum 的格式）
-const queueNum = computed(() => {
-  const n = queueView.tasks.filter((t) => t.status === 'wait' || t.status === 'run').length
-  return n ? `(${n})` : '(空)'
-})
-
-/* ===== 全部记录：数据 + 筛选 + 分页 ===== */
 const rows = ref<RecordRow[]>([])
 async function reload() {
   rows.value = await listRecords()
 }
 onMounted(async () => {
-  applyHash()
   await reload()
 })
 
@@ -60,6 +42,7 @@ const STATUS_OPTS = [
   { value: '', label: '全部状态' },
   { value: 'ok', label: '完成' },
   { value: 'part', label: '部分失败' },
+  { value: 'warn', label: '链接失效' },
   { value: 'fail', label: '失败' },
 ]
 const PAN_OPTS = [
@@ -69,9 +52,10 @@ const PAN_OPTS = [
 
 const filtered = computed(() =>
   rows.value.filter((r) => {
-    // 结果列的三种长相：完成(t-ok) / 部分(t-off) / 失败(t-bad)
+    // 结果列的几种长相：完成(t-ok) / 部分(t-off) / 链接失效(t-warn) / 失败(t-bad)
     if (fStatus.value === 'ok' && r.cls !== 't-ok') return false
     if (fStatus.value === 'part' && !r.st.startsWith('部分')) return false
+    if (fStatus.value === 'warn' && r.cls !== 't-warn') return false
     if (fStatus.value === 'fail' && !r.st.startsWith('失败')) return false
     if (fPan.value && r.t !== fPan.value) return false
     const k = kw.value.trim()
@@ -220,23 +204,9 @@ async function confirmTrig() {
 
 <template>
   <div>
-    <!-- 分段 tab：转存动作全部入队，这里看排队进度和日志 -->
-    <div class="tabs pq-tabs">
-      <div :class="{ on: seg === 'queue' }" @click="seg = 'queue'">转存队列<span class="pq-num">{{ queueNum }}</span></div>
-      <div :class="{ on: seg === 'records' }" @click="seg = 'records'">全部记录</div>
-    </div>
-
-    <!-- 转存队列分段：看板本体在 QueueBoard 组件（日志单选/进度/空态都自带） -->
-    <template v-if="seg === 'queue'">
-      <div class="card rk-flush">
-        <QueueBoard />
-      </div>
-
-    </template>
-
-    <!-- 全部记录分段：筛选条与表格合并成一张卡（同搜索页：别让两块白卡夹灰缝） -->
-    <template v-else>
-      <div class="card rk-flush">
+    <!-- 全部记录：筛选条与表格合并成一张卡（同搜索页：别让两块白卡夹灰缝）。
+         队列入口在右下角浮标（侧边抽屉），本页不再放队列 tab -->
+    <div class="card rk-flush">
         <div class="filterbar fb-head">
           <a-select v-model:value="fStatus" :options="STATUS_OPTS" style="width: 120px" />
           <a-select v-model:value="fPan" :options="PAN_OPTS" style="width: 120px" />
@@ -310,8 +280,6 @@ async function confirmTrig() {
         </div>
         <PkPager v-model:current="page" v-model:pageSize="size" :total="filtered.length" />
       </div>
-
-    </template>
 
     <!-- 详情抽屉：快照字段 + 执行日志 + 记录级操作 -->
     <a-drawer v-model:open="drawerOpen" :width="660" title="转存详情">
