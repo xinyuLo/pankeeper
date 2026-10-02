@@ -154,7 +154,11 @@ function start() {
     share_url: t.url,
     share_code: t.share_code,
   })
-  message.success(`已加入转存队列 · 当前第 ${pos} 位，完成后去「转存记录 → 队列」看日志`)
+  if (pos < 0) {
+    message.warning('该分享已在转存队列中，勿重复添加')
+    return
+  }
+  message.success(`已加入转存队列 · 当前第 ${pos} 位，完成后去右下角队列抽屉看日志`)
   close()
 }
 </script>

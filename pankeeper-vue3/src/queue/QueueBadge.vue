@@ -3,9 +3,11 @@
  * 看板本体在 QueueBoard（原记录页队列段同一组件），规则一致：日志单选、进度跟随。
  * 记录页的队列 tab 已撤，这里就是队列的唯一入口。 */
 import { computed, ref } from 'vue'
+import { useIsMobile } from '@/composables/useIsMobile'
 import { queueView } from '@/queue/engine'
 import QueueBoard from '@/queue/QueueBoard.vue'
 
+const isMobile = useIsMobile()
 const open = ref(false)
 const active = computed(() => queueView.tasks.filter((t) => t.status === 'wait' || t.status === 'run').length)
 const running = computed(() => queueView.tasks.filter((t) => t.status === 'run').length)
@@ -19,7 +21,7 @@ const visible = computed(() => queueView.tasks.length > 0)
     转存队列 · {{ active }}<template v-if="running > 0"> · {{ running }} 个转存中</template>
   </div>
 
-  <a-drawer v-model:open="open" title="转存队列" :width="640" placement="right">
+  <a-drawer v-model:open="open" title="转存队列" :width="isMobile ? '100%' : 640" placement="right">
     <QueueBoard />
   </a-drawer>
 </template>
