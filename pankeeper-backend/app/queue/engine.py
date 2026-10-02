@@ -129,6 +129,14 @@ class QueueEngine:
 
     def enqueue(self, item: dict) -> int:
         with self._lock:
+            share_url = item.get("share_url") or item.get("shareUrl") or ""
+            # 同链接去重：wait/run 中已有同一 shareUrl 的任务就不再入队（手动快速
+            # 转存连点两次 = 两个任务各打一遍百度全链，纯浪费请求喂风控）。
+            # 返回 -1 由前端提示「已在队列中」。
+            if share_url:
+                for t in self.state["tasks"]:
+                    if t["status"] in ("wait", "run") and t.get("shareUrl") == share_url:
+                        return -1
             self.state["seq"] += 1
             t = {
                 "id": self.state["seq"],

@@ -756,7 +756,9 @@ button,
   /* ---- 队列看板条目（QueueBoard，类名在全局共享段） ---- */
   .pq-item { padding: 12px 14px; gap: 10px; }
   .pq-path { word-break: break-all; white-space: normal; }
-  .pq-log { height: 200px; }
+  /* 手机：日志框收紧——屏窄，桌面版的松行距+大内边距会把日志折得稀碎 */
+  .pq-log { height: 220px; }
+  .logbox { padding: 10px 12px; font-size: 12px; line-height: 1.6; }
 
   /* ---- 右下角队列浮标：抬到标签栏上方，别让拇指和底栏挡住 ---- */
   .pkq-badge {
