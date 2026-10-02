@@ -186,8 +186,8 @@ export function getDrillDirs(): Promise<PaDrillDir[]> {
 
 export interface PaExclFile {
   name: string
-  /** 有无校验值（md5）；没有的文件转存时只能按文件名去重 */
-  md5: boolean
+  /** 校验值 md5（空串 = 无，转存时只能按文件名去重/排除） */
+  md5: string
 }
 
 export interface PaExclFetch {
@@ -204,13 +204,13 @@ export async function fetchExclFiles(taskId: number, force = false): Promise<PaE
   return {
     fresh: r.fresh,
     ts: r.cached_at * 1000,
-    files: r.files.filter((f) => !f.is_dir).map((f) => ({ name: f.name, md5: !!f.md5 })),
+    files: r.files.filter((f) => !f.is_dir).map((f) => ({ name: f.name, md5: f.md5 || '' })),
   }
 }
 
-/** 确定排除：把勾选的文件名列表回写任务 exclude_json/exclude_count（转存时按文件名排除） */
-export function commitExcl(taskId: number, names: string[]): Promise<{ count: number }> {
-  return post<{ count: number }>(`/pa/tasks/${taskId}/exclude`, { names })
+/** 确定排除：勾选的文件名 + MD5 回写任务（转存时任一命中即排除；MD5 兜住分享内改名的文件） */
+export function commitExcl(taskId: number, names: string[], md5s: string[] = []): Promise<{ count: number }> {
+  return post<{ count: number }>(`/pa/tasks/${taskId}/exclude`, { names, md5s })
 }
 
 /* ===================== 转存日志（RunHistory，bdsavePro 风格） ===================== */
@@ -238,6 +238,8 @@ export interface PaRunDetail extends PaRunRow {
   include_subdirs: boolean
   transferred: string[]
   excluded: string[]
+  /** 正则命中（过滤后放行）的文件名；未配正则的任务为空 */
+  regex_hit: string[]
   logs: QueueLogLine[]
 }
 

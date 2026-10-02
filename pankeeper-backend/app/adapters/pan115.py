@@ -146,8 +146,12 @@ class Pan115Adapter(CloudAdapter):
         if spec.include_subdirs:
             for node in [f for f in roots if f.is_dir]:
                 out.extend(self._walk_share_dir(share_code, receive_code, node.fid, node.name))
-        if spec.exclude_names:
-            out = [f for f in out if f.name not in spec.exclude_names]
+        if spec.exclude_names or spec.exclude_md5s:
+            out = [
+                f
+                for f in out
+                if f.name not in spec.exclude_names and not (not f.is_dir and f.md5 and f.md5 in spec.exclude_md5s)
+            ]
         # 接收上下文存给 save_files
         self._share_ctx = {"share_code": share_code, "receive_code": receive_code}
         return out

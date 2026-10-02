@@ -120,6 +120,13 @@ function close() {
           </div>
         </div>
 
+        <div v-if="detail.regex_hit?.length" class="rd-section">
+          <div class="rd-title">正则命中（{{ detail.regex_hit.length }}，通过过滤参与本轮）</div>
+          <div class="rd-files">
+            <div v-for="n in detail.regex_hit" :key="n" class="rd-file"><FileTextOutlined style="color: #1677ff" /> {{ n }}</div>
+          </div>
+        </div>
+
         <div v-if="detail.excluded.length" class="rd-section">
           <div class="rd-title">排除文件（{{ detail.excluded.length }}，本次不转存）</div>
           <div class="rd-files">

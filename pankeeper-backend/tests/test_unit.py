@@ -161,3 +161,58 @@ def test_credential_roundtrip():
     cipher = encrypt_credential("quark_cookie=abc; __uid=1")
     assert cipher != "quark_cookie=abc; __uid=1"
     assert decrypt_credential(cipher) == "quark_cookie=abc; __uid=1"
+
+
+# ---------- 自动转存过滤纯函数（正则命中 / 排除清单：文件名+MD5） ----------
+
+def _mk_file(name: str, md5: str = "", is_dir: bool = False):
+    from app.adapters.base import ShareFile
+
+    return ShareFile(fid="1", name=name, is_dir=is_dir, path=name, md5=md5)
+
+
+def test_apply_regex_hit_and_miss():
+    from app.transfer.auto import _apply_regex
+
+    files = [_mk_file("第01集.mkv"), _mk_file("第02集.mkv"), _mk_file("4k.mp4"), _mk_file("海报.jpg"), _mk_file("子目录", is_dir=True)]
+    kept, miss, hit = _apply_regex(files, r"\.mkv$")
+    # 目录条目保留（维持结构），文件只留命中
+    assert [f.name for f in kept if not f.is_dir] == ["第01集.mkv", "第02集.mkv"]
+    assert any(f.is_dir for f in kept)
+    assert miss == 2
+    assert hit == ["第01集.mkv", "第02集.mkv"]
+
+
+def test_apply_regex_invalid_raises():
+    import re
+
+    import pytest
+
+    from app.transfer.auto import _apply_regex
+
+    with pytest.raises(re.error):
+        _apply_regex([_mk_file("a.mkv")], "([")
+
+
+def test_apply_exclusion_by_name_and_md5():
+    from app.transfer.auto import _apply_exclusion
+
+    files = [
+        _mk_file("广告.mp4"),
+        _mk_file("改名了的预告.mp4", md5="aaa"),
+        _mk_file("正片01.mkv", md5="bbb"),
+        _mk_file("要排除的目录", is_dir=True),
+    ]
+    kept, excluded = _apply_exclusion(files, {"广告.mp4", "要排除的目录"}, {"aaa"})
+    # 名字命中（含整目录排除）+ MD5 命中（文件已改名仍被排掉）
+    assert excluded == ["广告.mp4", "改名了的预告.mp4"]
+    assert [f.name for f in kept] == ["正片01.mkv"]
+
+
+def test_apply_exclusion_empty_lists_noop():
+    from app.transfer.auto import _apply_exclusion
+
+    files = [_mk_file("a.mkv"), _mk_file("b", is_dir=True)]
+    kept, excluded = _apply_exclusion(files, set(), set())
+    assert len(kept) == 2
+    assert excluded == []

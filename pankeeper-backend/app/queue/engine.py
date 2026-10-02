@@ -62,6 +62,7 @@ class QueueEngine:
                 row.acc_id = t.get("accId")
                 row.pa_task_id = t.get("paTaskId")
                 row.exclude_json = json.dumps(t.get("excludeNames") or [], ensure_ascii=False)
+                row.exclude_md5_json = json.dumps(t.get("excludeMd5s") or [], ensure_ascii=False)
             s.commit()
 
     def restore(self) -> None:
@@ -90,6 +91,7 @@ class QueueEngine:
                         "accId": r.acc_id,
                         "paTaskId": r.pa_task_id,
                         "excludeNames": json.loads(r.exclude_json or "[]"),
+                        "excludeMd5s": json.loads(getattr(r, "exclude_md5_json", "") or "[]"),
                     }
                 )
                 self.state["seq"] = max(self.state["seq"], r.id)
@@ -161,6 +163,7 @@ class QueueEngine:
                 "accId": item.get("acc_id"),
                 "paTaskId": item.get("pa_task_id"),
                 "excludeNames": list(item.get("exclude_names") or []),
+                "excludeMd5s": list(item.get("exclude_md5s") or []),
                 "comparePath": item.get("compare_path") or "",
                 # 勾选清单（搜索页分享树勾选；空=全部）。注意：不持久化，
                 # 重启恢复的任务勾选丢失回全量——有 MD5/名字去重兜底，宁可多查不少删

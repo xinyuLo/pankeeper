@@ -76,6 +76,7 @@ def _migrate_columns() -> None:
             ("qms_id", "INTEGER"),
             ("strm_id", "INTEGER"),
             ("exclude_json", "TEXT DEFAULT '[]'"),
+            ("exclude_md5_json", "TEXT DEFAULT '[]'"),
             ("ban_reason", "TEXT DEFAULT ''"),
             ("compare_path", "TEXT DEFAULT ''"),
             ("acc_id", "INTEGER"),
@@ -91,11 +92,13 @@ def _migrate_columns() -> None:
             ("duration", "INTEGER DEFAULT 0"),
             ("transferred_json", "TEXT DEFAULT '[]'"),
             ("excluded_json", "TEXT DEFAULT '[]'"),
+            ("regex_hit_json", "TEXT DEFAULT '[]'"),
         ],
         "queue_tasks": [
             ("acc_id", "INTEGER"),
             ("pa_task_id", "INTEGER"),
             ("exclude_json", "TEXT DEFAULT '[]'"),
+            ("exclude_md5_json", "TEXT DEFAULT '[]'"),
         ],
     }
     with engine.connect() as conn:
