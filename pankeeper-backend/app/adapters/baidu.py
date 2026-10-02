@@ -191,6 +191,8 @@ class BaiduClient(CloudAdapter):
 
         注意两套短码：页面地址 /s/<slug> 用**全长**；share/verify 的 surl 参数
         要去掉前导 1 的 22 位码——混用会 404/验证失效。
+        ⚠️ 短码长度校验（2026-10-02）：正常 22/23 位。PanSou 部分数据源会截断
+        链接（实测出现过 12 位），残码打百度只会得到畸形响应——直接报人话。
         """
         url = (url or "").strip().split("#")[0]
         m = re.search(r"/share/init\?surl=([a-zA-Z0-9_-]+)", url)
@@ -198,7 +200,12 @@ class BaiduClient(CloudAdapter):
             m = re.search(r"/s/([a-zA-Z0-9_-]+)", url)
         if m is None:
             raise AdapterError(f"无法识别的百度分享链接：{url[:80]}")
-        return m.group(1)
+        slug = m.group(1)
+        if len(slug) < 20:
+            raise AdapterError(
+                f"分享码不完整（{len(slug)} 位，正常 22/23 位）——链接疑似被来源截断，请换一条或手动补全：{url[:80]}"
+            )
+        return slug
 
     @staticmethod
     def _verify_surl(slug: str) -> str:
@@ -359,21 +366,44 @@ class BaiduClient(CloudAdapter):
         """分享页 HTML 抓 yunData.setData(...) JSON：shareid/uk/bdstoken/file_list。
 
         page_slug 是**全长**短码（/s/1xxx 的 1xxx）——用 verify 那个 22 位短码会 404。
+
+        ⚠️ 冷启动 fallback（2026-10-02 实测）：部分分享首次抓页拿不到 yunData
+        （会话冷启动，尤其新分享），用户手动「点一下链接」后重试就通——浏览器的
+        等价行为是先经 share/init 提码页再回列表页。这里自动补一次 init 预热后
+        重抓，等效于那次手动点击，无需人工干预。
         """
         cli = self._share_session()
-        self.gate.wait()
-        try:
-            resp = cli.get(f"https://pan.baidu.com/s/{page_slug}", headers={"referer": "https://pan.baidu.com/"}, timeout=20.0)
-        except requests.RequestException as e:
-            self.gate.on_failure()
-            raise AdapterError(f"网络异常：{e}") from e
-        self.gate.on_success()
-        reqstat.bump("baidu")
+
+        def _grab():
+            self.gate.wait()
+            try:
+                resp = cli.get(f"https://pan.baidu.com/s/{page_slug}", headers={"referer": "https://pan.baidu.com/"}, timeout=20.0)
+            except requests.RequestException as e:
+                self.gate.on_failure()
+                raise AdapterError(f"网络异常：{e}") from e
+            self.gate.on_success()
+            reqstat.bump("baidu")
+            return resp
+
+        def _parse(h: str):
+            return re.search(r"yunData\.setData\((\{.*?\})\)\s*;", h, re.S) or re.search(r"locals\.mset\((\{.*?\})\)\s*;", h, re.S)
+
+        resp = _grab()
         html = resp.text
-        # yunData 两种挂载形态都试（新版页面偶用 locals.mset）
-        m = re.search(r"yunData\.setData\((\{.*?\})\)\s*;", html, re.S)
-        if m is None:
-            m = re.search(r"locals\.mset\((\{.*?\})\)\s*;", html, re.S)
+        m = _parse(html)
+        if m is None and resp.status_code != 404 and "页面不存在" not in html:
+            # 冷启动 fallback：预热 init 提码页（建立会话上下文）后重抓一次
+            print(f"[baidu] 分享页未含 yunData（疑似会话冷启动），init 预热后重抓", flush=True)
+            self.gate.wait()
+            try:
+                cli.get(f"https://pan.baidu.com/share/init?surl={page_slug[1:]}", headers={"referer": "https://pan.baidu.com/"}, timeout=20.0)
+            except requests.RequestException:
+                pass  # 预热失败不致命，沿用原 html 走错误分流
+            self.gate.on_success()
+            reqstat.bump("baidu")
+            resp = _grab()
+            html = resp.text
+            m = _parse(html)
         if m is None:
             if "页面不存在" in html or resp.status_code == 404:
                 raise ShareBanned("分享链接不存在（页面 404）")
