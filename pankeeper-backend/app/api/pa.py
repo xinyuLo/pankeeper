@@ -136,11 +136,16 @@ def update_task(task_id: int, body: PaBody, _user=CurrentUser):
 
 
 @router.get("/tasks/{task_id}/share-files")
-def task_share_files(task_id: int, refresh: bool = False, _user=CurrentUser):
+def task_share_files(task_id: int, refresh: bool = False, filtered: bool = False, _user=CurrentUser):
     """分享链接内文件树（「查看」/排除清单数据源）。
 
     走独立的分享清单缓存（share_cache，与目录缓存不同逻辑）：转存每跑完一次刷新一次，
-    两次转存之间命中缓存秒开；?refresh=1 忽略缓存直连重拉。"""
+    两次转存之间命中缓存秒开；?refresh=1 忽略缓存直连重拉。
+    filtered=true（排除清单用）：按任务的正则过滤后返回候选——正则匹配不上的文件
+    本来就不会被转存，进排除清单纯属噪音（bdsavePro filtered-files 同语义）。
+    缓存里存的是全量清单，正则在出缓存后现筛，不产生额外网盘请求。"""
+    import re as _re
+
     from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, TaskSpec
     from ..deps import make_adapter_for
     from ..services.share_cache import build_payload, share_key, share_list_cache
@@ -172,12 +177,21 @@ def task_share_files(task_id: int, refresh: bool = False, _user=CurrentUser):
             raise HTTPException(status_code=401, detail=str(e))
         except AdapterError as e:
             raise HTTPException(status_code=502, detail=str(e))
+
+        files = payload["files"]
+        regex_used = (t.regex_pattern or "").strip()
+        if filtered and regex_used:
+            try:
+                rex = _re.compile(regex_used)
+                files = [f for f in files if rex.search(f.get("name") or "")]
+            except _re.error:
+                pass  # 正则非法降级不过滤（与转存链路同语义）
     finally:
         db.close()
     return {
-        "total": payload["total"],
+        "total": len(files),
+        "files": files,
         "tree": payload["tree"],
-        "files": payload["files"],
         "cached_at": int(cached_at),
         "fresh": pulled,
     }
