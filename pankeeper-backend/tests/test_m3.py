@@ -11,7 +11,7 @@ def test_parse_share_url_forms():
     # 页面短码返回全长（含前导 1）；verify 用的 22 位码由 _verify_surl 剥
     assert BaiduClient.parse_share_url("https://pan.baidu.com/s/1abcDEF-_1234567890123/") == "1abcDEF-_1234567890123"
     assert BaiduClient.parse_share_url("https://pan.baidu.com/s/1abcDEF-_1234567890123?pwd=xy12") == "1abcDEF-_1234567890123"
-    assert BaiduClient.parse_share_url("https://pan.baidu.com/share/init?surl=abcDEF-_12345678901") == "abcDEF-_12345678901"
+    assert BaiduClient.parse_share_url("https://pan.baidu.com/share/init?surl=abcDEF-_123456789012") == "abcDEF-_123456789012"
     assert BaiduClient.parse_share_url(" https://pan.baidu.com/s/1xyz1234567890123456789 #comment") == "1xyz1234567890123456789"
 
 
