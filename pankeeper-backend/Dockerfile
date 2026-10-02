@@ -19,14 +19,17 @@ FROM python:3.12-slim
 
 # 时区：记录时间用本地时间（slim 默认 UTC，不装 tzdata 记录会差 8 小时）
 ENV TZ=Asia/Shanghai
-RUN apt-get update && apt-get install -y --no-install-recommends tzdata \
+# 国内 NAS 直连 deb.debian.org 常卡死（2026-10-02 build 实测挂 3 分钟+），换清华源；
+# pip 同理走清华源（npm 已用 npmmirror，同一策略）
+RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update && apt-get install -y --no-install-recommends tzdata \
     && ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple --no-cache-dir -r requirements.txt
 
 COPY app ./app
 COPY run.py .
