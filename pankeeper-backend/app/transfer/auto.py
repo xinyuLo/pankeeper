@@ -21,6 +21,26 @@ from ..services.share_cache import build_payload, share_key, share_list_cache
 MAX_LOGS = 40
 
 
+def _apply_regex(files: list, pat: str) -> tuple[list, int, list[str]]:
+    """正则过滤（bdsavePro 语义）：只留文件名匹配的文件，目录条目保留以维持结构。
+
+    返回 (过滤后清单, 未命中数, 命中文件名清单)。pat 非法由调用方兜 re.error。"""
+    rex = re.compile(pat)
+    before = sum(1 for f in files if not f.is_dir)
+    kept = [f for f in files if f.is_dir or rex.search(f.name)]
+    miss = before - sum(1 for f in kept if not f.is_dir)
+    return kept, miss, [f.name for f in kept if not f.is_dir]
+
+
+def _apply_exclusion(files: list, names: set, md5s: set) -> tuple[list, list[str]]:
+    """排除清单：文件名或 MD5 任一命中即剔除（目录只按名字——整目录排除）。
+
+    返回 (剩余清单, 被排除的文件名)。"""
+    excluded = [f.name for f in files if not f.is_dir and (f.name in names or (f.md5 and f.md5 in md5s))]
+    kept = [f for f in files if f.name not in names and not (not f.is_dir and f.md5 and f.md5 in md5s)]
+    return kept, excluded
+
+
 def _push_log(t: dict, lv: str, txt: str) -> None:
     t["logs"].append({"lv": lv, "txt": txt})
     if len(t["logs"]) > MAX_LOGS:
@@ -73,7 +93,7 @@ def run_auto(eng, t: dict, cfg: dict) -> None:
         share_code=t["shareCode"],
         save_dir=t["path"],
         include_subdirs=t["includeSubdirs"],
-        exclude_names=set(t.get("excludeNames") or []),
+        # 排除清单不传给适配器——由本流程统一过滤并如实记录（excluded 名单要落库）
         compare_path=t.get("comparePath") or "",
         only_paths=(set(t.get("filePaths") or []) or None),
     )
@@ -107,23 +127,19 @@ def run_auto(eng, t: dict, cfg: dict) -> None:
         pat = (t.get("regexPattern") or "").strip()
         if pat and t["files"]:
             try:
-                rex = re.compile(pat)
-                before = sum(1 for f in files if not f.is_dir)
-                files = [f for f in files if f.is_dir or rex.search(f.name)]
-                regex_miss = before - sum(1 for f in files if not f.is_dir)
+                files, regex_miss, regex_hit = _apply_regex(files, pat)
                 t["_runStats"]["regex_miss"] = regex_miss
-                _push_log(t, "INFO", f"正则过滤：命中 {before - regex_miss} / 未命中 {regex_miss}")
+                # 正则命中清单（过滤后放行的文件名，落库供详情弹窗展示）
+                t["_runStats"]["regex_hit"] = regex_hit
+                _push_log(t, "INFO", f"正则过滤：命中 {len(regex_hit)} / 未命中 {regex_miss}")
             except re.error as e:
                 _push_log(t, "WARN", f"正则表达式无效（{e}），本次不做过滤")
 
-        # 排除清单：按文件名剔除（记录被排除的文件名，转存日志用）
-        excl_set = set(t.get("excludeNames") or [])
-        if excl_set:
-            excluded_names = [f.name for f in files if not f.is_dir and f.name in excl_set]
+        # 排除清单：文件名或 MD5 任一命中即剔除；被剔除名单落库（RunHistory.excluded_json）
+        files, excluded_names = _apply_exclusion(files, set(t.get("excludeNames") or []), set(t.get("excludeMd5s") or []))
+        if excluded_names:
             t["_runStats"]["excluded_names"] = excluded_names
-            if excluded_names:
-                files = [f for f in files if f.is_dir or f.name not in excl_set]
-                _push_log(t, "INFO", f"排除清单：跳过 {len(excluded_names)} 个文件")
+            _push_log(t, "INFO", f"排除清单：跳过 {len(excluded_names)} 个文件")
 
         total_size = sum(f.size for f in files)
         _push_log(t, "INFO", f"获取分享内文件清单，共 {len(files)} 项（{total_size / 1024**3:.1f} GB）")
@@ -337,6 +353,7 @@ def _sync_pa_task(t: dict, status: str, result) -> None:
                 message=message,
                 transferred_json=json.dumps([e.get("name") for e in (result.transferred if result else [])], ensure_ascii=False),
                 excluded_json=json.dumps(stats.get("excluded_names", []), ensure_ascii=False),
+                regex_hit_json=json.dumps(stats.get("regex_hit", []), ensure_ascii=False),
                 duration=duration,
                 logs_json=json.dumps(t["logs"], ensure_ascii=False),
             )

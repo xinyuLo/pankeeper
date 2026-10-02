@@ -98,6 +98,10 @@ def run_task(task_id: int, force: bool = False) -> dict:
             excl = json.loads(t.exclude_json or "[]")
         except ValueError:
             excl = []
+        try:
+            excl_md5 = json.loads(getattr(t, "exclude_md5_json", "") or "[]")
+        except ValueError:
+            excl_md5 = []
         engine.enqueue({
             "name": t.name or "自动任务",
             "type": t.type,
@@ -111,6 +115,7 @@ def run_task(task_id: int, force: bool = False) -> dict:
             "enabled": t.enabled,
             "regex_pattern": (t.regex_pattern or "").strip(),
             "exclude_names": excl,
+            "exclude_md5s": excl_md5,
             "compare_path": t.compare_path or "",
         })
         t.last_run = time.strftime("%m-%d %H:%M")

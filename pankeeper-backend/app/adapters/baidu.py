@@ -423,10 +423,12 @@ class BaiduClient(CloudAdapter):
         ⚠️ 参数必须齐装（2026-10-02 实测）：channel/clienttype/web/bdstoken/showempty
         缺任何一个，百度回 errno=-7（"分享已删除"是它对不合法请求的万能筐）。
         参数形态 1:1 对齐 baidupcs_py pcs.py:798-812，Referer 也不发（同款）。
+        ⚠️ 防风控：share/list 连续调用之间强制 2 秒间隔（转存 walk 与下钻浏览都走这里）。
         """
         out: list[dict] = []
         page = 1
         for _ in range(50):  # 5000 项封顶，防异常死循环
+            self._pace_share_list()
             data = self._share_get(
                 "https://pan.baidu.com/share/list",
                 params={
@@ -447,12 +449,25 @@ class BaiduClient(CloudAdapter):
                 referer="",
             )
             self._check_share_errno(data, "分享目录清单")
+            self._mark_share_list()
             rows = data.get("list") or []
             out.extend(rows)
             if len(rows) < 100:
                 return out
             page += 1
         return out
+
+    _SHARE_LIST_GAP = 2.0  # share/list 相邻两次调用的最小间隔（秒）
+
+    def _pace_share_list(self) -> None:
+        """保证 share/list 相邻调用间隔 ≥ 2s（实例级时间戳，覆盖转存 walk / 下钻浏览）。"""
+        last = getattr(self, "_last_sl_ts", 0.0)
+        wait = self._SHARE_LIST_GAP - (time.time() - last)
+        if wait > 0:
+            time.sleep(wait)
+
+    def _mark_share_list(self) -> None:
+        self._last_sl_ts = time.time()
 
     @classmethod
     def _share_row_to_file(cls, row: dict, base: str) -> ShareFile:
@@ -514,9 +529,14 @@ class BaiduClient(CloudAdapter):
                     files.append(f)
                     if f.is_dir:
                         files.extend(self._walk_share_dir(ctx, row.get("path") or f"{abs_dir}/{f.name}", f.path))
-        # 排除清单按 basename 过滤（目录也适用——整目录排除）
-        if spec.exclude_names:
-            files = [f for f in files if f.name not in spec.exclude_names]
+
+        # 排除清单：文件名或 MD5 任一命中即排除（目录只按名字——整目录排除）
+        if spec.exclude_names or spec.exclude_md5s:
+            files = [
+                f
+                for f in files
+                if f.name not in spec.exclude_names and not (not f.is_dir and f.md5 and f.md5 in spec.exclude_md5s)
+            ]
         return files
 
     def _walk_share_dir(self, ctx: dict, abs_dir: str, base: str) -> list[ShareFile]:

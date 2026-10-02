@@ -16,6 +16,14 @@ from ..models import PaTask, RunHistory
 router = APIRouter(prefix="/api/pa", tags=["pa"])
 
 
+def _loads(raw: str, fallback=None):
+    """json.loads 防御：脏数据回落默认值。"""
+    try:
+        return json.loads(raw or "")
+    except ValueError:
+        return [] if fallback is None else fallback
+
+
 def _row(t: PaTask) -> dict:
     try:
         excl = json.loads(t.exclude_json or "[]")
@@ -36,6 +44,7 @@ def _row(t: PaTask) -> dict:
         "exclude_count": t.exclude_count,
         "exclIdx": excl if all(isinstance(x, int) for x in excl) else [],
         "exclude_names": [x for x in excl if isinstance(x, str)],
+        "exclude_md5s": _loads(t.exclude_md5_json),
         "last_run": t.last_run,
         "last_status": t.last_status,
         "last_result": t.last_result,
@@ -46,7 +55,7 @@ def _row(t: PaTask) -> dict:
         "strm_id": t.strm_id,
         "regex_pattern": t.regex_pattern or "",
         "regex_replace": t.regex_replace or "",
-        "drill_on": bool(t.drill_on),
+        "drill_on": bool(t.drill_on),  # 下钻：字段保留、配置不丢；功能短期不实现（2026-10-03 定）
         "drill": json.loads(t.drill_json or "[]"),
         "ban_reason": t.ban_reason or "",
     }
@@ -175,20 +184,23 @@ def task_share_files(task_id: int, refresh: bool = False, _user=CurrentUser):
 
 
 class ExcludeBody(BaseModel):
-    """排除清单回写：存文件名列表（适配器按 basename 过滤）。"""
+    """排除清单回写：文件名 + MD5 双清单（转存时任一命中即排除）。"""
 
     names: list[str] = []
+    md5s: list[str] = []
 
 
 @router.post("/tasks/{task_id}/exclude")
 def task_exclude(task_id: int, body: ExcludeBody, _user=CurrentUser):
-    """排除清单确定：回写 exclude_json/exclude_count（转存时按文件名排除）。"""
+    """排除清单确定：回写 exclude_json/exclude_md5_json/exclude_count。"""
     with SessionLocal() as db:
         t = db.get(PaTask, task_id)
         if t is None:
             raise HTTPException(status_code=404, detail="任务不存在")
         names = [n for n in body.names if n]
+        md5s = [m for m in body.md5s if m]
         t.exclude_json = json.dumps(names, ensure_ascii=False)
+        t.exclude_md5_json = json.dumps(md5s, ensure_ascii=False)
         t.exclude_count = len(names)
         db.commit()
     return {"count": len(names)}
@@ -336,5 +348,6 @@ def run_detail(run_id: int, _user=CurrentUser):
             "include_subdirs": t.include_subdirs if t else True,
             "transferred": json.loads(r.transferred_json or "[]"),
             "excluded": json.loads(r.excluded_json or "[]"),
+            "regex_hit": json.loads(r.regex_hit_json or "[]"),
             "logs": json.loads(r.logs_json or "[]"),
         }
