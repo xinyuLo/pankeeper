@@ -17,11 +17,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import re
 import threading
 import time
 
 import httpx
+import requests
 
 from ..security import decrypt_credential
 from ..services import reqstat
@@ -31,6 +33,12 @@ from .rate_gate import RateGate
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/126.0.0.0 Safari/537.36"
+)
+# 分享链路专用 UA：对齐 baidupcs_py（pcs.py:39）。它用这个老 UA 千锤百炼；
+# 主 client（quota/uinfo/xpan list）维持新 UA 没问题，分享接口的风控更神经质
+SHARE_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_6) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/77.0.3865.75 Safari/537.36"
 )
 
 # 同 quark：httpx.Client() 在 Windows 上构造 ~0.5s（SSL 上下文），而 adapter 每个
@@ -197,11 +205,15 @@ class BaiduClient(CloudAdapter):
         """verify 接口的 surl：去掉前导 1 的 22 位码。"""
         return slug[1:] if len(slug) >= 22 and slug.startswith("1") else slug
 
-    def _share_session(self) -> httpx.Client:
-        """分享链路专用会话。
+    def _share_session(self) -> requests.Session:
+        """分享链路专用会话——**requests 而非 httpx**。
 
-        主客户端的 Cookie 是静态 header（verify/quota/list 足够），但分享验证会
-        Set-Cookie: BDCLND，必须用可变 cookie jar——这里按 cookie 串单独建一个，
+        ⚠️ 客户端选择是风控生死线（2026-10-02 实测定案）：同账号同链接同参数，
+        baidupcs_py（requests）的 share/list 通过，我们（httpx）一律 errno=-7——
+        百度按客户端特征（TLS 指纹/头行为）区别对待。主 client（quota/uinfo/xpan）
+        保持 httpx 没问题，**分享链路必须 requests**（baidupcs_py 同款）。
+        主 client 的 Cookie 是静态 header（verify/quota/list 足够），但分享验证会
+        Set-Cookie: BDCLND，必须用可变 cookie jar——按 cookie 串单独建一个，
         解析失败/网盘抖动只影响本次转存，不污染主客户端。
         """
         if getattr(self, "_share_cli", None) is None:
@@ -211,13 +223,10 @@ class BaiduClient(CloudAdapter):
                     k, _, v = part.strip().partition("=")
                     jar[k] = v
             self._base_cookie_jar = jar  # verify 重建 jar 时要用
-            self._share_cli = httpx.Client(
-                cookies=jar,
-                headers={"user-agent": UA},
-                timeout=20.0,
-                follow_redirects=True,
-                event_hooks={"request": [reqstat.hook("baidu")]},
-            )
+            cli = requests.Session()
+            cli.cookies.update(jar)
+            cli.headers.update({"user-agent": SHARE_UA})
+            self._share_cli = cli
         return self._share_cli
 
     # 网页内部接口（api/create、api/filemanager、share/transfer 等）会校验请求
@@ -231,10 +240,10 @@ class BaiduClient(CloudAdapter):
 
     def _share_post(self, url: str, *, params: dict, data: dict, referer: str) -> dict:
         self.gate.wait()
-        headers = {**self._XHR_HEADERS, "referer": referer}
+        headers = {**self._XHR_HEADERS, "referer": referer} if referer else {**self._XHR_HEADERS}
         try:
-            resp = self._share_session().post(url, params=params, data=data, headers=headers)
-        except httpx.HTTPError as e:
+            resp = self._share_session().post(url, params=params, data=data, headers=headers, timeout=20.0)
+        except requests.RequestException as e:
             self.gate.on_failure()
             raise AdapterError(f"网络异常：{e}") from e
         try:
@@ -242,16 +251,21 @@ class BaiduClient(CloudAdapter):
         except ValueError as e:
             self.gate.on_failure()
             raise AdapterError(f"响应非 JSON（HTTP {resp.status_code}）") from e
+        reqstat.bump("baidu")
         self.gate.on_success()
         return body
 
     def _share_get(self, url: str, *, params: dict | None = None, referer: str) -> dict:
+        """分享链路 GET（share/list 等）。
+
+        ⚠️ 头部纪律：只带 UA + Referer——share/list 带 X-Requested-With/Origin
+        会被回 errno=-7（与 verify 同一陷阱）。XHR 三件套只有 share/transfer 需要。
+        """
         self.gate.wait()
-        headers = {k: v for k, v in self._XHR_HEADERS.items() if k != "Content-Type"}
-        headers["referer"] = referer
+        headers = {"referer": referer} if referer else {}
         try:
-            resp = self._share_session().get(url, params=params, headers=headers)
-        except httpx.HTTPError as e:
+            resp = self._share_session().get(url, params=params, headers=headers, timeout=20.0)
+        except requests.RequestException as e:
             self.gate.on_failure()
             raise AdapterError(f"网络异常：{e}") from e
         try:
@@ -259,17 +273,19 @@ class BaiduClient(CloudAdapter):
         except ValueError as e:
             self.gate.on_failure()
             raise AdapterError(f"响应非 JSON（HTTP {resp.status_code}）") from e
+        reqstat.bump("baidu")
         self.gate.on_success()
         return body
 
     @staticmethod
     def _check_share_errno(data: dict, action: str) -> None:
-        """分享链路错误码分流：死链熔断 / 凭据失效 / 一般失败。"""
+        """分享链路错误码分流：死链熔断 / 凭据失效 / 一般失败。
+        action 进异常文案——日志里要能分清 -7 是 verify 还是 share/list 回的。"""
         errno = data.get("errno")
         if errno in (0, None):
             return
         if errno in (-7, -8, -9, 115, 145):
-            raise ShareBanned(f"errno={errno}（分享已删除/过期/禁止分享）")
+            raise ShareBanned(f"{action}：errno={errno}（分享已删除/过期/禁止分享）")
         if errno == -6 or errno in (31041, 31042):
             raise CredentialExpired("百度 Cookie 已失效")
         if errno == -12:
@@ -292,6 +308,7 @@ class BaiduClient(CloudAdapter):
         """
         cli = self._share_session()
         last_body: dict = {}
+        last_resp: requests.Response | None = None
         # -7/-9/-62 常是风控抖动而非死链（baidupcs_py 把 -9 当验证码场景重试；
         # bdsavePro 对全部 API 套 retry(1, 2~3s)）：隔 3s 重试一次再下结论
         for attempt in range(2):
@@ -303,8 +320,9 @@ class BaiduClient(CloudAdapter):
                     data={"pwd": pwd},
                     # 只带 UA + Referer（share/init 页形态），与 baidupcs_py 完全一致
                     headers={"referer": f"https://pan.baidu.com/share/init?surl={surl}"},
+                    timeout=20.0,
                 )
-            except httpx.HTTPError as e:
+            except requests.RequestException as e:
                 self.gate.on_failure()
                 raise AdapterError(f"网络异常：{e}") from e
             try:
@@ -313,20 +331,29 @@ class BaiduClient(CloudAdapter):
                 self.gate.on_failure()
                 raise AdapterError(f"响应非 JSON（HTTP {resp.status_code}）") from e
             self.gate.on_success()
+            reqstat.bump("baidu")
             last_body = body
+            last_resp = resp
             if body.get("errno") in (0, None):
                 break
             if body.get("errno") in (-7, -9, -62) and attempt == 0:
+                print(f"[baidu] verify errno={body.get('errno')}（疑似风控抖动），3 秒后重试一次", flush=True)
                 time.sleep(3)
                 continue
         self._check_share_errno(last_body, "提取码验证")
         bdclnd = last_body.get("randsk") or ""
         if bdclnd:
+            # baidupcs_py 语义（pcs.py:742 _cookies_update）：verify 响应下发的 cookie
+            # 要**合并**进会话——里面可能有风控相关的非 BDCLND cookie。
+            # BDCLND 仍显式单份（防百度 domain 差异造成的双份 header）。
             jar = dict(self._base_cookie_jar)
+            if last_resp is not None:
+                for k, v in last_resp.cookies.get_dict().items():
+                    if k != "BDCLND":
+                        jar[k] = v
             jar["BDCLND"] = bdclnd
             cli.cookies.clear()
-            for k, v in jar.items():
-                cli.cookies.set(k, v)
+            cli.cookies.update(jar)
 
     def _fetch_share_page(self, page_slug: str) -> dict:
         """分享页 HTML 抓 yunData.setData(...) JSON：shareid/uk/bdstoken/file_list。
@@ -336,11 +363,12 @@ class BaiduClient(CloudAdapter):
         cli = self._share_session()
         self.gate.wait()
         try:
-            resp = cli.get(f"https://pan.baidu.com/s/{page_slug}", headers={"referer": "https://pan.baidu.com/"})
-        except httpx.HTTPError as e:
+            resp = cli.get(f"https://pan.baidu.com/s/{page_slug}", headers={"referer": "https://pan.baidu.com/"}, timeout=20.0)
+        except requests.RequestException as e:
             self.gate.on_failure()
             raise AdapterError(f"网络异常：{e}") from e
         self.gate.on_success()
+        reqstat.bump("baidu")
         html = resp.text
         # yunData 两种挂载形态都试（新版页面偶用 locals.mset）
         m = re.search(r"yunData\.setData\((\{.*?\})\)\s*;", html, re.S)
@@ -360,14 +388,33 @@ class BaiduClient(CloudAdapter):
             raise AdapterError(f"yunData JSON 解析失败：{e}") from e
 
     def _share_list_dir(self, ctx: dict, dir_path: str) -> list[dict]:
-        """分享内子目录清单（/share/list，100/页翻页）。"""
+        """分享内子目录清单（/share/list，100/页翻页）。
+
+        ⚠️ 参数必须齐装（2026-10-02 实测）：channel/clienttype/web/bdstoken/showempty
+        缺任何一个，百度回 errno=-7（"分享已删除"是它对不合法请求的万能筐）。
+        参数形态 1:1 对齐 baidupcs_py pcs.py:798-812，Referer 也不发（同款）。
+        """
         out: list[dict] = []
         page = 1
         for _ in range(50):  # 5000 项封顶，防异常死循环
             data = self._share_get(
                 "https://pan.baidu.com/share/list",
-                params={"page": page, "num": 100, "dir": dir_path, "t": int(time.time() * 1000), "uk": ctx["uk"], "shareid": ctx["shareid"], "order": "other", "desc": 1},
-                referer=ctx["referer"],
+                params={
+                    "channel": "chunlei",
+                    "clienttype": 0,
+                    "web": 1,
+                    "page": page,
+                    "num": 100,
+                    "dir": dir_path,
+                    "t": str(random.random()),
+                    "uk": ctx["uk"],
+                    "shareid": ctx["shareid"],
+                    "desc": 1,
+                    "order": "other",
+                    "bdstoken": "null",
+                    "showempty": 0,
+                },
+                referer="",
             )
             self._check_share_errno(data, "分享目录清单")
             rows = data.get("list") or []
@@ -410,7 +457,10 @@ class BaiduClient(CloudAdapter):
             "surl": slug,
             "referer": referer,
             "shareid": page.get("shareid"),
-            "uk": page.get("uk") or page.get("share_uk"),
+            # ⚠️ 必须是**分享者**的 uk：yunData 里 share_uk=分享者，uk=当前登录用户——
+            # 顺序取反的话 share/list 回 -7（"啊哦，链接出错了"）、transfer 的 from 也错。
+            # 2026-10-02 与 baidupcs_py 抓包对比实锤（金标准 uk=dir 前缀里的那个 13 位 id）。
+            "uk": page.get("share_uk") or page.get("uk") or page.get("share_uk"),
             "bdstoken": page.get("bdstoken") or "",
         }
         if not ctx["shareid"] or not ctx["uk"]:
@@ -418,16 +468,22 @@ class BaiduClient(CloudAdapter):
         self._share_ctx = ctx
 
         files: list[ShareFile] = []
-        roots = [self._share_row_to_file(r, "") for r in (page.get("file_list") or [])]
+        roots_raw = page.get("file_list") or []
+        roots = [self._share_row_to_file(r, "") for r in roots_raw]
         files.extend(roots)
         if spec.include_subdirs:
-            for node in [f for f in roots if f.is_dir]:
-                abs_dir = f"/{node.name}"
+            # ⚠️ share/list 的 dir 必须用**原始路径**（含 /sharelink<id>-<uk> 前缀，
+            # 即 yunData file_list 返回的 path）——传剥了前缀的逻辑路径一律 -7。
+            # 2026-10-02 逐字节对比 baidupcs_py 抓包实锤（此前 M3 起从未跑对过）。
+            for raw, node in zip(roots_raw, roots):
+                if not node.is_dir:
+                    continue
+                abs_dir = raw.get("path") or f"/{node.name}"
                 for row in self._share_list_dir(ctx, abs_dir):
                     f = self._share_row_to_file(row, node.name)
                     files.append(f)
                     if f.is_dir:
-                        files.extend(self._walk_share_dir(ctx, abs_dir + "/" + f.name, f.path))
+                        files.extend(self._walk_share_dir(ctx, row.get("path") or f"{abs_dir}/{f.name}", f.path))
         # 排除清单按 basename 过滤（目录也适用——整目录排除）
         if spec.exclude_names:
             files = [f for f in files if f.name not in spec.exclude_names]
@@ -439,7 +495,8 @@ class BaiduClient(CloudAdapter):
             f = self._share_row_to_file(row, base)
             out.append(f)
             if f.is_dir:
-                out.extend(self._walk_share_dir(ctx, f"{abs_dir}/{f.name}", f.path))
+                # 递归同样用原始路径（含 /sharelink 前缀，见 list_share 注释）
+                out.extend(self._walk_share_dir(ctx, row.get("path") or f"{abs_dir}/{f.name}", f.path))
         return out
 
     def list_dir_names(self, dir_path: str) -> set[str]:
@@ -468,17 +525,22 @@ class BaiduClient(CloudAdapter):
         return entry.get("server_filename") or (entry.get("path") or "/").rsplit("/", 1)[-1]
 
     def _mkdir(self, path: str) -> None:
-        """逐级建目录（errno 12 = 已存在，算成功；31062 文件名非法）。"""
-        data = self._share_post(
-            "https://pan.baidu.com/api/create",
-            params={"a": "commit", "web": 1},
-            data={"path": path, "isdir": "1", "block_list": "[]"},
-            referer="https://pan.baidu.com/disk/main",
+        """建目录——PCS 通道（baidupcs_py pcs.py:430 同款）。
+
+        ⚠️ 不要用网页版 POST api/create：对程序化请求回 -6/31041（2026-10-01/02
+        两天的 -6/-7 连环案最后一环）。PCS 的 GET mkdir 走主 client 即可，
+        errno 12 = 已存在算成功；-8 文件名非法。
+        """
+        data = self._get(
+            "https://pcs.baidu.com/rest/2.0/pcs/file",
+            {"method": "mkdir", "path": path, "app_id": 778750},
         )
         errno = data.get("errno")
         if errno in (0, 12, None):
             return
-        if errno == -6 or errno in (31041, 31042):
+        if errno == -8:
+            raise AdapterError(f"目录名非法：{path}")
+        if errno in (-6, 31041, 31042):
             raise CredentialExpired("百度 Cookie 已失效")
         if errno == -32:
             raise AdapterError("网盘空间不足")
