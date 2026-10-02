@@ -99,6 +99,7 @@ def _migrate_columns() -> None:
             ("pa_task_id", "INTEGER"),
             ("exclude_json", "TEXT DEFAULT '[]'"),
             ("exclude_md5_json", "TEXT DEFAULT '[]'"),
+            ("regex_pattern", "TEXT DEFAULT ''"),
         ],
     }
     with engine.connect() as conn:

@@ -216,3 +216,30 @@ def test_apply_exclusion_empty_lists_noop():
     kept, excluded = _apply_exclusion(files, set(), set())
     assert len(kept) == 2
     assert excluded == []
+
+
+def test_queue_regex_pattern_reaches_state():
+    """正则必须从入队参数落到任务状态（2026-10-03：引擎漏存致正则失效、PNG 全量入库）。"""
+    eng = _fresh_engine()
+    eng.enqueue({
+        "name": "R", "type": "baidu", "path": "/t",
+        "share_url": "https://pan.baidu.com/s/1abcdefghijklmnopqrstu",
+        "regex_pattern": r"^40\..*4k.*\.mp4$",
+    })
+    snap = eng.state_public()
+    mine = next(x for x in snap["tasks"] if x["name"] == "R")
+    assert mine["regexPattern"] == r"^40\..*4k.*\.mp4$"
+
+
+def test_queue_regex_pattern_survives_restore():
+    from app.queue.engine import QueueEngine
+
+    eng = _fresh_engine()
+    eng.enqueue({
+        "name": "R2", "type": "baidu", "path": "/t",
+        "share_url": "https://pan.baidu.com/s/1zyxwvutsrqponmlkjihgfe",
+        "regex_pattern": "4k",
+    })
+    eng2 = QueueEngine(start_workers=False)  # 重启恢复：从 queue_tasks 读回
+    row = next(x for x in eng2.state["tasks"] if x["name"] == "R2")
+    assert row["regexPattern"] == "4k"

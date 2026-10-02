@@ -42,6 +42,7 @@
 ### 2.3 服务端稳定性与缓存修复
 
 - **Windows 事件循环**：`run.py` 在 win32 下切 `WindowsSelectorEventLoopPolicy`——Proactor 循环偶发 `WinError 10022`（连接建立即断），是前端 vite 代理偶发 500 的根源；切换后连发请求不再抖。
+  ⚠️ **2026-10-03 勘误**：上面那条修复**实际从未生效**——uvicorn 0.36+ 在 win32 会用 loop_factory 直接造 `ProactorEventLoop`，`set_event_loop_policy` 对它无效。真修法是 `uvicorn.run(..., loop="none")`（不让 uvicorn 造循环，policy 才落得下去）。症状：手机端目录浏览弹窗每次打开都"目录加载失败，正在重试"（后端其实全部 200，连接在传输层被掐）。升级 uvicorn 后若再遇"后端日志 200 但前端重试"，先查循环类型。
 - **dircache 恢复失败静默吞掉（修复）**：`_ensure_restored` 原来先置 `_restored=True` 再恢复，DB 忙时恢复失败→整个进程生命周期无缓存→每次浏览真打百度→-7 风控。改为失败不置标记、下次重试。
 - **目录缓存键统一（修复）**：初始化浏览键 `p:/A罗` 与子层展开键 `/A罗` 对不上，同目录两份缓存互不命中，初始化永远 miss。统一为路径本身（真根键是 `0`，不冲突）。
 - `/files/list` 响应带 `cached` 标记（前端节流用，见 2.5）。

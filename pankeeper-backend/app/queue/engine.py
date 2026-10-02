@@ -63,6 +63,7 @@ class QueueEngine:
                 row.pa_task_id = t.get("paTaskId")
                 row.exclude_json = json.dumps(t.get("excludeNames") or [], ensure_ascii=False)
                 row.exclude_md5_json = json.dumps(t.get("excludeMd5s") or [], ensure_ascii=False)
+                row.regex_pattern = t.get("regexPattern") or ""
             s.commit()
 
     def restore(self) -> None:
@@ -92,6 +93,7 @@ class QueueEngine:
                         "paTaskId": r.pa_task_id,
                         "excludeNames": json.loads(r.exclude_json or "[]"),
                         "excludeMd5s": json.loads(getattr(r, "exclude_md5_json", "") or "[]"),
+                        "regexPattern": getattr(r, "regex_pattern", "") or "",
                     }
                 )
                 self.state["seq"] = max(self.state["seq"], r.id)
@@ -162,6 +164,11 @@ class QueueEngine:
                 # 自动任务链路：指定账号 / 来源 PaTask / 排除清单
                 "accId": item.get("acc_id"),
                 "paTaskId": item.get("pa_task_id"),
+                "enabled": bool(item.get("enabled", True)),
+                # ⚠️ 正则必须在这里落到任务状态上——2026-10-03 实锤：调度器一直传着
+                # regex_pattern，引擎却从没存过，run_auto 读到的永远是空 → 正则形同虚设，
+                # PNG 之类全量入库。改这里时同步检查 _persist / restore 两处持久化。
+                "regexPattern": (item.get("regex_pattern") or item.get("regexPattern") or ""),
                 "excludeNames": list(item.get("exclude_names") or []),
                 "excludeMd5s": list(item.get("exclude_md5s") or []),
                 "comparePath": item.get("compare_path") or "",
