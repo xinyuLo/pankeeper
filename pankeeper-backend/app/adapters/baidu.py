@@ -630,6 +630,7 @@ class BaiduClient(CloudAdapter):
         for f in save_list:
             if f.md5 and f.md5 in md5s:
                 result.skip += 1
+                result.skip_md5 += 1
             elif (f.target_name or f.name) in existing or f.name in existing:
                 result.skip += 1
             else:

@@ -1,96 +1,118 @@
-# PanKeeper 工作交接（2026-10-01）
+# PanKeeper 工作交接（2026-10-03 更新）
 
-> 交接范围：本地开发环境（Windows，`D:\zcodeWork\pankeeper\pankeeper`）当前全部改动。
-> 上一笔已推送提交：`3fd4506`（全树预热参数修复）。本文档之后的提交包含本文件所述全部内容。
+> 交接范围：本地开发环境（Windows，`D:\zcodeWork\pankeeper\pankeeper`）+ NAS 部署（192.168.2.77）。  
+> 本文档上一版为 2026-10-02，本次重写。以下内容全部为**实测结论**，非推测。
 
-## 1. 本地环境（重要）
+## 0. 一句话状态
+
+百度定时转存（正则过滤 + 排除清单 + 统计 + 转存日志）功能补齐并**实跑验证**（兰香如故任务 106 文件全链路成功）；  
+分享清单缓存（独立于目录缓存）、转存记录详情、cron 选择器、移动端适配全面翻新。本地与 NAS 代码以本次提交为准。
+
+## 1. 环境与部署拓扑（不变项速查）
 
 | 项 | 值 |
 | --- | --- |
-| 仓库根 | `D:\zcodeWork\pankeeper\pankeeper`（git 已初始化，remote = Gitea `xinyu/pankeeper`） |
-| 后端 | `pankeeper-backend/`，venv 在 `.venv/`，`run.py --port 8000`，数据在 `data/pankeeper.db`（WAL） |
-| 前端 | `pankeeper-vue3/`，`npm run dev` → :5173，`/api` 代理到 127.0.0.1:8000；`VITE_USE_MOCK=false` |
-| Gitea | `http://192.168.2.77:8029`，账号 xinyu；NAS SSH 同机 10000 端口 |
-| Node/Git | 本机原无 Node/Git，已装 Node 24（`C:\Program Files\nodejs`）和 Git 2.55（`C:\Program Files\Git\bin`）；Git Bash 下 `/PID` 会被转义，杀进程用 PowerShell `Stop-Process` |
-| 数据来源 | 本地库是从 **NAS 容器（pankeeper，端口 8031）拷回的快照**（db + jwt.key/cred.key）。本地登录密码 = NAS 那套；**本地与 NAS 是两份独立数据，本地改动不会同步回 NAS** |
+| 本地仓库 | `D:\zcodeWork\pankeeper\pankeeper`（remote = 自建 Gitea `xinyu/pankeeper`） |
+| 后端 | `pankeeper-backend/`，venv `.venv/`，`run.py --port 8000`，数据 `data/pankeeper.db`（SQLite + WAL） |
+| 前端 | `pankeeper-vue3/`，`npm run dev` → :5173（5173 常驻一个上个会话的 vite，vite 按需读源码，改动自动生效） |
+| Gitea | `http://192.168.2.77:8029`，账号 xinyu |
+| NAS SSH | `192.168.2.77:10000`，账号 xinyu（paramiko 脚本在 `.tools/nas_deploy.py`，密码在脚本里） |
+| NAS 源码 | `/vol2/1001/disk2/workspace/pankeeper-deploy`（git clone 自 Gitea） |
+| NAS compose | `/vol1/1001/compose/pankeeper/docker-compose.yml`，容器 `pankeeper`，`8031 → 8000` |
+| GitHub 代理 | `192.168.2.77:7890`（clash 在 NAS 上），git clone/curl 走 `-x http://192.168.2.77:7890` |
 
-⚠️ 坑：PowerShell 批量改文件会把 UTF-8 中文文件写花（本次事故已从 Gitea 恢复），批量改文件一律用 Edit 工具或 Python。
+## 2. 本次完成的内容（2026-10-02 晚 ~ 10-03）
 
-## 2. 本次完成的功能（后端）
+### 2.1 百度定时任务功能补齐（对标 bdsavePro，源码 `github.com/xinyuLo/bdsavepro`，克隆在 `.tools/bdsavepro-full`）
 
-### 2.1 自动转存 cron 调度（M3 收尾）
-- `app/services/pa_scheduler.py`：每个启用 cron 的 PaTask 一个 APScheduler job；增删改/启停自动重排。
-- 到点只做「校验 + 输入侧去重（同分享链接在队即跳过）+ 入队（source=auto）」，转存全走队列引擎。
-- 完成/失败由引擎回写 `last_status` + `RunHistory`；分享失效写 `ban_reason` 熔断，更新链接自动恢复。
-- 新接口：`POST /api/pa/tasks/{id}/run`（立即运行）、`GET /api/pa/next-runs`。
+- **正则过滤接进转存链路**（重大修复）：此前 `regex_pattern` 只存不用——调度器和转存流程都没读它，兰香如故的 `4k.mp4` 正则形同虚设，实跑 106 个文件全转。现在两处入队（cron + 立即执行）都带正则，auto 流程拿到清单后按文件名过滤（目录条目保留维持结构），日志记录“正则过滤：命中 X / 未命中 Y”，正则非法降级为不过滤并告警。
+- **RunHistory 扩容**（自动迁移加列）：skip_md5（跳过里 MD5 命中数，baidu 去重循环单独计数）、total_share（分享文件总数）、regex_miss、duration（秒）、message、transferred_json/excluded_json（本次转存/排除的文件名清单）。
+- **转存日志弹窗**（`RunHistoryModal.vue`，bdsavePro 同款）：任务行新增第 6 个图标「转存日志」📄；卡片列表（成功/失败 tag + 秒级起止时间 + 五枚统计 chips + 转存路径 + 消息），「详情」第二层弹窗：执行信息（起止/耗时/结果/路径/正则/包含子目录）→ 五格统计块 → 排除文件/本次转存清单 → LogBox 完整日志。
+- **排除清单接真数据**（原 mock）：候选文件来自分享清单缓存（带“无 MD5”标注 + 一键勾选），打开时已保存排除项自动勾上，确定走新接口 `POST /pa/tasks/{id}/exclude` 回写 `exclude_json`（适配器按 basename 排除，链路本已通）。30 分钟 TTL 定时刷新随 mock 撤销。
+- **查看分享内容修复 + 缓存**：树为空的根因是**树构建时无斜杠的顶层条目 `rsplit` 后 parent 算成了自己**，顶层节点全被吞（实测 total=106 tree=0）；标题栏加「刷新」按钮 + 缓存获取时间显示。
 
-### 2.2 百度 adapter 完整转存链路（踩坑最多，已实测通过）
-坑与修法（详见 `app/adapters/baidu.py` 注释）：
-1. **提取码**：pwd 在链接 `?pwd=` 里也必须先 `POST /share/verify` 拿 BDCLND，否则抓到验证页；
-2. **BDCLND Cookie 重复**：百度对 BDCLND 下发两份（domain 差异），httpx 照收 → 请求头重复 → 百度仍按未验证处理。修法：拿到 `randsk` 后**清空 jar 重建**（基础 cookie + 单份 BDCLND）；
-3. **两套短码**：页面地址 `/s/<slug>` 用**全长**（含前导 1，23 位）；verify 的 surl 参数用**剥前导 1 的 22 位码**。`parse_share_url` 返回全长，`_verify_surl()` 负责剥；
-4. 错误分流：死链(-7/-8/-9/115/145)→ShareBanned 熔断；-6→CredentialExpired；-65 转存频率限制→等 10s 整组重试；fsidlist ≤500/组。
+### 2.2 分享清单缓存（独立逻辑，刻意不与目录缓存共用）
 
-### 2.3 115 adapter（webapi 路线，不引 p115client）
-- `app/adapters/pan115.py`：share/snap 翻页到 count（文件夹优先取 fid 整目录接收）→ 文件名去重（compare_path 可配）→ files/add 建目录 → share/receive 整组接收（「文件已接收，无需重复接收」判幂等成功）。
-- 风控：微信小程序 UA；**验证码=已被风控，停下报警不硬闯**；≥1s 串行门；406 退避。
-- ⚠️ 未拿真实 115 账号端到端验证过（本机没绑 115 账号）。
+新文件 `app/services/share_cache.py` + 新表 `share_list_cache`（键 = type+链接+提取码）：
 
-### 2.4 缓存持久化（+开关）
-- 目录树缓存**写穿** SQLite 新表 `dir_tree_cache`（type+acc+cid 主键），重启**懒恢复**（只恢复未过期条目，零网盘请求）；清除/逐出同步删库。
-- 开关在缓存配置页「目录树缓存」旁「持久化」小开关（`cache_cfg.persist`，默认开）。
-- 缓存条目新增 `cachedAt`（写入时间），配合缓存配置页新增「缓存时间」「距下次缓存」两列（倒计时药丸，<1h 转橙）。
+- **刷新由转存驱动，无 TTL**：自动转存每跑一次，`run_auto` 拿清单后顺手把 payload 写入缓存（转存用的那份就是缓存那份）；两次转存之间「查看」「排除」全部命中秒开。
+- 持久化写穿 SQLite，重启恢复；恢复失败**不置标记**、下次访问重试（同 dircache 修复，见 §3.3）。
+- dircache（目录浏览缓存）一行未动。
 
-## 3. 本次完成的功能（前端）
+### 2.3 服务端稳定性与缓存修复
 
-### 3.1 目录树语义拆分（最重要的设计变更，别再改回去）
-两个概念彻底分开：
-1. **默认根目录**（网盘连接页配置，存 `settings.root_cfg`，按网盘类型）= **所有目录树弹窗的固定浏览起点**：
-   - 搜索转存→转存弹窗的「我的网盘」树；
-   - 转存配置→新增/编辑的目录树；
-   - 自动转存→任务弹窗的转存/对比树。
-   实现链：`GET/PUT /api/accounts/root-dirs` → 前端 `LazyDirTree` 的 `root-path` 属性（锁根）。
-2. **转存配置 is_default** = 快速转存下拉的第一项/排序，与树根**无关**。
+- **Windows 事件循环**：`run.py` 在 win32 下切 `WindowsSelectorEventLoopPolicy`——Proactor 循环偶发 `WinError 10022`（连接建立即断），是前端 vite 代理偶发 500 的根源；切换后连发请求不再抖。
+- **dircache 恢复失败静默吞掉（修复）**：`_ensure_restored` 原来先置 `_restored=True` 再恢复，DB 忙时恢复失败→整个进程生命周期无缓存→每次浏览真打百度→-7 风控。改为失败不置标记、下次重试。
+- **目录缓存键统一（修复）**：初始化浏览键 `p:/A罗` 与子层展开键 `/A罗` 对不上，同目录两份缓存互不命中，初始化永远 miss。统一为路径本身（真根键是 `0`，不冲突）。
+- `/files/list` 响应带 `cached` 标记（前端节流用，见 2.5）。
 
-配套行为：
-- 编辑条目时弹窗自动展开定位到该条目路径（`initial-path`）；
-- **新增时不预选**任何目录（必须自己点）；
-- 网盘连接页的默认根目录配置弹窗本身从真根浏览（配置入口不能被锁）；
-- 锁定目录在网盘侧不存在→自动回退真根，不白屏。
+### 2.4 前端大改
 
-### 3.2 LazyDirTree 组件（`src/components/LazyDirTree.vue`）
-- 选中态收在根实例统一维护（递归子层沿 props 透传）——修「点选后整条链高亮」bug；子层选中先回写根再转发；
-- 树容器限高 `min(55vh, 480px)` 内部滚动（防底部按钮被顶出屏幕），所有用它的弹窗一起生效；
-- `reload()` 在锁根模式下整树重走。
+- **PkPager 分页组件重写**（搜索/记录/转存配置/自动转存四页共用）：桌面幽灵页码右对齐（总数左、页码+每页+跳页贴右缘），手机一行式 `‹ 2/6 › + 共 N 条 + 每页`；转存配置与自动转存表格加内存分页（每页 20）。
+- **搜索页**：统计卡常驻不随 tab 重排（点卡只挪高亮）；选中态改**淡紫描边**（#a78bfa 1.5px + 淡紫底）；耗时卡撤掉（PC 进“已检索 N 条 · 耗时”，手机进频道行右缘）；引擎状态胶囊三重防抖（缓存基调 + 探测失败不打翻缓存 + 请求挂掉不卡“检测中”）；频道行手机两行式（数量摘要 + 引擎状态独占一行）。
+- **任务弹窗（TaskModal）**：「完成后动作」整行撤掉（触发 QMS = 上面 QMS 联动开关唯一控制点；Server 酱推送走「推送通知」全局开关，后端只推启用中的任务）；「转存文件夹下钻」功能暂撤（界面不露，已有任务的 drill 配置保存不丢）；**cron 选择器**（`CronPicker.vue`：每天/每周/每小时/每 N 分钟/自定义页签，antd 组件，实时人话预览，已有表达式反解析）；QMS 目录改为点开联动时才拉（loading + 重试）；解析/浏览按钮改无边框淡蓝 chip。
+- **目录选择弹窗**：新建 `AutoDirModal.vue`（antd 外壳 + 共享 LazyDirTree 内核，根锁定默认根目录），任务弹窗专用；原 `DirModal.vue` 已原样恢复未动。**教训：不要跨页借样式类**（.bd-* 是页面私有，自动转存页没加载就是裸奔）。
+- **记录页**：详情抽屉（完成后动作显示 QMS/STRM 实际结果 + 最近结果加文件清单详情弹窗 + 手机抽屉 100% 宽）；分享失败长文案 tag 限宽省略；操作列「详情 丨 删除」文字链样式（删除红字二次确认）。
+- **LazyDirTree**：列目录统一入口 `fetchDir`（风控节流 + 2s×3 重试 + loading 状态文案“正在重试 N 次…”）；后端 `cached` 标记驱动节流（命中缓存不等待，真打网盘才 600ms 冷却）；默认不自动下钻（从默认根目录开始，手动逐层懒加载）。
+- 自动转存表头定宽、dashboard 问候语、账号页等零散适配。
 
-### 3.3 其他 UI 修复/打磨
-- 转存记录/任务弹窗 QMS 下拉：真数据 media_type 已是中文，不再显示 undefined；原生 select 换 a-select；
-- 任务弹窗「解析」按钮接真接口 `POST /api/pa/parse-share`（空链接提示、失效报真实原因），原来假 toast「共 36 个文件」已删；
-- 搜索结果表 `table-layout: fixed`：长名称省略号 + title 悬停全文，操作按钮不再被挤没；
-- 缓存配置页倒计时药丸美化；PWA 图标改全出血渐变 + iOS 风圆角（重装 PWA 才会刷新桌面图标）；
-- 网盘连接卡片：别名行删除，卡片头显示「网盘用户名/别名」，右侧「别名」小胶囊按钮开修改框；
-- 搜索检索中动画：能量环 + 卫星点 + 放大镜呼吸（纯 CSS/SVG），替换骨架屏。
+### 2.5 数据与记录
 
-## 4. 已修复的后端 bug（顺手清单）
-- 全树预热 `_load_dir_payload` 少传 `path`（添加网盘报「缓存失败」）；
-- `/api/files/list` 路径解析模式（parent=0+path）缓存键没带路径 → 命中真根缓存返回错数据；
-- 测试：33 个全过（`test_m3.py`、`test_dircache.py` 已扩充）。
+- 转存记录详情弹窗：`Record.files_json`（分享内文件清单快照，`/records` 直出），“完成后动作”显示 QMS/STRM 实际结果。
+- 115 适配器 `transferred` 补文件名（原先空串，media_push 推送名单受益）。
+- **NAS baidu-autosave 任务已迁移**：兰香如故（baidu，cron 0 20 * * *，正则 4k，排除 5 项，compare_path 灿如繁星 S1）→ PaTask id=1，调度已注册。
 
-## 5. 待办 / 下一步
+## 3. 关键定论（别忘，别再改回去）
 
-1. **端到端验证**：百度真实转存（搜索→快速转存→队列→记录）只差临门一脚——解析已通，转存动作请实测一次；115 同理（需先绑账号）；
-2. **NAS 部署更新**：NAS 容器还在跑旧代码，`docker compose up -d --build` 前先看本文档 §3.1 的语义变更（NAS 数据里 root_cfg 为空，部署后需在网盘连接页重新配置一次默认根目录）；
-3. M4 剩余：Server 酱推送时机打磨、记录清理/重试细化、搜索历史页；
-4. 排除清单（exclude_json）当前按文件名匹配，前端排除弹窗仍是 mock 数据（`fetchExclFiles`），接真数据时要转成 `/api/pa/tasks/{id}/share-files` 已有接口。
+### 3.1 风控与缓存纪律
 
-## 6. 快速自检命令
+1. **百度对密集列目录回 -7/-9（可重试抖动）**：前端所有列目录走 `fetchDir`（600ms 节流 + 2s×3 重试）；后端有目录缓存 + 分享清单缓存，能命中就不打百度。
+2. **分享树构建**：无斜杠路径的 parent 必须用哨兵，`rsplit` 会自吞（转存配置页的浏览、记录页清单都踩过同款）。
+3. **缓存恢复失败不能置“已恢复”标记**——否则进程终身无缓存，全部真打网盘。
+4. **缓存键必须全局一致**：同一目录在“初始化/子层/预热”三条路径里的键不同 = 三份缓存互不命中。
+
+### 3.2 前端纪律
+
+5. `-webkit-line-clamp` 必须配 `overflow: hidden`，漏了会一字一行竖着溢出（记录页实拍）。
+6. **跨页面借样式类不行**：页面私有的 scoped/unscoped 样式只有该路由加载过才存在。
+7. scoped `<style>` 里 media query 的大括号配对要人工复核（嵌套闭合错会整段漏到全局，PC 端直接坏）。
+8. Git Bash 会把 `/中文路径` 参数 MSYS 转换成 `C:/Program Files/Git/...`——curl 测接口要么加 `MSYS_NO_PATHCONV=1`，要么用 python requests，**否则制造假 -7 冤案**。
+9. `taskkill`/TaskStop 杀后台任务要按端口找 PID 再连父进程一起杀——shell 杀了 python 子进程会活着重占 8000，新代码永远上不去。
+
+### 3.3 后端纪律
+
+10. `run.py` 的 Selector 事件循环只对 uvicorn 主进程生效，改完必须真重启（旧进程常驻会让人以为没生效）。
+11. 后端无 `--reload`，改 py 必须重启；重启后用 `python requests`（不是 curl）验证，绕开坑 8。
+
+## 4. 当前系统状态
+
+| 项 | 状态 |
+| --- | --- |
+| 本地 | 后端 :8000（Selector 循环）✅、前端 :5173 ✅、测试 33 passed |
+| Gitea | 本次提交（见 git log），NAS 从同一提交部署 |
+| NAS | pankeeper 容器 = 本提交；兰香如故任务 cron 0 20 * * * 生效 |
+| 分享清单缓存 | `share_list_cache` 表，兰香如故 106 文件已缓存（30h 内有效语义见 §2.2） |
+| 已知待办 | 正则过滤后文件清单未单独落库（详情用 转存+排除 近似）；排除粒度按文件名（无 MD5 对比）；下钻功能待回填 UI |
+
+## 5. 快速自检 / 部署命令
 
 ```bash
 # 后端测试
 cd pankeeper-backend && .venv/Scripts/python -m pytest tests/ -q
-# 前端类型检查
-cd pankeeper-vue3 && npm run typecheck
-# 冒烟：解析分享（真实链接）
-curl -X POST http://127.0.0.1:8000/api/pa/parse-share -H "Content-Type: application/json" \
-  -d '{"type":"baidu","share_url":"<分享链接>?pwd=<提取码>"}'
+
+# 本地起服务
+cd pankeeper-backend && .venv/Scripts/python run.py --port 8000
+cd pankeeper-vue3   && npm run dev
+
+# 提交推送（PortableGit 走 http 会卡死，必须用系统 Git）
+"C:/Program Files/Git/cmd/git.exe" -c http.version=HTTP/1.1 push origin main
+
+# NAS 更新（一条龙）
+ssh NAS "cd /vol2/1001/disk2/workspace/pankeeper-deploy && git pull --ff-only origin main"
+ssh NAS "cd /vol1/1001/compose/pankeeper && nohup docker compose build > /tmp/pkbuild.log 2>&1 & disown"
+ssh NAS "tail -3 /tmp/pkbuild.log"   # 轮询
+ssh NAS "cd /vol1/1001/compose/pankeeper && docker compose up -d && sleep 5 && curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8031/"
+
+# 容器代码新鲜度核验（光看容器 Up 不算数）
+docker exec pankeeper grep -c <本次改动特征串> /app/app/xxx.py
 ```

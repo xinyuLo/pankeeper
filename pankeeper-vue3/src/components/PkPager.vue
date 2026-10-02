@@ -1,7 +1,10 @@
 <script setup lang="ts">
-/* 分页条 —— 原型 .pager 结构的组件化：总条数在左、页码居中、每页条数+跳页在右，
- * 页码超过窗口宽度出省略号。搜索页 / 转存记录页共用，保证长得一模一样。 */
+/* 分页条 —— 搜索页 / 转存记录页共用。
+ * 桌面：左侧总数、中间幽灵页码（当前页实心胶囊）、右侧每页条数 + 跳页；
+ * 手机（<768px）：一行式 「‹ 2/6 ›  +  共 N 条  +  每页 N」，页码列表和跳页收起
+ * （窄屏排几十个页码按钮必然换行错乱，翻页箭头 + 页码指示够用）。 */
 import { computed, ref, watch } from 'vue'
+import { useIsMobile } from '@/composables/useIsMobile'
 
 const props = withDefaults(
   defineProps<{
@@ -18,6 +21,7 @@ const emit = defineEmits<{
   (e: 'update:pageSize', v: number): void
 }>()
 
+const isMobile = useIsMobile()
 const jumpInput = ref('')
 
 const totalPages = computed(() => Math.max(1, Math.ceil(props.total / props.pageSize)))
@@ -65,25 +69,220 @@ function fmtRange(): string {
 
 <template>
   <div class="pager" v-if="total > 0">
-    <span class="pg-total">共 <b>{{ total }}</b> 条 · {{ fmtRange() }}</span>
+    <!-- 手机一行式：‹ n/m › 在左，总数与每页条数靠右 -->
+    <template v-if="isMobile">
+      <div class="pg-nav">
+        <button class="pg-arrow" :disabled="current <= 1" aria-label="上一页" @click="goPage(current - 1)">‹</button>
+        <span class="pg-indicator">{{ current }}<i>/</i>{{ totalPages }}</span>
+        <button class="pg-arrow" :disabled="current >= totalPages" aria-label="下一页" @click="goPage(current + 1)">›</button>
+      </div>
+      <div class="pg-meta">
+        <span class="pg-total">共 {{ total }} 条</span>
+        <label class="pg-size">
+          <select :value="pageSize" @change="emit('update:pageSize', parseInt(($event.target as HTMLSelectElement).value, 10))">
+            <option v-for="s in pageSizes" :key="s" :value="s">{{ s }} 条/页</option>
+          </select>
+        </label>
+      </div>
+    </template>
 
-    <div class="pg-list">
-      <button class="pg-it" :disabled="current <= 1" @click="goPage(current - 1)">上一页</button>
-      <template v-for="(p, i) in pages" :key="i">
-        <span v-if="p === 'gap'" class="pg-gap">…</span>
-        <button v-else class="pg-it" :class="{ on: p === current }" @click="goPage(p)">{{ p }}</button>
-      </template>
-      <button class="pg-it" :disabled="current >= totalPages" @click="goPage(current + 1)">下一页</button>
-    </div>
+    <!-- 桌面三段式：总数 · 页码 · 每页条数 + 跳页 -->
+    <template v-else>
+      <span class="pg-total">共 <b>{{ total }}</b> 条 · {{ fmtRange() }}</span>
 
-    <div class="pg-size">
-      每页
-      <select :value="pageSize" @change="emit('update:pageSize', parseInt(($event.target as HTMLSelectElement).value, 10))">
-        <option v-for="s in pageSizes" :key="s" :value="s">{{ s }}</option>
-      </select>
-    </div>
-    <div class="pg-jump">
-      跳至 <input v-model="jumpInput" @keydown.enter="doJump" /> 页
-    </div>
+      <div class="pg-list">
+        <button class="pg-arrow" :disabled="current <= 1" aria-label="上一页" @click="goPage(current - 1)">‹</button>
+        <template v-for="(p, i) in pages" :key="i">
+          <span v-if="p === 'gap'" class="pg-gap">…</span>
+          <button v-else class="pg-it" :class="{ on: p === current }" @click="goPage(p)">{{ p }}</button>
+        </template>
+        <button class="pg-arrow" :disabled="current >= totalPages" aria-label="下一页" @click="goPage(current + 1)">›</button>
+      </div>
+
+      <div class="pg-size">
+        每页
+        <select :value="pageSize" @change="emit('update:pageSize', parseInt(($event.target as HTMLSelectElement).value, 10))">
+          <option v-for="s in pageSizes" :key="s" :value="s">{{ s }}</option>
+        </select>
+      </div>
+      <div class="pg-jump">
+        跳至 <input v-model="jumpInput" @keydown.enter="doJump" /> 页
+      </div>
+    </template>
   </div>
 </template>
+
+<style scoped>
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--split);
+  font-size: 13px;
+  color: var(--text2);
+  background: var(--card);
+}
+
+/* 页码 / 箭头共用的幽灵按钮：无边框，悬浮浅底，避免一排描边盒子的廉价感 */
+.pg-it,
+.pg-arrow {
+  min-width: 30px;
+  height: 30px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text2);
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  font-family: inherit;
+}
+.pg-arrow {
+  font-size: 17px;
+  line-height: 1;
+  padding: 0 4px;
+  color: var(--text3);
+}
+.pg-it:hover:not(:disabled):not(.on),
+.pg-arrow:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--primary-h);
+}
+.pg-it.on {
+  background: var(--primary);
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 2px 6px rgb(22 119 255 / 0.28);
+}
+.pg-it:disabled,
+.pg-arrow:disabled {
+  color: var(--text4);
+  cursor: not-allowed;
+}
+.pg-gap {
+  min-width: 22px;
+  text-align: center;
+  color: var(--text4);
+  user-select: none;
+}
+
+.pager .pg-total {
+  flex: 0 0 auto;
+  color: var(--text3);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.pager .pg-total b {
+  color: var(--text);
+  font-weight: 600;
+}
+.pg-list {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto; /* 页码靠右：总数在左，页码+每页+跳页一串贴右缘 */
+}
+.pager .pg-size {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 14px;
+  color: var(--text3);
+  font-size: 12.5px;
+}
+.pager .pg-jump {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text3);
+  font-size: 12.5px;
+}
+.pager .pg-jump input {
+  width: 48px;
+  height: 30px;
+  text-align: center;
+  font-size: 13px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  padding: 0 4px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.pager .pg-jump input:focus {
+  border-color: var(--primary);
+}
+.pager select {
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text2);
+  font-size: 12.5px;
+  padding: 0 4px;
+  outline: none;
+  cursor: pointer;
+}
+
+/* ---- 手机（<768px）：一行式分页 ---- */
+@media (max-width: 767px) {
+  .pager {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 14px calc(10px + var(--sab));
+  }
+  .pg-nav {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+  .pg-arrow {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    border-radius: 10px;
+    font-size: 20px;
+  }
+  .pg-arrow:active:not(:disabled) {
+    background: var(--surface-3);
+  }
+  .pg-indicator {
+    min-width: 52px;
+    text-align: center;
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+  .pg-indicator i {
+    font-style: normal;
+    color: var(--text4);
+    margin: 0 3px;
+    font-weight: 400;
+  }
+  .pg-meta {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+  }
+  .pager .pg-total {
+    font-size: 12px;
+  }
+  .pager .pg-size {
+    margin-left: 0;
+  }
+  .pager select {
+    height: 32px;
+    max-width: 96px;
+  }
+}
+</style>

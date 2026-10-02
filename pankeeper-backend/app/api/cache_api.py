@@ -91,13 +91,19 @@ def list_files(type: str = "quark", parent: str = "0", path: str = "", force_ref
     acc_id 空 = 该类型默认账号（缓存键记作 "main"）；指定账号则键里带账号 id，
     同一网盘不同账号的目录缓存互不串。"""
     acc_key = str(acc_id) if acc_id else "main"
-    # 路径解析模式（parent='0' 且带 path）：键里必须带路径，否则会命中真根的缓存
-    key_id = ("p:" + path) if (path and parent in ("0", "")) else parent
-    return dir_cache.get_or_load(
+    # 键统一用目录本身：path 解析模式（parent='0' 带 path）与子层展开（parent=目录路径）
+    # 必须落在同一个键上——百度就用路径当目录标识，真根的键是 "0"，不会撞。
+    # 之前用 "p:"+path 当键，初始化浏览与子层展开互不命中，同一目录缓存了两份还各自 miss。
+    key_id = path if (path and parent in ("0", "")) else parent
+    flag: dict = {}
+    items = dir_cache.get_or_load(
         (type, acc_key, key_id),
         lambda: _load_dir_payload(type, acc_id, parent, path),
         force=force_refresh,
+        flag=flag,
     )
+    # cached=False = 这层真打了网盘（前端据此决定下一次列目录前是否要风控节流）
+    return {"cached": bool(flag.get("cached")), "items": items}
 
 
 def _load_dir_payload(type: str, acc_id: int | None, parent: str, path: str):

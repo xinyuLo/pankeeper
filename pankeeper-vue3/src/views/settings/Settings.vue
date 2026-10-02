@@ -510,7 +510,6 @@ async function onRemoveAvatar() {
               <img v-if="auth.avatar" :src="auth.avatar" alt="头像" />
               <span v-else>{{ auth.initial }}</span>
             </div>
-            <div class="desc">没上传时显示用户名首字；上传后左下角那张小图会同步换掉。</div>
           </div>
         </div>
         <div class="formrow">

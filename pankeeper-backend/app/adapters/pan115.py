@@ -296,14 +296,14 @@ class Pan115Adapter(CloudAdapter):
             cid = target_cid
             if rel:
                 cid = self.ensure_dir(spec.save_dir.rstrip("/") + "/" + rel)
-            self._receive_group(ctx, [f.fid for f in group], cid, result, on_log)
+            self._receive_group(ctx, group, cid, result, on_log)
             done += len(group)
             on_progress(min(99, int(done / total * 100)))
         on_progress(100)
         return result
 
-    def _receive_group(self, ctx: dict, fids: list[str], cid: str, result: TransferResult, on_log) -> None:
-        if not fids:
+    def _receive_group(self, ctx: dict, files: list[ShareFile], cid: str, result: TransferResult, on_log) -> None:
+        if not files:
             return
         body = self._post(
             "https://webapi.115.com/share/receive",
@@ -311,17 +311,17 @@ class Pan115Adapter(CloudAdapter):
                 "user_id": self.uid(),
                 "share_code": ctx["share_code"],
                 "receive_code": ctx["receive_code"],
-                "file_id": ",".join(fids),
+                "file_id": ",".join(f.fid for f in files),
                 "cid": cid,
             },
         )
         if self._check_state(body, "转存", already_ok=True):
             on_log("全部文件此前已接收过，无需重复接收（计为跳过）")
-            result.skip += len(fids)
+            result.skip += len(files)
             return
-        result.add += len(fids)
-        for fid in fids:
-            result.transferred.append({"name": "", "fid": fid})
+        result.add += len(files)
+        for f in files:
+            result.transferred.append({"name": f.target_name or f.name, "fid": f.fid})
 
     def summary(self) -> dict:
         return {}

@@ -25,6 +25,35 @@ def _push_log(t: dict, lv: str, txt: str) -> None:
         t["logs"].pop(0)
 
 
+def _files_snap(files, spec, result) -> list:
+    """分享内文件清单快照（记录详情「最近结果 → 详情」弹窗用）。
+    done 记录里非新增的文件只有两种去向：去重跳过 / 未勾选；
+    fail 记录没有逐文件结果，统一「未转存」。目录条目不进表。"""
+    ok_names = {e.get("name") for e in (result.transferred if result else [])}
+
+    def kept(rel: str) -> bool:
+        for sel in spec.only_paths or set():
+            sel = sel.strip("/")
+            if sel and (rel == sel or rel.startswith(sel + "/")):
+                return True
+        return False
+
+    out = []
+    for f in files:
+        if f.is_dir:
+            continue
+        if result is not None and (f.name in ok_names or (f.target_name or f.name) in ok_names):
+            st = "已转存"
+        elif result is not None and spec.only_paths and not kept(f.path):
+            st = "未勾选"
+        elif result is not None:
+            st = "已在库跳过"
+        else:
+            st = "未转存"
+        out.append({"path": f.path, "name": f.name, "size": f.size, "st": st})
+    return out
+
+
 def run_manual(eng, t: dict, cfg: dict) -> None:
     """手动任务全流程：解析 → 转存 → QMS/STRM 联动 → 记录快照。"""
     name_head = t["name"].split(".")[0]
@@ -50,6 +79,7 @@ def run_manual(eng, t: dict, cfg: dict) -> None:
         _finish(eng, t, "fail")
         return
 
+    files: list = []
     try:
         _push_log(t, "INFO", f"解析分享链接：{t['shareUrl'][:60]}")
         files = adapter.list_share(spec)
@@ -78,21 +108,21 @@ def run_manual(eng, t: dict, cfg: dict) -> None:
             _push_log(t, "INFO", f"按规则重命名 {result.renamed} 项")
     except ShareBanned as e:
         _push_log(t, "ERROR", f"分享已失效：{e}")
-        _finish(eng, t, "fail", f"分享失效：{e}")
+        _finish(eng, t, "fail", f"分享失效：{e}", files_snap=_files_snap(files, spec, None))
         return
     except CredentialExpired as e:
         _push_log(t, "ERROR", str(e))
         _mark_account_expired(t["type"], t.get("accId"))
-        _finish(eng, t, "fail", str(e))
+        _finish(eng, t, "fail", str(e), files_snap=_files_snap(files, spec, None))
         return
     except AdapterError as e:
         _push_log(t, "ERROR", f"转存失败：{e}")
-        _finish(eng, t, "fail", str(e))
+        _finish(eng, t, "fail", str(e), files_snap=_files_snap(files, spec, None))
         return
 
     # ---- 转存成功，走 QMS/STRM 联动（阶段机照前端契约，延迟可配） ----
     qms_snap, strm_snap = _media_chain(eng, t, cfg, result, name_head)
-    _finish(eng, t, "done", qms_snap=qms_snap, strm_snap=strm_snap, result=result)
+    _finish(eng, t, "done", qms_snap=qms_snap, strm_snap=strm_snap, result=result, files_snap=_files_snap(files, spec, result))
 
 
 def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict, dict]:
@@ -173,7 +203,7 @@ def _mark_account_expired(drive_type: str, acc_id: int | None = None) -> None:
         notify.push("凭据过期告警", f"{display} 凭据已失效，请到「网盘连接」重新绑定", kind="cred")
 
 
-def _finish(eng, t: dict, status: str, message: str = "", qms_snap: dict | None = None, strm_snap: dict | None = None, result=None) -> None:
+def _finish(eng, t: dict, status: str, message: str = "", qms_snap: dict | None = None, strm_snap: dict | None = None, result=None, files_snap: list | None = None) -> None:
     """收尾：更新任务状态 + 写记录快照。失败推送走 search 来源的开关（notify 内部分流）。"""
     now_ms = int(time.time() * 1000)
     with eng._lock:
@@ -200,6 +230,7 @@ def _finish(eng, t: dict, status: str, message: str = "", qms_snap: dict | None 
                 share_url=t.get("shareUrl", ""),
                 share_code=t.get("shareCode", ""),
                 logs_json=json.dumps(t["logs"], ensure_ascii=False),
+                files_json=json.dumps(files_snap or [], ensure_ascii=False),
             )
         )
         s.commit()

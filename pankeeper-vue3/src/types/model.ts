@@ -33,7 +33,8 @@ export interface PaTask {
   last_status: 'success' | 'fail' | 'running' | 'never'
   last_result: string
   post_qms: boolean
-  post_notify: boolean
+  /** Server 酱推送已改全局开关（推送通知页）控制，字段保留兼容旧记录 */
+  post_notify?: boolean
 }
 
 /** ===== 转存队列（docs/02 §2） ===== */
@@ -129,6 +130,16 @@ export interface RecordTag {
   cls: 't-ok' | 't-bad' | 't-off'
 }
 
+/** 转存文件清单快照（记录详情「最近结果 → 详情」弹窗；后端 files_json） */
+export interface RecordFileSnap {
+  /** 分享内相对路径 */
+  path: string
+  name: string
+  size: number
+  /** 已转存 | 已在库跳过 | 未勾选 | 未转存 */
+  st: string
+}
+
 export interface RecordItem {
   n: string
   t: DriveType
@@ -138,6 +149,7 @@ export interface RecordItem {
   tm: string
   qms: RecordTag
   strm: RecordTag
+  files?: RecordFileSnap[]
 }
 
 /** ===== 网盘连接（docs/02 §8：只回状态不回明文） ===== */

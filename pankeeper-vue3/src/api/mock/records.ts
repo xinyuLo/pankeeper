@@ -1,5 +1,5 @@
 import { reactive } from 'vue'
-import type { DriveType, QueueLogLine, RecordItem, RecordTag } from '@/types/model'
+import type { DriveType, QueueLogLine, RecordFileSnap, RecordItem, RecordTag } from '@/types/model'
 
 /**
  * 转存记录 mock —— 原型 _shell.html records 数组（4 手写 + 24 IIFE 生成）原样移植。
@@ -83,6 +83,25 @@ const GEN_OUTS: { st: string; cls: RecordItem['cls']; q: RecordTag; s: RecordTag
 function pad(v: number): string {
   return v < 10 ? '0' + v : '' + v
 }
+
+/** mock 文件清单快照：按结果文案的 n/m 拼一份像样的（真实数据来自后端 files_json） */
+function attachFiles(r: RecordRow): RecordRow {
+  const m = /(\d+)\s*\/\s*(\d+)/.exec(r.st)
+  const ok = m ? Number(m[1]) : 0
+  const total = m ? Number(m[2]) : 0
+  const skip = Math.min(2, total - ok)
+  const head = r.n.split('.')[0]
+  const files: RecordFileSnap[] = []
+  for (let i = 0; i < total; i++) {
+    files.push({
+      path: (i % 4 === 3 ? `花絮/${head}.E${pad(i + 1)}` : `${head}.E${pad(i + 1)}`) + '.2160p.WEB-DL.mkv',
+      name: `${head}.E${pad(i + 1)}.2160p.WEB-DL.mkv`,
+      size: Math.round((6 + (i % 7) * 3.3) * 1024 ** 3),
+      st: i < ok ? '已转存' : i < ok + skip ? '已在库跳过' : '未转存',
+    })
+  }
+  return { ...r, files }
+}
 function shareUrl(t: DriveType, i: number): string {
   const tail = (9214770 + i * 911).toString(36)
   if (t === 'baidu') return 'https://pan.baidu.com/s/1' + tail
@@ -129,7 +148,7 @@ export const recordsStore = reactive<{
   /** STRM 延迟触发进行中（原型 window.rcStrmPending 的对应物） */
   strmPending: boolean
 }>({
-  items: [...HANDWRITTEN, ...buildGenerated()],
+  items: [...HANDWRITTEN, ...buildGenerated()].map(attachFiles),
   seq: 100,
   trigLog: [],
   strmPending: false,

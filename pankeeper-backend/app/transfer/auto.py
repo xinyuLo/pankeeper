@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 
 from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, TaskSpec
@@ -15,6 +16,7 @@ from ..adapters.factory import make_adapter
 from ..db import SessionLocal
 from ..models import Account, DdItem, PaTask, Record, RunHistory
 from ..services import media_push, notify, qms
+from ..services.share_cache import build_payload, share_key, share_list_cache
 
 MAX_LOGS = 40
 
@@ -23,6 +25,36 @@ def _push_log(t: dict, lv: str, txt: str) -> None:
     t["logs"].append({"lv": lv, "txt": txt})
     if len(t["logs"]) > MAX_LOGS:
         t["logs"].pop(0)
+
+
+def _files_snap(files, spec, result) -> list:
+    """分享内文件清单快照（记录详情「最近结果 → 详情」弹窗用）。
+    done 记录里非新增的文件只有两种去向：去重跳过 / 未勾选；
+    fail 记录没有逐文件结果，统一「未转存」。目录条目不进表。
+    （与 manual.py 同款，两边刻意不共享。）"""
+    ok_names = {e.get("name") for e in (result.transferred if result else [])}
+
+    def kept(rel: str) -> bool:
+        for sel in spec.only_paths or set():
+            sel = sel.strip("/")
+            if sel and (rel == sel or rel.startswith(sel + "/")):
+                return True
+        return False
+
+    out = []
+    for f in files:
+        if f.is_dir:
+            continue
+        if result is not None and (f.name in ok_names or (f.target_name or f.name) in ok_names):
+            st = "已转存"
+        elif result is not None and spec.only_paths and not kept(f.path):
+            st = "未勾选"
+        elif result is not None:
+            st = "已在库跳过"
+        else:
+            st = "未转存"
+        out.append({"path": f.path, "name": f.name, "size": f.size, "st": st})
+    return out
 
 
 def run_auto(eng, t: dict, cfg: dict) -> None:
@@ -50,15 +82,49 @@ def run_auto(eng, t: dict, cfg: dict) -> None:
         _finish(eng, t, "fail")
         return
 
+    files: list = []
+    regex_miss = 0
+    excluded_names: list[str] = []
+    started_ts = time.time()
+    # 转存日志统计（RunHistory 写入用）：挂在任务 state 上，_sync_pa_task 收
+    t["_runStats"] = {"started_ts": started_ts, "regex_miss": 0, "excluded_names": []}
     try:
         _push_log(t, "INFO", f"解析分享链接：{t['shareUrl'][:60]}")
         files = adapter.list_share(spec)
         t["files"] = len(files)
+        # 分享清单缓存（独立于目录缓存）：转存每跑一次就刷新一次，查看/排除弹窗在两次运行之间命中缓存
+        try:
+            share_list_cache.put(share_key(t["type"], t["shareUrl"], t["shareCode"]), build_payload(files))
+        except Exception:  # noqa: BLE001 —— 缓存写失败不影响转存
+            pass
         if not files:
             # errno=0 但清单为空 = 典型死链。warn 收场：不推 Server 酱，记录页黄色「链接已失效」。
             _push_log(t, "WARN", "分享内容为空（0 个文件），链接可能已失效")
             _finish(eng, t, "warn", "链接已失效（分享内容为空）")
             return
+
+        # 正则过滤（bdsavePro 语义）：只转存文件名匹配的文件；目录条目保留以维持结构
+        pat = (t.get("regexPattern") or "").strip()
+        if pat and t["files"]:
+            try:
+                rex = re.compile(pat)
+                before = sum(1 for f in files if not f.is_dir)
+                files = [f for f in files if f.is_dir or rex.search(f.name)]
+                regex_miss = before - sum(1 for f in files if not f.is_dir)
+                t["_runStats"]["regex_miss"] = regex_miss
+                _push_log(t, "INFO", f"正则过滤：命中 {before - regex_miss} / 未命中 {regex_miss}")
+            except re.error as e:
+                _push_log(t, "WARN", f"正则表达式无效（{e}），本次不做过滤")
+
+        # 排除清单：按文件名剔除（记录被排除的文件名，转存日志用）
+        excl_set = set(t.get("excludeNames") or [])
+        if excl_set:
+            excluded_names = [f.name for f in files if not f.is_dir and f.name in excl_set]
+            t["_runStats"]["excluded_names"] = excluded_names
+            if excluded_names:
+                files = [f for f in files if f.is_dir or f.name not in excl_set]
+                _push_log(t, "INFO", f"排除清单：跳过 {len(excluded_names)} 个文件")
+
         total_size = sum(f.size for f in files)
         _push_log(t, "INFO", f"获取分享内文件清单，共 {len(files)} 项（{total_size / 1024**3:.1f} GB）")
         _push_log(t, "STEP", f"开始转存：{name_head} …")
@@ -77,21 +143,21 @@ def run_auto(eng, t: dict, cfg: dict) -> None:
     except ShareBanned as e:
         _push_log(t, "ERROR", f"分享已失效：{e}（已熔断，调度器不再入队该链接）")
         _mark_pa_banned(t, str(e))
-        _finish(eng, t, "fail", f"分享失效：{e}")
+        _finish(eng, t, "fail", f"分享失效：{e}", files_snap=_files_snap(files, spec, None))
         return
     except CredentialExpired as e:
         _push_log(t, "ERROR", str(e))
         _mark_account_expired(t["type"], t.get("accId"))
-        _finish(eng, t, "fail", str(e))
+        _finish(eng, t, "fail", str(e), files_snap=_files_snap(files, spec, None))
         return
     except AdapterError as e:
         _push_log(t, "ERROR", f"转存失败：{e}")
-        _finish(eng, t, "fail", str(e))
+        _finish(eng, t, "fail", str(e), files_snap=_files_snap(files, spec, None))
         return
 
     # ---- 转存成功，走 QMS/STRM 联动（阶段机照前端契约，延迟可配） ----
     qms_snap, strm_snap = _media_chain(eng, t, cfg, result, name_head)
-    _finish(eng, t, "done", qms_snap=qms_snap, strm_snap=strm_snap, result=result)
+    _finish(eng, t, "done", qms_snap=qms_snap, strm_snap=strm_snap, result=result, files_snap=_files_snap(files, spec, result))
 
 
 def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict, dict]:
@@ -184,7 +250,7 @@ def _mark_account_expired(drive_type: str, acc_id: int | None = None) -> None:
         notify.push("凭据过期告警", f"{display} 凭据已失效，请到「网盘连接」重新绑定", kind="cred")
 
 
-def _finish(eng, t: dict, status: str, message: str = "", qms_snap: dict | None = None, strm_snap: dict | None = None, result=None) -> None:
+def _finish(eng, t: dict, status: str, message: str = "", qms_snap: dict | None = None, strm_snap: dict | None = None, result=None, files_snap: list | None = None) -> None:
     """收尾：更新任务状态 + 记录快照 + PaTask 回写。失败推送走 auto 来源开关。"""
     now_ms = int(time.time() * 1000)
     with eng._lock:
@@ -211,11 +277,13 @@ def _finish(eng, t: dict, status: str, message: str = "", qms_snap: dict | None 
                 share_url=t.get("shareUrl", ""),
                 share_code=t.get("shareCode", ""),
                 logs_json=json.dumps(t["logs"], ensure_ascii=False),
+                files_json=json.dumps(files_snap or [], ensure_ascii=False),
             )
         )
         s.commit()
     _sync_pa_task(t, status, result)
-    if status == "fail":
+    if status == "fail" and t.get("enabled", True):
+        # 推送统一走「推送通知」的全局开关（on_auto 时机）；只推启用中的任务
         notify.push("转存失败", f"{t['name']}：{message or '未知原因'}", kind="auto_fail")
 
 
@@ -224,6 +292,8 @@ def _sync_pa_task(t: dict, status: str, result) -> None:
 
     add/skip 统计只有成功路径才有 TransferResult；入队即拒（缺链接/无适配器）
     的失败 result 为 None，历史里记 0 即可——失败原因已在任务日志里。
+    转存日志统计（分享数/正则未命中/MD5 跳过/转存与排除文件名/起止秒级时间）
+    从 t["_runStats"] 收——run_auto 里边跑边填。
     """
     task_id = t.get("paTaskId")
     if not task_id:
@@ -231,6 +301,17 @@ def _sync_pa_task(t: dict, status: str, result) -> None:
     add = result.add if result else 0
     skip = result.skip if result else 0
     fail = result.fail if result else 0
+    stats = t.get("_runStats") or {}
+    started_ts = stats.get("started_ts")
+    finished_ts = time.time()
+    started_txt = (
+        time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(started_ts)) if started_ts else time.strftime("%Y-%m-%d %H:%M")
+    )
+    finished_txt = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(finished_ts))
+    duration = int(finished_ts - started_ts) if started_ts else 0
+    message = (
+        "转存成功" if status == "done" else (t["logs"][-1]["txt"] if t["logs"] else "失败")
+    )
     with SessionLocal() as s:
         pa = s.get(PaTask, task_id)
         if pa is None:
@@ -243,13 +324,20 @@ def _sync_pa_task(t: dict, status: str, result) -> None:
         s.add(
             RunHistory(
                 task_id=task_id,
-                started=time.strftime("%m-%d %H:%M"),
-                finished=time.strftime("%m-%d %H:%M"),
+                started=started_txt,
+                finished=finished_txt,
                 status="success" if status == "done" else "fail",
                 add=add,
                 skip=skip,
+                skip_md5=result.skip_md5 if result else 0,
                 fail=fail,
                 excl=len(t.get("excludeNames") or []),
+                total_share=t.get("files") or 0,
+                regex_miss=stats.get("regex_miss", 0),
+                message=message,
+                transferred_json=json.dumps([e.get("name") for e in (result.transferred if result else [])], ensure_ascii=False),
+                excluded_json=json.dumps(stats.get("excluded_names", []), ensure_ascii=False),
+                duration=duration,
                 logs_json=json.dumps(t["logs"], ensure_ascii=False),
             )
         )

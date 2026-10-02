@@ -69,20 +69,24 @@ class DirTreeCache:
             pass
 
     def _ensure_restored(self) -> None:
-        """首次使用时从 SQLite 恢复未过期条目（幂等，持锁调用）。"""
+        """首次使用时从 SQLite 恢复未过期条目（幂等，持锁调用）。
+        恢复失败（DB 忙/暂时不可用）**不置标记**：下次调用再试——否则整个进程
+        生命周期都跑在无缓存模式，每次浏览真打网盘（-7 风控就是这么撞出来的）。"""
         if self._restored:
-            return
-        self._restored = True
-        if not self._persist_enabled():
             return
         from ..models import DirTreeCacheRow
         from ..db import SessionLocal
 
+        if not self._persist_enabled():
+            self._restored = True
+            return
         try:
             with SessionLocal() as s:
                 rows = s.query(DirTreeCacheRow).all()
-        except Exception:  # noqa: BLE001 —— 表还没建等场景：按无缓存处理
+        except Exception as e:  # noqa: BLE001 —— 表还没建/库暂时忙：下次使用时重试
+            print(f"[cache] 目录缓存恢复失败，将在下次访问时重试：{e}")
             return
+        self._restored = True
         now = time.time()
         for r in rows:
             if r.expires_at <= now:
@@ -127,10 +131,13 @@ class DirTreeCache:
 
     # ---------- 读写 ----------
 
-    def get_or_load(self, key: tuple, loader: Callable[[], Any], force: bool = False) -> Any:
-        """命中返回缓存；未命中单飞加载。force=True 跳过缓存直连（不回写）。"""
+    def get_or_load(self, key: tuple, loader: Callable[[], Any], force: bool = False, flag: dict | None = None) -> Any:
+        """命中返回缓存；未命中单飞加载。force=True 跳过缓存直连（不回写）。
+        flag 传 dict 时回写命中标记（cached=True/False），供接口层区分直连与缓存。"""
         ttl = self._ttl_seconds()
         if ttl <= 0 or force:
+            if flag is not None:
+                flag["cached"] = False
             return loader()
         with self._lock:
             self._ensure_restored()
@@ -138,6 +145,8 @@ class DirTreeCache:
             if hit and hit[1] > time.time():
                 self._store.move_to_end(key)
                 self.hits += 1
+                if flag is not None:
+                    flag["cached"] = True
                 return hit[0]
             if hit:
                 self._store.pop(key)
@@ -148,7 +157,11 @@ class DirTreeCache:
                 hit = self._store.get(key)
                 if hit and hit[1] > time.time():
                     self.hits += 1
+                    if flag is not None:
+                        flag["cached"] = True
                     return hit[0]
+            if flag is not None:
+                flag["cached"] = False
             data = loader()
             now = time.time()
             persist = self._persist_enabled()

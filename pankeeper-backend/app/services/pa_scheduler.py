@@ -108,6 +108,8 @@ def run_task(task_id: int, force: bool = False) -> dict:
             "source": "auto",
             "acc_id": t.acc_id,
             "pa_task_id": t.id,
+            "enabled": t.enabled,
+            "regex_pattern": (t.regex_pattern or "").strip(),
             "exclude_names": excl,
             "compare_path": t.compare_path or "",
         })

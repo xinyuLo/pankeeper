@@ -169,6 +169,7 @@ class Record(Base):
     post_qms: Mapped[bool] = mapped_column(Boolean, default=False)
     post_notify: Mapped[bool] = mapped_column(Boolean, default=False)
     logs_json: Mapped[str] = mapped_column(Text, default="[]")  # 详情抽屉的执行日志
+    files_json: Mapped[str] = mapped_column(Text, default="[]")  # 分享内文件清单快照 [{path,name,size,st}]
 
 
 class RunHistory(Base):
@@ -182,8 +183,15 @@ class RunHistory(Base):
     status: Mapped[str] = mapped_column(Text, default="running")
     add: Mapped[int] = mapped_column(Integer, default=0)
     skip: Mapped[int] = mapped_column(Integer, default=0)
+    skip_md5: Mapped[int] = mapped_column(Integer, default=0)  # 跳过里 MD5 命中的部分
     fail: Mapped[int] = mapped_column(Integer, default=0)
     excl: Mapped[int] = mapped_column(Integer, default=0)
+    total_share: Mapped[int] = mapped_column(Integer, default=0)  # 分享内文件总数
+    regex_miss: Mapped[int] = mapped_column(Integer, default=0)  # 正则未命中（被过滤）的文件数
+    message: Mapped[str] = mapped_column(Text, default="")
+    duration: Mapped[int] = mapped_column(Integer, default=0)  # 耗时（秒）
+    transferred_json: Mapped[str] = mapped_column(Text, default="[]")  # 本次实际转存的文件名
+    excluded_json: Mapped[str] = mapped_column(Text, default="[]")  # 排除清单跳过的文件名
     logs_json: Mapped[str] = mapped_column(Text, default="[]")
 
 
@@ -219,4 +227,16 @@ class DirTreeCacheRow(Base):
     cid: Mapped[str] = mapped_column(Text, primary_key=True)
     items_json: Mapped[str] = mapped_column(Text, default="[]")
     expires_at: Mapped[int] = mapped_column(Integer, default=0)
+    cached_at: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class ShareListCacheRow(Base):
+    """分享文件清单缓存持久层（与目录缓存不同逻辑：转存驱动刷新，无 TTL）。
+
+    键 = type + 分享链接(+提取码)；转存跑完就刷新一次，查看/排除弹窗在两次转存之间命中。
+    """
+
+    __tablename__ = "share_list_cache"
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    items_json: Mapped[str] = mapped_column(Text, default="[]")
     cached_at: Mapped[int] = mapped_column(Integer, default=0)

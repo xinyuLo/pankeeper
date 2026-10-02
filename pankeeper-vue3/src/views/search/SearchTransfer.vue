@@ -40,6 +40,8 @@ const channels = ref<SearchChannel[]>([])
 const addr = ref('')
 const addrReady = ref(false)
 const pansouMissing = computed(() => addrReady.value && !addr.value.trim())
+/** 首屏接口是否已落定：落定前空态卡（含去配置引导）一律不渲染，防进页闪屏 */
+const booted = ref(false)
 
 /** 未配置 PanSou 时的引导：带路径说清楚去哪儿填 */
 function goPansouCfg() {
@@ -56,19 +58,31 @@ const ddTypes = computed(() => new Set<DriveType>(ddStore.items.map((x) => x.typ
 onMounted(async () => {
   // 首屏走缓存结果（无检索动效），等价原型打开页面时 window.results 已在
   // listDdItems() 只为把后端配置灌进 ddStore（ddTypes 是它的 computed，不在此赋值）
+  // ⚠️ 每个请求单独兜底——任何一个被代理偶发抖动打死都不能拖垮整个首屏
+  //（曾经整组 Promise.all 一断，engineOk 卡「检测中」、结果区空白）
   const [chs, a, rows, , cached] = await Promise.all([
-    getSearchChannels(),
-    getPanSouAddr(),
-    getInitialResults(),
-    listDdItems(),
-    getEngineHealthCached(),
+    getSearchChannels().catch(() => []),
+    getPanSouAddr().catch(() => ''),
+    getInitialResults().catch(() => []),
+    listDdItems().catch(() => undefined),
+    getEngineHealthCached().catch(() => ({ ok: null as boolean | null, checked_at: '' })),
   ])
   channels.value = chs
   addr.value = a
   addrReady.value = true
-  // 缓存状态先渲染（不再闪"离线"），随后实时探测静默覆盖
+  // 缓存状态先渲染（不再闪"离线"），随后实时探测静默覆盖。
+  // 但单次探测失败/超时（8s 窗口里的偶发抖动）不打翻缓存里的「在线」——
+  // 真下线时每日探活会刷新缓存、检索本身也会报错，别让胶囊闪一下离线
   engineOk.value = cached.ok
-  getEngineHealth().then((h) => (engineOk.value = h.ok)).catch(() => (engineOk.value = false))
+  getEngineHealth()
+    .then((h) => {
+      if (h.ok || engineOk.value !== true) engineOk.value = h.ok
+    })
+    .catch(() => {
+      // 探测请求本身挂了（代理偶发抖动）：别卡在「检测中」——
+      // 缓存有基调（true）就保持，没有就按离线收场
+      if (engineOk.value === null) engineOk.value = false
+    })
   results.value = rows
   // 有跨页保留的上次搜索：整体恢复（关键词/结果/tab/耗时），不动首屏缓存
   const cachedSearch = loadSearchCache()
@@ -79,6 +93,9 @@ onMounted(async () => {
     results.value = cachedSearch.results
   }
   renderStats()
+  // 首屏数据（地址/缓存结果）落定后才允许渲染空态卡——否则进页一瞬间会闪
+  // 「暂无搜索结果 / 去配置引导」，数据到了又跳变
+  booted.value = true
 })
 
 /* ===== 频道设置弹窗：白名单存后端 settings.search.channels，空 = 用全部 ===== */
@@ -146,7 +163,7 @@ function setTab(k: TabKey) {
   if (k === active.value) return
   active.value = k
   page.value = 1 // 换 tab 回第 1 页：否则「第 5 页」切到只有 2 条的 tab 会白屏
-  renderStats() // 统计卡跟随当前 tab（单网盘时只出一张卡）
+  // 统计卡常驻，点卡只挪高亮不重渲染（重渲染会闪一场出场动画，像卡片消失）
 }
 
 /* ===== 筛选 / 分页（假分页：数据全在前端，切片渲染） ===== */
@@ -270,24 +287,13 @@ const statEpoch = ref(0)
 let rollRaf = 0
 
 function renderStats() {
-  const list: StatCard[] = []
-  if (active.value === 'all') {
-    list.push({ key: 'all', label: '命中资源', value: results.value.length })
-    for (const t of DRIVE_ORDER) {
-      const n = countsBy.value[t] || 0
-      if (n > 0) list.push({ key: t, label: DRIVE_META[t].full, value: n, accent: DRIVE_META[t].color })
-    }
-  } else {
-    // 只选一个网盘：只出一张卡（原型 statline.single 行为）
-    list.push({
-      key: active.value,
-      label: `${DRIVE_META[active.value].full}命中`,
-      value: countsBy.value[active.value] || 0,
-      accent: DRIVE_META[active.value].color,
-    })
+  // 卡片常驻：命中 + 全部网盘（含 0 计数），与 tab 那排同构。点卡只挪 sel 高亮，
+  // 列表本身不随 tab 变——此前「单网盘只出一张卡」的收缩模式已按需求撤掉。
+  const list: StatCard[] = [{ key: 'all', label: '命中资源', value: results.value.length }]
+  for (const t of DRIVE_ORDER) {
+    list.push({ key: t, label: DRIVE_META[t].full, value: countsBy.value[t] || 0, accent: DRIVE_META[t].color })
   }
-  // 耗时卡只在检索过后出现（首屏没有可展示的值）
-  if (elapsed.value) list.push({ key: 'elapsed', label: '耗时', value: elapsed.value })
+  // 耗时不再占一张卡：PC 进「已检索 N 条」尾缀，手机进频道行右缘（见模板）
   statCards.value = list
   statEpoch.value++ // 换 key 让出场动画重放
   rollStats(list)
@@ -384,18 +390,24 @@ onUnmounted(() => {
             <span class="ch-chip ch-all">全部频道 · {{ channels.length }}</span>
           </template>
           <template v-else>
-            <span v-for="c in selectedChannels.slice(0, 3)" :key="c" class="ch-chip">{{ c }}</span>
-            <span v-if="selectedChannels.length > 3" class="ch-chip ch-more">+{{ selectedChannels.length - 3 }}</span>
+            <!-- 手机端不铺蓝色频道胶囊，只留一条数量摘要（点整条进频道设置看全量） -->
+            <template v-if="!isMobile">
+              <span v-for="c in selectedChannels.slice(0, 3)" :key="c" class="ch-chip">{{ c }}</span>
+              <span v-if="selectedChannels.length > 3" class="ch-chip ch-more">+{{ selectedChannels.length - 3 }}</span>
+            </template>
+            <span v-else class="ch-chip ch-more">+{{ selectedChannels.length }}</span>
           </template>
           <span class="ch-edit">✎ 管理</span>
         </div>
         <span class="st-flex1"></span>
+        <!-- 手机端耗时位：频道行右缘（PC 的耗时在上方 pk-tab-scan 里，这里 v-if 掉） -->
+        <span v-if="isMobile && elapsed" class="ch-elapsed">耗时 {{ elapsed }}</span>
         <span class="engine-pill" :class="{ ok: engineOk === true, bad: engineOk === false || pansouMissing }">
           <span class="ep-dot"></span>
-          <template v-if="pansouMissing">PanSou 未配置</template>
+          <template v-if="pansouMissing">检索引擎未配置</template>
           <template v-else-if="engineOk === null">引擎状态检测中…</template>
-          <template v-else-if="engineOk">PanSou 检索引擎 在线</template>
-          <template v-else>PanSou 检索引擎 离线</template>
+          <template v-else-if="engineOk">检索引擎在线</template>
+          <template v-else>检索引擎离线</template>
         </span>
       </div>
 
@@ -413,7 +425,9 @@ onUnmounted(() => {
         </div>
         <span class="pk-tab-scan">
           <template v-if="busy"><span class="pkspin"></span>正在检索… 已扫 {{ scanCount }} 个源</template>
-          <template v-else><span class="pkdot-live"></span>已检索 {{ countsBy.all }} 条</template>
+          <template v-else>
+            <span class="pkdot-live"></span>已检索 {{ countsBy.all }} 条<template v-if="elapsed"> · 耗时 {{ elapsed }}</template>
+          </template>
         </span>
       </div>
 
@@ -421,16 +435,17 @@ onUnmounted(() => {
       <div v-if="busy" class="pk-strip" aria-hidden="true"><i class="pk-strip-fill"></i></div>
     </div>
 
-    <!-- 统计卡：除耗时外都可点 = 切网盘 tab（与上方 pktabs 同一 handler）。
-         手机上 tab 那排隐藏（见样式 media），统计卡就是手机端的网盘筛选入口 -->
-    <div v-if="statCards.length" :key="statEpoch" class="statline enter" :class="{ single: active !== 'all' }">
+    <!-- 统计卡常驻（命中 + 各网盘），点卡 = 切网盘 tab，只挪高亮不重排。
+         手机上 tab 那排隐藏（见样式 media），统计卡就是手机端的网盘筛选入口；
+         sel（紫环）：手机端必标，桌面端 tab 排可见、只标单盘卡 -->
+    <div v-if="statCards.length" :key="statEpoch" class="statline enter">
       <div
         v-for="it in statCards"
         :key="it.key"
-        class="stat"
-        :class="{ wide: active !== 'all', clickable: it.key !== 'elapsed', sel: it.key !== 'elapsed' && active === it.key }"
+        class="stat clickable"
+        :class="{ sel: active === it.key && (isMobile || it.key !== 'all') }"
         :style="it.accent ? { '--pk-accent': it.accent } : undefined"
-        @click="it.key !== 'elapsed' && setTab(it.key as TabKey)"
+        @click="setTab(it.key as TabKey)"
       >
         <b>{{ statShown[it.key] ?? it.value }}</b>
         <span>{{ it.label }}</span>
@@ -438,9 +453,9 @@ onUnmounted(() => {
     </div>
 
     <!-- 结果表 + 分页同一张白卡（padding:0 的卡里表尾不夹灰缝）；手机端换卡片列表 -->
-    <div class="card st-flush st-res" :class="{ enter: rowEpoch > 0, 'is-empty': !busy && !paged.length }">
-      <!-- 空态：居中插画式，撑起卡片高度；未配置 PanSou 时换成配置引导 -->
-      <div v-if="!busy && !paged.length" class="pk-empty-state">
+    <div class="card st-flush st-res" :class="{ enter: rowEpoch > 0, 'is-empty': booted && !busy && !paged.length }">
+      <!-- 空态：首屏数据落定后才渲染（booted），默认常规空态；接口确认没配 PanSou 才换成配置引导 -->
+      <div v-if="booted && !busy && !paged.length" class="pk-empty-state">
         <template v-if="pansouMissing">
           <div class="pk-es-ico is-warn">⚙</div>
           <div class="pk-es-title">还没配置 PanSou 搜索服务</div>
@@ -781,10 +796,6 @@ table.st-table { table-layout: fixed; }
 .st-card-date { margin-left: auto; }
 .st-card-ops { justify-content: flex-end; }
 
-/* ===== 统计卡：单网盘 tab 下只出一张卡，撑满整行 ===== */
-.statline.single .stat { flex: 1 1 auto; }
-.stat.wide { flex: 1 1 100%; }
-
 /* ===== 未配置 PanSou 时的空态引导：图标转警示色 + 去配置按钮 ===== */
 .pk-empty-state .pk-es-ico.is-warn {
   color: var(--warning);
@@ -807,6 +818,25 @@ table.st-table { table-layout: fixed; }
 @media (max-width: 767px) {
   .pktabs {
     display: none;
+  }
+  /* 频道行两行式：上行「搜索源频道 +N 管理 … 耗时」，下行引擎状态胶囊独占一行 */
+  .st-flex1 {
+    display: none;
+  }
+  /* 耗时贴频道行右缘：频道摘要条不再 flex:1 撑满整行 */
+  .ch-strip {
+    flex: 0 1 auto;
+  }
+  .ch-elapsed {
+    margin-left: auto;
+    font-size: 12.5px;
+    color: var(--text3);
+    white-space: nowrap;
+  }
+  .engine-pill {
+    flex-basis: 100%;
+    margin-left: 10px; /* 与 ch-strip 内文字左缘对齐 */
+    justify-self: start;
   }
 }
 

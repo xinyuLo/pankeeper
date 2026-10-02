@@ -24,6 +24,7 @@ def _row(r: Record) -> dict:
         "share_url": r.share_url, "share_code": r.share_code,
         "cron": r.cron, "include_subdirs": r.include_subdirs,
         "exclude_count": r.exclude_count, "post_qms": r.post_qms, "post_notify": r.post_notify,
+        "files": json.loads(r.files_json or "[]"),
     }
 
 

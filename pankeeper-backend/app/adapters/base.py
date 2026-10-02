@@ -42,6 +42,7 @@ class ShareFile:
 class TransferResult:
     add: int = 0
     skip: int = 0
+    skip_md5: int = 0  # 其中 MD5 命中跳过数（按名字跳过 = skip - skip_md5）
     fail: int = 0
     transferred: list[dict] = field(default_factory=list)  # [{name, fid}]
     renamed: int = 0

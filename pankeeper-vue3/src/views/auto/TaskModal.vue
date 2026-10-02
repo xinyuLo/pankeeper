@@ -1,24 +1,24 @@
 <script setup lang="ts">
 /* 任务配置弹窗（原型 mtTaskMask，720px）—— 新增/编辑共用。
  * 表单顺序：名称 / 分享链接(解析) / 提取码 / 保存到 / 对比路径 / 包含子目录 /
- * QMS 联动(开关+目录下拉) / 正则过滤(仅匹配) / 转存文件夹下钻 / 定时表达式 / 完成后动作。
+ * QMS 联动(开关+目录下拉) / 正则过滤(仅匹配) / 定时表达式。
+ * 已撤：完成后动作（QMS 归上面联动开关，Server 酱推送走「推送通知」全局开关，只推启用中的任务）、
+ * 转存文件夹下钻（功能暂撤，已有任务的 drill 配置原样保留，保存不丢）。
  * 注意：没有排除文件清单——入口在任务行的「排除」按钮上，别加回来（设计约定）。
- * QMS 联动开关与「完成后动作 · 触发 QMS 刮削」是同一状态（postQms），两处控件联动。
  * 目录弹窗从这里叠加打开（允许两层）。 */
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import DirModal from './DirModal.vue'
+import AutoDirModal from './AutoDirModal.vue'
+import CronPicker from './CronPicker.vue'
 import { DD_MEDIA, DRIVE_META } from '@/api/mock/meta'
 import { accountStore } from '@/api/mock/accounts'
 import { listQmsPaths, listStrmPaths } from '@/api/modules/dd'
 import {
   cronHuman,
   extractShareCode,
-  getDrillDirs,
   getPaExtras,
   parseShare,
   savePaTask,
-  type PaDrillDir,
   type PaExtras,
 } from '@/api/modules/tasks'
 import type { DdQmsPath, DdStrmPath, MainDriveType, PaTask } from '@/types/model'
@@ -37,8 +37,7 @@ const shareCode = ref('')
 const saveDir = ref('')
 const comparePath = ref('')
 const includeSub = ref(true)
-const postQms = ref(false) // QMS 联动开关 = 完成后动作「触发 QMS 刮削」，一处动两处亮
-const postNotify = ref(false)
+const postQms = ref(false) // QMS 联动开关（原「完成后动作 · 触发 QMS 刮削」与其同状态，UI 已合并到这一处）
 const qmsId = ref<number | null>(null)
 const strmId = ref<number | null>(null)
 const cron = ref('0 3 * * *')
@@ -64,8 +63,6 @@ function pickDefaultAcc(): number | null {
 /* ===== 下拉数据（进弹窗拉一次即可） ===== */
 const qmsPaths = ref<DdQmsPath[]>([])
 const strmPaths = ref<DdStrmPath[]>([])
-const drillDirs = ref<PaDrillDir[]>([])
-
 function qmsLabel(p: DdQmsPath): string {
   // 真实接口的 media_type 已是中文（电影/剧集），mock 是 tv/movie——两边都兼容
   return `#${p.id} · ${DD_MEDIA[p.media_type] || p.media_type || '未分类'} · ${p.source_path}`
@@ -97,7 +94,13 @@ async function onParse() {
   try {
     parsing.value = true
     const r = await parseShare(props.type, url, shareCode.value.trim())
-    message.success(`解析成功，共 ${r.count} 个文件`)
+    // 解析只列分享根一层：根上是文件夹时文件数会是 0，说清楚免得像坏了
+    const sub = r.total - r.count
+    message.success(
+      sub > 0
+        ? `解析成功：根层 ${r.total} 项（含 ${sub} 个子目录），子目录内容按「包含子目录」设置在执行时一起转存`
+        : `解析成功，共 ${r.count} 个文件`,
+    )
   } catch (e: unknown) {
     const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
     message.error(detail || '解析失败：链接无效或网盘连接异常')
@@ -109,6 +112,7 @@ async function onParse() {
 
 /* ===== 目录弹窗（叠加第二层） ===== */
 const dirOpen = ref(false)
+const cronPickOpen = ref(false)
 const dirTarget = ref<'save' | 'compare'>('save')
 const dirInitial = ref('')
 function browse(target: 'save' | 'compare') {
@@ -136,7 +140,6 @@ watch(
     comparePath.value = t?.compare_path || ''
     includeSub.value = t ? t.include_subdirs : true
     postQms.value = !!t?.post_qms
-    postNotify.value = !!t?.post_notify
     cron.value = t ? t.cron || '' : '0 3 * * *' // 新任务给个常用默认，编辑带原值（空=仅手动）
     const firstRule = ex.regex[0]
     regPat.value = firstRule?.pat || ''
@@ -144,22 +147,29 @@ watch(
     drill.value = [...ex.drill]
     qmsId.value = ex.qms_id
     strmId.value = ex.strm_id
-
-    if (!qmsPaths.value.length) {
-      qmsPaths.value = await listQmsPaths()
-      strmPaths.value = await listStrmPaths()
-    }
-    if (!drillDirs.value.length) drillDirs.value = await getDrillDirs()
   },
 )
 
-/* ===== 下钻勾选 ===== */
-function toggleDrill(nm: string, e: Event) {
-  const s = new Set(drill.value)
-  if ((e.target as HTMLInputElement).checked) s.add(nm)
-  else s.delete(nm)
-  drill.value = [...s]
-}
+/* ===== QMS 目录：点开「QMS 联动」时才拉（带 loading + 失败重试一次） ===== */
+const pathsLoading = ref(false)
+watch(postQms, async (on) => {
+  if (!on || qmsPaths.value.length || pathsLoading.value) return
+  pathsLoading.value = true
+  try {
+    qmsPaths.value = await listQmsPaths()
+    strmPaths.value = await listStrmPaths()
+  } catch {
+    await new Promise((r) => setTimeout(r, 800))
+    try {
+      qmsPaths.value = await listQmsPaths()
+      strmPaths.value = await listStrmPaths()
+    } catch {
+      /* 两连败保持空：占位文案提示，表单其他项不受影响 */
+    }
+  } finally {
+    pathsLoading.value = false
+  }
+})
 
 /* ===== 保存 ===== */
 async function onSave() {
@@ -190,7 +200,6 @@ async function onSave() {
     last_status: t ? t.last_status : 'never',
     last_result: t ? t.last_result : '',
     post_qms: postQms.value,
-    post_notify: postNotify.value,
   }
   // 正则过滤：一组规则，pat/rep 都空就忽略；STRM 只在联动开着时才有意义
   const extras: PaExtras = {
@@ -307,13 +316,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
             </div>
           </div>
 
-          <!-- 包含子目录 -->
+          <!-- 包含子目录：与下钻行同款灰底样式 -->
           <div class="mt-form-row">
             <label class="mt-label">包含子目录</label>
             <div class="mt-control">
-              <label class="mt-opt">
-                <input v-model="includeSub" type="checkbox" /><span class="mt-box"></span>分享内有子目录时一并转存
-              </label>
+              <div class="mt-opts">
+                <label class="mt-opt">
+                  <input v-model="includeSub" type="checkbox" /><span class="mt-box"></span>分享内有子目录时一并转存
+                </label>
+              </div>
             </div>
           </div>
 
@@ -332,17 +343,19 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
                   v-model:value="qmsId"
                   :options="qmsOpts"
                   style="width: 100%; margin-bottom: 8px"
-                  :placeholder="qmsPaths.length ? '选择 QMS 刮削目录' : 'QMS 未连接或没有刮削目录'"
+                  :loading="pathsLoading"
+                  :placeholder="pathsLoading ? '正在加载 QMS 目录…' : qmsPaths.length ? '选择 QMS 刮削目录' : 'QMS 未连接或没有刮削目录'"
                   allow-clear
                 />
                 <a-select
                   v-model:value="strmId"
                   :options="strmOpts"
                   style="width: 100%"
-                  :placeholder="strmPaths.length ? '选择 STRM 同步目录' : 'QMS 未连接或没有同步目录'"
+                  :loading="pathsLoading"
+                  :placeholder="pathsLoading ? '正在加载 STRM 目录…' : strmPaths.length ? '选择 STRM 同步目录' : 'QMS 未连接或没有同步目录'"
                   allow-clear
                 />
-                <div class="mt-hint">自动转存完成 → 15 秒后触发 QMS 整理 → 整理完成 → 15 秒后触发 STRM 生成；不需要 STRM 就不选。</div>
+                <div class="mt-hint">转存 → QMS → STRM，触发间隔 15s；不需要 STRM 就不选。</div>
               </div>
             </div>
           </div>
@@ -356,58 +369,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
             </div>
           </div>
 
-          <!-- 转存文件夹下钻：开关总控 + 勾选列表（可多选） -->
-          <div class="mt-form-row" style="align-items: flex-start">
-            <label class="mt-label">转存文件夹下钻</label>
-            <div class="mt-control">
-              <div class="mt-opts">
-                <label class="mt-opt">
-                  <input v-model="drillOn" type="checkbox" /><span class="mt-box"></span>仅转存勾选的子目录
-                </label>
-              </div>
-              <div v-if="drillOn" style="margin-top: 10px">
-                <div class="mt-tree-toolbar">
-                  <span class="small muted">已选 {{ drill.length }} 项</span>
-                  <span style="flex: 1"></span>
-                  <button class="mt-btn mt-btn-sm" @click="drill = drillDirs.map((d) => d.name)">全选</button>
-                  <button class="mt-btn mt-btn-sm" @click="drill = []">清空</button>
-                </div>
-                <div class="mt-check-list">
-                  <label v-for="d in drillDirs" :key="d.name" class="mt-check-item">
-                    <input type="checkbox" :checked="drill.includes(d.name)" @change="toggleDrill(d.name, $event)" />
-                    <span class="mt-check-name">{{ d.name }}</span>
-                    <span v-if="d.size" class="mt-dt-size">{{ d.size }}</span>
-                  </label>
-                </div>
-                <div class="mt-hint">勾选分享内需要转存的子目录（可多选）。</div>
-              </div>
-            </div>
-          </div>
+          <!-- 转存文件夹下钻：功能暂撤（界面不露，已有任务的配置原样保留，保存不丢） -->
 
-          <!-- 定时表达式：cron 输入 + 实时人话 -->
+          <!-- 定时表达式：cron 输入 + 选择器按钮 + 实时人话 -->
           <div class="mt-form-row">
             <label class="mt-label">定时表达式</label>
             <div class="mt-control">
               <div class="mt-row-inline">
                 <input v-model="cron" class="mt-input" placeholder="0 3 * * *" />
+                <button class="mt-btn mt-btn-inline mt-btn-soft" @click="cronPickOpen = true">选择</button>
               </div>
-              <div class="mt-hint">此处为 cron 表达式规则（分 时 日 月 周），如 0 3 * * * = 每天凌晨 3 点。</div>
+              <div class="mt-hint">可直接输入，或点「选择」用模式拼一个（分 时 日 月 周）。</div>
               <div class="mt-hint mt-hint-strong">{{ cronTextValue }}</div>
-            </div>
-          </div>
-
-          <!-- 完成后动作：两个开关（触发 QMS 与上面联动开关同状态） -->
-          <div class="mt-form-row">
-            <label class="mt-label">完成后动作</label>
-            <div class="mt-control">
-              <div class="mt-opts">
-                <label class="mt-opt">
-                  <input v-model="postQms" type="checkbox" /><span class="mt-box"></span>触发 QMS 刮削
-                </label>
-                <label class="mt-opt">
-                  <input v-model="postNotify" type="checkbox" /><span class="mt-box"></span>Server 酱推送
-                </label>
-              </div>
             </div>
           </div>
         </div>
@@ -419,7 +392,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
     </div>
 
     <!-- 目录树选择器：叠加第二层（z-index 1002 > 任务弹窗 1000） -->
-    <DirModal v-model:open="dirOpen" :type="type" :initial="dirInitial" :acc-id="accId" @picked="onPicked" />
+    <AutoDirModal v-model:open="dirOpen" :type="type" :initial="dirInitial" :acc-id="accId" @picked="onPicked" />
+    <!-- cron 选择器：预设模式拼表达式，也可直接输入 -->
+    <CronPicker v-model:open="cronPickOpen" :cron="cron" @save="(c: string) => (cron = c)" />
   </teleport>
 </template>
 

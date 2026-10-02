@@ -80,6 +80,18 @@ def _migrate_columns() -> None:
             ("compare_path", "TEXT DEFAULT ''"),
             ("acc_id", "INTEGER"),
         ],
+        "records": [
+            ("files_json", "TEXT DEFAULT '[]'"),
+        ],
+        "run_history": [
+            ("skip_md5", "INTEGER DEFAULT 0"),
+            ("total_share", "INTEGER DEFAULT 0"),
+            ("regex_miss", "INTEGER DEFAULT 0"),
+            ("message", "TEXT DEFAULT ''"),
+            ("duration", "INTEGER DEFAULT 0"),
+            ("transferred_json", "TEXT DEFAULT '[]'"),
+            ("excluded_json", "TEXT DEFAULT '[]'"),
+        ],
         "queue_tasks": [
             ("acc_id", "INTEGER"),
             ("pa_task_id", "INTEGER"),

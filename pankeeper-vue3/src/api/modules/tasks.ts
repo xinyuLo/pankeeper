@@ -98,7 +98,8 @@ export async function savePaTask(task: PaTask, extras: PaExtras): Promise<PaTask
   return savedRow || saved
 }
 
-/** 「查看」弹窗：实时解析分享内文件树（每次现拉，不落缓存） */
+/** 「查看」弹窗：分享内文件树 + 扁平清单（带 md5，排除清单用）。
+ * 后端走独立的分享清单缓存：转存跑完刷新一次，两次转存之间命中秒开。 */
 export interface ShareFileNode {
   name: string
   is_dir: boolean
@@ -106,9 +107,17 @@ export interface ShareFileNode {
   kids: ShareFileNode[]
 }
 
-export function getShareFiles(taskId: number): Promise<{ total: number; tree: ShareFileNode[] }> {
-  if (USE_MOCK) return Promise.resolve({ total: 0, tree: [] })
-  return get<{ total: number; tree: ShareFileNode[] }>(`/pa/tasks/${taskId}/share-files`)
+export interface ShareFilesMeta {
+  total: number
+  tree: ShareFileNode[]
+  files: { path: string; name: string; is_dir: boolean; size: number; md5: string }[]
+  cached_at: number
+  fresh: boolean
+}
+
+export function getShareFiles(taskId: number, refresh = false): Promise<ShareFilesMeta> {
+  if (USE_MOCK) return Promise.resolve({ total: 0, tree: [], files: [], cached_at: 0, fresh: false })
+  return get<ShareFilesMeta>(`/pa/tasks/${taskId}/share-files`, { params: { refresh } })
 }
 
 /* ===================== 任务弹窗的扩展配置 =====================
@@ -177,69 +186,71 @@ export function getDrillDirs(): Promise<PaDrillDir[]> {
 
 export interface PaExclFile {
   name: string
+  /** 有无校验值（md5）；没有的文件转存时只能按文件名去重 */
   md5: boolean
 }
 
-const PA_EXCL_FILES: PaExclFile[] = [
-  { name: 'sample.mp4', md5: false },
-  { name: '广告.txt', md5: true },
-  { name: 'thumbs.db', md5: false },
-  { name: 'readme.nfo', md5: true },
-  { name: '片段预告.mp4', md5: false },
-  { name: '海报.jpg', md5: true },
-  { name: 'Credits.mkv', md5: true },
-  { name: 'tmp_cache.dat', md5: false },
-  { name: '第01集预告.mp4', md5: false },
-  { name: '音轨修复说明.txt', md5: true },
-]
-
-export const EXCL_TTL = 30 * 60 * 1000 // 30 分钟
-
-const exclCache: Record<string, { ts: number; files: PaExclFile[] }> = {}
-
-/** 定时任务执行时就地预热该任务的文件清单（原型 mtPrimeExclCache），排除弹窗打开即命中 */
-export function primeExclCache(task: PaTask): void {
-  if (!task.share_url) return
-  exclCache[task.share_url] = { ts: Date.now(), files: PA_EXCL_FILES.map((f) => ({ ...f })) }
-}
-
 export interface PaExclFetch {
-  /** true = 冷启动刚拉取；false = 命中缓存 */
+  /** true = 刚从网盘重新拉取；false = 命中分享清单缓存 */
   fresh: boolean
-  /** 清单获取时刻（状态条「获取于 HH:MM:SS」用） */
+  /** 清单获取时刻（秒级时间戳，状态条「获取于 HH:MM:SS」用） */
   ts: number
   files: PaExclFile[]
 }
 
-/** 拉清单：命中缓存直接返回（0 延迟秒开），否则模拟一次网盘请求并写缓存 */
-export function fetchExclFiles(key: string, force = false): Promise<PaExclFetch> {
-  // TODO 后端: GET /api/pa/excl-files?url=（force 时加 ?refresh=1）
-  const now = Date.now()
-  const hit = exclCache[key]
-  if (!force && hit && now - hit.ts < EXCL_TTL) {
-    return mockDelay({ fresh: false, ts: hit.ts, files: hit.files }, 0)
+/** 拉排除候选清单：走后端分享清单缓存（转存跑完自动刷新），refresh=true 忽略缓存直连 */
+export async function fetchExclFiles(taskId: number, force = false): Promise<PaExclFetch> {
+  const r = await getShareFiles(taskId, force)
+  return {
+    fresh: r.fresh,
+    ts: r.cached_at * 1000,
+    files: r.files.filter((f) => !f.is_dir).map((f) => ({ name: f.name, md5: !!f.md5 })),
   }
-  const ts = Date.now()
-  const files = PA_EXCL_FILES.map((f) => ({ ...f }))
-  exclCache[key] = { ts, files }
-  return mockDelay({ fresh: true, ts, files }, 520)
 }
 
-/** 清缓存：带 key 清单条，不带全清（刷新按钮 / 测试用） */
-export function clearExclCache(key?: string): void {
-  if (key) delete exclCache[key]
-  else for (const k of Object.keys(exclCache)) delete exclCache[k]
+/** 确定排除：把勾选的文件名列表回写任务 exclude_json/exclude_count（转存时按文件名排除） */
+export function commitExcl(taskId: number, names: string[]): Promise<{ count: number }> {
+  return post<{ count: number }>(`/pa/tasks/${taskId}/exclude`, { names })
 }
 
-/** 确定排除：把勾选下标回写任务 exclude_count/exclIdx（原型 mtCommitExclude） */
-export function commitExcl(taskId: number, idx: number[]): Promise<void> {
-  // TODO 后端: PUT /api/pa/tasks/:id/exclude
-  const t = paStore.tasks.find((x) => x.id === taskId)
-  if (t) {
-    t.exclude_count = idx.length
-    t.exclIdx = [...idx]
-  }
-  return mockDelay(undefined)
+/* ===================== 转存日志（RunHistory，bdsavePro 风格） ===================== */
+
+export interface PaRunRow {
+  id: number
+  started: string
+  finished: string
+  status: 'success' | 'fail' | 'running'
+  add: number
+  skip: number
+  skip_md5: number
+  excl: number
+  total_share: number
+  regex_miss: number
+  message: string
+}
+
+export interface PaRunDetail extends PaRunRow {
+  task_id: number
+  task_name: string
+  save_dir: string
+  compare_path: string
+  regex_pattern: string
+  include_subdirs: boolean
+  transferred: string[]
+  excluded: string[]
+  logs: QueueLogLine[]
+}
+
+/** 转存日志列表：该任务的执行历史（新→旧，最多 50 条） */
+export function getPaRuns(taskId: number): Promise<PaRunRow[]> {
+  if (USE_MOCK) return mockDelay([])
+  return get<PaRunRow[]>(`/pa/tasks/${taskId}/runs`)
+}
+
+/** 转存日志详情：执行信息 + 文件清单 + 完整日志 */
+export function getPaRunDetail(runId: number): Promise<PaRunDetail> {
+  if (USE_MOCK) return mockDelay({} as PaRunDetail)
+  return get<PaRunDetail>(`/pa/runs/${runId}`)
 }
 
 /* ===================== cron / 时间助手 ===================== */
