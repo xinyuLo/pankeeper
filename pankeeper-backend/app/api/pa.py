@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from ..db import SessionLocal
 from ..deps import CurrentUser
-from ..models import PaTask
+from ..models import PaTask, RunHistory
 
 router = APIRouter(prefix="/api/pa", tags=["pa"])
 
@@ -35,6 +35,7 @@ def _row(t: PaTask) -> dict:
         "cron": t.cron,
         "exclude_count": t.exclude_count,
         "exclIdx": excl if all(isinstance(x, int) for x in excl) else [],
+        "exclude_names": [x for x in excl if isinstance(x, str)],
         "last_run": t.last_run,
         "last_status": t.last_status,
         "last_result": t.last_result,
@@ -126,10 +127,14 @@ def update_task(task_id: int, body: PaBody, _user=CurrentUser):
 
 
 @router.get("/tasks/{task_id}/share-files")
-def task_share_files(task_id: int, _user=CurrentUser):
-    """实时解析分享链接内的文件树（「查看」按钮数据源，每次现拉不落缓存）。"""
+def task_share_files(task_id: int, refresh: bool = False, _user=CurrentUser):
+    """分享链接内文件树（「查看」/排除清单数据源）。
+
+    走独立的分享清单缓存（share_cache，与目录缓存不同逻辑）：转存每跑完一次刷新一次，
+    两次转存之间命中缓存秒开；?refresh=1 忽略缓存直连重拉。"""
     from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, TaskSpec
     from ..deps import make_adapter_for
+    from ..services.share_cache import build_payload, share_key, share_list_cache
 
     db = SessionLocal()
     try:
@@ -139,48 +144,54 @@ def task_share_files(task_id: int, _user=CurrentUser):
         if not t.share_url:
             raise HTTPException(status_code=400, detail="任务没有分享链接")
         try:
-            adapter = make_adapter_for(db, t.type)
+            adapter = make_adapter_for(db, t.type, t.acc_id)
         except HTTPException:
             db.close()
             raise
-        task_url, task_code = t.share_url, t.share_code
+
+        key = share_key(t.type, t.share_url, t.share_code)
+
+        def _live() -> dict:
+            files = adapter.list_share(TaskSpec(share_url=t.share_url, share_code=t.share_code, include_subdirs=True))
+            return build_payload(files)
 
         try:
-            files = adapter.list_share(TaskSpec(share_url=task_url, share_code=task_code, include_subdirs=True))
+            payload, cached_at, pulled = share_list_cache.get_or_load(key, _live, refresh=refresh)
         except ShareBanned as e:
-            db.close()
             raise HTTPException(status_code=410, detail=f"分享已失效：{e}")
         except CredentialExpired as e:
-            db.close()
             raise HTTPException(status_code=401, detail=str(e))
         except AdapterError as e:
-            db.close()
             raise HTTPException(status_code=502, detail=str(e))
     finally:
-        pass
+        db.close()
+    return {
+        "total": payload["total"],
+        "tree": payload["tree"],
+        "files": payload["files"],
+        "cached_at": int(cached_at),
+        "fresh": pulled,
+    }
 
-    def node(path: str, name: str, is_dir: bool, size: int) -> dict:
-        return {"name": name, "is_dir": is_dir, "size": size, "path": path, "kids": []}
 
-    nodes: dict[str, dict] = {}
-    root: list[dict] = []
-    total = 0
-    for f in sorted(files, key=lambda x: (x.path.count("/"), x.path)):
-        parent = f.path.rsplit("/", 1)[0] or "/"
-        name = f.path.rsplit("/", 1)[-1]
-        n = node(f.path, name, f.is_dir, f.size)
-        if not f.is_dir:
-            total += 1
-        nodes[f.path] = n
-        pnode = nodes.get(parent)
-        (pnode["kids"] if pnode else root).append(n)
+class ExcludeBody(BaseModel):
+    """排除清单回写：存文件名列表（适配器按 basename 过滤）。"""
 
-    def sort_kids(ns: list[dict]) -> None:
-        ns.sort(key=lambda x: (not x["is_dir"], x["name"]))
-        for n in ns:
-            sort_kids(n["kids"])
-    sort_kids(root)
-    return {"total": total, "tree": root}
+    names: list[str] = []
+
+
+@router.post("/tasks/{task_id}/exclude")
+def task_exclude(task_id: int, body: ExcludeBody, _user=CurrentUser):
+    """排除清单确定：回写 exclude_json/exclude_count（转存时按文件名排除）。"""
+    with SessionLocal() as db:
+        t = db.get(PaTask, task_id)
+        if t is None:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        names = [n for n in body.names if n]
+        t.exclude_json = json.dumps(names, ensure_ascii=False)
+        t.exclude_count = len(names)
+        db.commit()
+    return {"count": len(names)}
 
 
 class ParseBody(BaseModel):
@@ -262,3 +273,68 @@ def toggle_task(task_id: int, _user=CurrentUser):
         db.commit()
         _reschedule()
         return {"enabled": t.enabled}
+
+
+@router.get("/tasks/{task_id}/runs")
+def task_runs(task_id: int, _user=CurrentUser):
+    """转存日志列表：该任务的 RunHistory 卡片（新→旧）。"""
+    with SessionLocal() as db:
+        rows = (
+            db.query(RunHistory)
+            .filter(RunHistory.task_id == task_id)
+            .order_by(RunHistory.id.desc())
+            .limit(50)
+            .all()
+        )
+        out = []
+        for r in rows:
+            out.append(
+                {
+                    "id": r.id,
+                    "started": r.started,
+                    "finished": r.finished,
+                    "status": r.status,
+                    "add": r.add,
+                    "skip": r.skip,
+                    "skip_md5": r.skip_md5,
+                    "excl": r.excl,
+                    "total_share": r.total_share,
+                    "regex_miss": r.regex_miss,
+                    "message": r.message or "",
+                }
+            )
+    return out
+
+
+@router.get("/runs/{run_id}")
+def run_detail(run_id: int, _user=CurrentUser):
+    """转存日志详情：执行信息 + 统计 + 转存/排除文件清单 + 完整日志。"""
+    with SessionLocal() as db:
+        r = db.get(RunHistory, run_id)
+        if r is None:
+            raise HTTPException(status_code=404, detail="记录不存在")
+        t = db.get(PaTask, r.task_id)
+        return {
+            "id": r.id,
+            "task_id": r.task_id,
+            "task_name": t.name if t else "",
+            "started": r.started,
+            "finished": r.finished,
+            "status": r.status,
+            "message": r.message or "",
+            "add": r.add,
+            "skip": r.skip,
+            "skip_md5": r.skip_md5,
+            "fail": r.fail,
+            "excl": r.excl,
+            "total_share": r.total_share,
+            "regex_miss": r.regex_miss,
+            "duration": r.duration,
+            "save_dir": (t.save_dir if t else "") or "",
+            "compare_path": (t.compare_path if t else "") or "",
+            "regex_pattern": (t.regex_pattern if t else "") or "",
+            "include_subdirs": t.include_subdirs if t else True,
+            "transferred": json.loads(r.transferred_json or "[]"),
+            "excluded": json.loads(r.excluded_json or "[]"),
+            "logs": json.loads(r.logs_json or "[]"),
+        }

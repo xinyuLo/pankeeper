@@ -19,6 +19,20 @@ export function getFilesList(
   force = false,
   accId: number | null = null,
 ): Promise<DirItem[]> {
-  if (USE_MOCK) return Promise.reject(new Error('mock 模式无真实目录，请切换真实后端'))
-  return get<DirItem[]>('/files/list', { params: { type, parent, path, force_refresh: force, acc_id: accId || undefined } })
+  return getFilesListMeta(type, parent, path, force, accId).then((r) => r.items)
+}
+
+/** 带 cached 标记的版本：cached=false = 这层真打了网盘（调用方据此做风控节流） */
+export async function getFilesListMeta(
+  type: string,
+  parent = '0',
+  path = '',
+  force = false,
+  accId: number | null = null,
+): Promise<{ cached: boolean; items: DirItem[] }> {
+  if (USE_MOCK) throw new Error('mock 模式无真实目录，请切换真实后端')
+  const r = await get<{ cached: boolean; items: DirItem[] }>('/files/list', {
+    params: { type, parent, path, force_refresh: force, acc_id: accId || undefined },
+  })
+  return { cached: !!r?.cached, items: r?.items || [] }
 }

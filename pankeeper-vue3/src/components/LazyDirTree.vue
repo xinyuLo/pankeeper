@@ -6,7 +6,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { RightOutlined, LoadingOutlined, FolderOutlined } from '@ant-design/icons-vue'
-import { getFilesList, type DirItem } from '@/api/modules/files'
+import { getFilesListMeta, type DirItem } from '@/api/modules/files'
 import type { MainDriveType } from '@/types/model'
 
 interface DirNode extends DirItem {
@@ -53,7 +53,7 @@ async function refreshLayer(
   oldNodes: DirNode[],
   commit: (nodes: DirNode[]) => void,
 ) {
-  const items = await getFilesList(props.type, parent, parentPath === '/' ? '/' : '', true, props.accId ?? null)
+  const items = (await fetchDir(parent, parentPath === '/' ? '/' : '', true)).items
   const oldByFid = new Map(oldNodes.map((n) => [n.fid, n]))
   const nodes = items.map((it) => toNode(it, parentPath))
   for (const n of nodes) {
@@ -80,35 +80,79 @@ function toNode(it: DirItem, parentPath: string): DirNode {
   }
 }
 
-const root = reactive<{ items: DirNode[]; loading: boolean; error: string }>({
+const root = reactive<{ items: DirNode[]; loading: boolean; error: string; retry: string }>({
   items: [],
   loading: false,
   error: '',
+  retry: '',
 })
 const sel = ref('')
 /** 选中态只在根实例维护：递归实例沿 props 透传，否则每层各记一份，整条链都会「亮着」 */
 const currentSel = computed(() => (props.nodes ? props.selected ?? '' : sel.value))
 
+/* 风控冷却：只有某层**真打了网盘**（后端回 cached=false）才设 600ms 冷却；
+   命中后端缓存的层不用等——防止对百度密集连打（-7/-9 实测） */
+let cooldownUntil = 0
+async function paceIfHot() {
+  const wait = cooldownUntil - Date.now()
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait))
+}
+function noteCache(cached: boolean) {
+  cooldownUntil = cached ? 0 : Date.now() + 600
+}
+
+/** 列目录统一入口：风控节流 + 失败自动重试三次（每 2 秒一次）——根层/子层/初始加载全走这里，
+ * 任何一处都不允许单发请求直撞百度风控（-7/-9 偶发，重试即过）。
+ * onStatus：重试期间回报状态文案（"目录加载失败，正在重试 N 次 …"），成功/终败清空 */
+async function fetchDir(
+  fid: string,
+  path = '',
+  force = false,
+  onStatus?: (txt: string) => void,
+): Promise<{ cached: boolean; items: DirItem[] }> {
+  let lastErr: unknown = null
+  for (let i = 0; i < 4; i++) {
+    try {
+      await paceIfHot()
+      const meta = await getFilesListMeta(props.type, fid, path, force, props.accId ?? null)
+      noteCache(meta.cached)
+      onStatus?.('')
+      return meta
+    } catch (e) {
+      lastErr = e
+      noteCache(false) // 请求都没成功，按真打了网盘算，冷却照设
+      if (i < 3) {
+        onStatus?.(`目录加载失败，正在重试 ${i + 1} 次 …`)
+        await new Promise((r) => setTimeout(r, 2000))
+      }
+    }
+  }
+  onStatus?.('')
+  throw lastErr
+}
+
 async function loadRoot(force = false) {
   root.loading = true
   root.error = ''
+  root.retry = ''
   try {
-    const items = await getFilesList(props.type, '0', '/', force, props.accId ?? null)
+    const meta = await fetchDir('0', '/', force, (t) => (root.retry = t))
     // 目录选择器只关心文件夹：文件一律过滤
-    root.items = items.filter((it) => it.is_dir).map((it) => toNode(it, '/'))
+    root.items = meta.items.filter((it) => it.is_dir).map((it) => toNode(it, '/'))
   } catch (e: unknown) {
     root.error = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail || '目录加载失败'
   } finally {
     root.loading = false
+    root.retry = ''
   }
 }
 
-/** 拉一层子目录（toggle 与初始下钻共用）。 */
+/** 拉一层子目录（toggle 展开；失败已在 fetchDir 内重试，仍败才提示） */
 async function loadKids(n: DirNode) {
   n.loading = true
   try {
-    const items = await getFilesList(props.type, n.fid, '', false, props.accId ?? null)
-    n.kids = items.filter((it) => it.is_dir).map((it) => toNode(it, n.path))
+    const meta = await fetchDir(n.fid)
+    n.kids = meta.items.filter((it) => it.is_dir).map((it) => toNode(it, n.path))
     n.loaded = true
   } catch (e: unknown) {
     message.error((e as { response?: { data?: { detail?: string } } })?.response?.data?.detail || '子目录加载失败')
@@ -128,38 +172,6 @@ async function toggle(n: DirNode) {
   n.open = true
 }
 
-/** 挂载/重建后沿初始路径逐层展开（拿不到的段静默停住），最后一层设为选中 */
-async function walkTo(path: string) {
-  const segs = path.split('/').filter(Boolean)
-  let level: DirNode[] = root.items
-  let acc = ''
-  for (const s of segs) {
-    acc += '/' + s
-    const node = level.find((n) => n.path === acc)
-    if (!node) return null
-    if (!node.loaded) await loadKids(node)
-    node.open = true
-    level = node.kids
-  }
-  sel.value = path
-  return null
-}
-
-/** 下钻到指定路径（绝对路径），逐层展开；用于初始路径比锁定根更深时 */
-async function descend(path: string): Promise<void> {
-  const segs = path.split('/').filter(Boolean)
-  let level: DirNode[] = root.items
-  let acc = ''
-  for (const s of segs) {
-    acc += '/' + s
-    const node = level.find((n) => n.path === acc) || null
-    if (!node) return
-    if (!node.loaded) await loadKids(node)
-    node.open = true
-    level = node.kids
-  }
-}
-
 /** 点行：只选中（发 select 事件，带 fid 供调用方做目录预热），要不要保存交给调用方决定。 */
 function pick(n: DirNode) {
   if (!n.is_dir) return
@@ -177,26 +189,23 @@ function onChildSelect(p: string, f: string) {
 async function init() {
   if (props.rootPath && props.rootPath !== '/') {
     // 配了默认目录：一个请求让后台按路径解析并回传它的第一层（吃目录缓存），
-    // 树只展示默认目录的子目录；选中默认为锁定根本身
+    // 树只展示默认目录的子目录；选中默认为锁定根本身。
+    // 刻意不自动下钻到 initialPath——逐层连打容易撞百度风控（-7/-9 实测），
+    // 已填路径在底部「已选目录」回显，用户点哪层懒加载哪层（命中缓存不打百度）。
     root.loading = true
     try {
-      const items = await getFilesList(props.type, '0', props.rootPath, false, props.accId ?? null)
-      root.items = items.filter((it) => it.is_dir).map((it) => toNode(it, props.rootPath!))
+      const meta = await fetchDir('0', props.rootPath, false, (t) => (root.retry = t))
+      root.items = meta.items.filter((it) => it.is_dir).map((it) => toNode(it, props.rootPath!))
       root.loading = false
       sel.value = props.rootPath
-      // 初始路径比锁定根更深（编辑的是默认目录下的子目录）：逐层展开到它（走缓存）
-      if (props.initialPath && props.initialPath !== props.rootPath && props.initialPath.startsWith(props.rootPath + '/')) {
-        await descend(props.initialPath)
-        sel.value = props.initialPath
-      }
       return
     } catch {
       // 锁定目录在网盘里不存在/解析失败：回退真根浏览，别白屏
       root.loading = false
+      root.retry = ''
     }
   }
   await loadRoot()
-  if (props.initialPath && props.initialPath !== '/') await walkTo(props.initialPath)
 }
 
 onMounted(() => {
@@ -240,7 +249,9 @@ watch(
 
   <!-- 根模式：自己拉根一层；限高滚动，防止目录太长把弹窗底部按钮顶出屏幕 -->
   <template v-else>
-    <div v-if="root.loading" class="ldt-tip"><LoadingOutlined /> 正在加载目录…</div>
+    <div v-if="root.loading" class="ldt-tip">
+      <LoadingOutlined /> {{ root.retry || '正在加载目录…' }}
+    </div>
     <div v-else-if="root.error" class="ldt-tip ldt-err">
       {{ root.error }}
       <a-button size="small" style="margin-left: 8px" @click="loadRoot(true)">重试</a-button>

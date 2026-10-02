@@ -6,9 +6,22 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
+import {
+  CaretRightOutlined,
+  EditOutlined,
+  MinusCircleOutlined,
+  ProfileOutlined,
+  FileTextOutlined,
+  DeleteOutlined,
+  FolderOpenOutlined,
+  ExportOutlined,
+  CopyOutlined,
+} from '@ant-design/icons-vue'
 import LogBox from '@/components/LogBox.vue'
+import PkPager from '@/components/PkPager.vue'
 import TaskModal from './TaskModal.vue'
 import RunModal from './RunModal.vue'
+import RunHistoryModal from './RunHistoryModal.vue'
 import ExclModal from './ExclModal.vue'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { DRIVE_META } from '@/api/mock/meta'
@@ -17,7 +30,6 @@ import {
   deletePaTask,
   getPaDetailLog,
   listPaTasks,
-  primeExclCache,
   togglePaTask,
 } from '@/api/modules/tasks'
 import type { MainDriveType, PaTask, QueueLogLine } from '@/types/model'
@@ -36,6 +48,19 @@ async function reload() {
 }
 watch(type, reload)
 onMounted(reload)
+
+/* ===== 分页（内存切片；切网盘回第 1 页） ===== */
+const page = ref(1)
+const size = ref(20)
+const pagedTasks = computed(() => tasks.value.slice((page.value - 1) * size.value, page.value * size.value))
+watch(type, () => (page.value = 1))
+watch(
+  () => tasks.value.length,
+  () => {
+    const max = Math.max(1, Math.ceil(tasks.value.length / size.value))
+    if (page.value > max) page.value = max
+  },
+)
 
 /* ===== 表格展示助手 ===== */
 function linkTrunc(url: string): string {
@@ -118,11 +143,10 @@ function onSaved() {
   reload() // toast 在弹窗里发过；这里只刷表
 }
 
-/* ===== 执行（paRun）：先就地预热排除清单缓存，再开监控（互斥：关掉其余弹窗） ===== */
+/* ===== 执行（paRun）：开监控（互斥：关掉其余弹窗）。排除清单缓存由后端转存时自动刷新 ===== */
 const runOpen = ref(false)
 const runTask = ref<PaTask | null>(null)
 function openRun(t: PaTask) {
-  primeExclCache(t) // 原型 mtPrimeExclCache：排除弹窗随后打开即命中
   runTask.value = t
   taskOpen.value = false
   exclOpen.value = false
@@ -152,6 +176,14 @@ async function openDetail(t: PaTask) {
   detailOpen.value = true
   detailLog.value = await getPaDetailLog()
 }
+
+/* ===== 转存日志（RunHistory 卡片列表） ===== */
+const runHistOpen = ref(false)
+const runHistTask = ref<PaTask | null>(null)
+function openRunHistory(t: PaTask) {
+  runHistTask.value = t
+  runHistOpen.value = true
+}
 function detailCron(c: string): string {
   return cronHuman(c, '未开启定时')
 }
@@ -176,8 +208,7 @@ function detailCron(c: string): string {
       <table v-if="!isMobile" class="pa-table">
         <thead>
           <tr>
-            <th class="pa-th">任务名</th>
-            <th class="pa-th">启用</th>
+            <th class="pa-th">任务名</th>            <th class="pa-th">启用</th>
             <th class="pa-th">分享链接</th>
             <th class="pa-th">定时策略</th>
             <th class="pa-th">已排除</th>
@@ -187,8 +218,10 @@ function detailCron(c: string): string {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="t in tasks" :key="t.id" class="pa-row" :style="{ borderLeft: '3px solid ' + meta.color }">
-            <td class="pa-td pa-name">{{ t.name }}</td>
+          <tr v-for="t in pagedTasks" :key="t.id" class="pa-row" :style="{ borderLeft: '3px solid ' + meta.color }">
+            <td class="pa-td pa-namecell">
+              <span class="pa-name" :title="t.name">{{ t.name }}</span>
+            </td>
             <td class="pa-td">
               <span
                 class="pa-switch"
@@ -199,11 +232,12 @@ function detailCron(c: string): string {
               ><span class="pa-knob"></span></span>
             </td>
             <td class="pa-td pa-link">
+              <span class="pa-url" :title="t.share_url">{{ linkTrunc(t.share_url) }}</span>
               <span v-if="t.share_code" class="pa-code">{{ t.share_code }}</span>
               <div class="pa-linkops">
-                <button class="pa-op" @click="onViewFiles(t)">查看</button>
-                <button class="pa-op" @click="onJump(t)">跳转</button>
-                <button class="pa-op" @click="onCopy(t)">复制</button>
+                <a-tooltip title="查看文件"><button class="pa-ico pa-ico-view" @click="onViewFiles(t)"><FolderOpenOutlined /></button></a-tooltip>
+                <a-tooltip title="打开网盘"><button class="pa-ico pa-ico-jump" @click="onJump(t)"><ExportOutlined /></button></a-tooltip>
+                <a-tooltip title="复制链接"><button class="pa-ico pa-ico-copy" @click="onCopy(t)"><CopyOutlined /></button></a-tooltip>
               </div>
             </td>
             <td class="pa-td">{{ cronText(t.cron) }}</td>
@@ -216,12 +250,15 @@ function detailCron(c: string): string {
             </td>
             <td class="pa-td">
               <div class="pa-ops">
-                <button class="pa-op pa-op-run" @click="openRun(t)">执行</button>
-                <button class="pa-op pa-op-edit" @click="openEdit(t)">编辑</button>
-                <button class="pa-op pa-op-excl" @click="openExcl(t)">
-                  排除<i v-if="t.exclude_count" class="pa-op-num">{{ t.exclude_count }}</i>
-                </button>
-                <button class="pa-op pa-op-detail" @click="openDetail(t)">详情</button>
+                <a-tooltip title="立即执行"><button class="pa-ico pa-op-run" @click="openRun(t)"><CaretRightOutlined /></button></a-tooltip>
+                <a-tooltip title="编辑任务"><button class="pa-ico pa-op-edit" @click="openEdit(t)"><EditOutlined /></button></a-tooltip>
+                <a-tooltip :title="t.exclude_count ? `排除清单（${t.exclude_count} 项）` : '排除清单'">
+                  <button class="pa-ico pa-op-excl" @click="openExcl(t)">
+                    <MinusCircleOutlined /><i v-if="t.exclude_count" class="pa-op-num">{{ t.exclude_count }}</i>
+                  </button>
+                </a-tooltip>
+                <a-tooltip title="执行详情"><button class="pa-ico pa-op-detail" @click="openDetail(t)"><ProfileOutlined /></button></a-tooltip>
+                <a-tooltip title="转存日志"><button class="pa-ico pa-op-log" @click="openRunHistory(t)"><FileTextOutlined /></button></a-tooltip>
                 <a-popconfirm
                   :title="`确认删除任务「${t.name}」？此操作不可恢复。`"
                   ok-text="删除"
@@ -229,7 +266,7 @@ function detailCron(c: string): string {
                   :ok-button-props="{ danger: true }"
                   @confirm="onDel(t)"
                 >
-                  <button class="pa-op pa-op-del">删除</button>
+                  <a-tooltip title="删除任务"><button class="pa-ico pa-op-del"><DeleteOutlined /></button></a-tooltip>
                 </a-popconfirm>
               </div>
             </td>
@@ -239,10 +276,11 @@ function detailCron(c: string): string {
           </tr>
         </tbody>
       </table>
+      <PkPager v-if="!isMobile" v-model:current="page" v-model:pageSize="size" :total="tasks.length" />
 
       <!-- 手机端：一任务一卡（名称+开关 / 状态+定时 / 链接+复制 / 执行信息 / 五动作铺开） -->
       <div v-else class="pa-cards">
-        <div v-for="t in tasks" :key="t.id" class="pa-carditem" :style="{ borderLeft: '3px solid ' + meta.color }">
+        <div v-for="t in pagedTasks" :key="t.id" class="pa-carditem" :style="{ borderLeft: '3px solid ' + meta.color }">
           <div class="pa-c-top">
             <span class="pa-c-name">{{ t.name }}</span>
             <span
@@ -291,6 +329,7 @@ function detailCron(c: string): string {
         </div>
         <div v-if="!tasks.length" class="pa-c-empty">当前网盘暂无自动转存任务</div>
       </div>
+      <PkPager v-if="isMobile" v-model:current="page" v-model:pageSize="size" :total="tasks.length" />
     </div>
 
 
@@ -306,6 +345,8 @@ function detailCron(c: string): string {
 
     <!-- 执行监控：互斥，开它关其余 -->
     <RunModal v-model:open="runOpen" :task="runTask" @finished="onRunFinished" />
+    <!-- 转存日志：历史执行卡片 + 详情 -->
+    <RunHistoryModal v-model:open="runHistOpen" :task="runHistTask" />
 
     <!-- 排除清单：可叠在任务弹窗上（z-index 1002） -->
     <ExclModal v-model:open="exclOpen" :task="exclTask" @committed="onExclCommitted" />
@@ -393,16 +434,32 @@ function detailCron(c: string): string {
 
 /* ===== 任务表 ===== */
 .pa-card { background: var(--card); border-radius: var(--r); box-shadow: var(--shadow); overflow: hidden; }
-.pa-table { width: 100%; border-collapse: collapse; }
+.pa-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+/* 列宽配比：任务名/分享链接双主力，右列全收窄（操作列图标化后 150px 够） */
+/* 列宽配比：任务名/分享链接双主力（链接列含 URL+提取码+三钮），右列全收窄 */
+.pa-table th:nth-child(1) { width: 14%; }
+.pa-table th:nth-child(2) { width: 56px; }
+.pa-table th:nth-child(3) { width: auto; }
+.pa-table th:nth-child(4) { width: 96px; }
+.pa-table th:nth-child(5) { width: 60px; }
+.pa-table th:nth-child(6) { width: 84px; }
+.pa-table th:nth-child(7) { width: 124px; }
+.pa-table th:nth-child(8) { width: 140px; }
+.pa-table .pa-td { overflow: hidden; }
+.pa-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 任务名 + 三个链接小钮同格：名称截断，图标靠右 */
+.pa-namecell { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pa-namecell .pa-name { flex: 1 1 auto; min-width: 0; }
 .pa-th {
   text-align: left;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 500;
-  color: var(--text2);
+  color: var(--text3);
   background: var(--surface-2);
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--split);
+  padding: 11px 14px;
+  letter-spacing: 0.02em;
   white-space: nowrap;
+  border-bottom: 1px solid var(--split);
 }
 .pa-th-ops { text-align: right; }
 .pa-td {
@@ -444,6 +501,21 @@ tbody tr.pa-row:last-child .pa-td { border-bottom: none; }
 
 /* 分享链接格 */
 .pa-link { display: flex; align-items: center; gap: 6px; }
+.pa-linkops { display: flex; gap: 2px; }
+/* 链接三钮带语义色：查看=蓝 / 打开网盘=青 / 复制=紫，悬浮染同色浅底
+   （双类选择器压过后面 .pa-ico 的默认色，单类会被盖掉——实测踩坑） */
+.pa-ico.pa-ico-view { color: #1677ff; }
+.pa-ico.pa-ico-view:hover { background: #f0f8ff; }
+.pa-ico.pa-ico-jump { color: #08979c; }
+.pa-ico.pa-ico-jump:hover { background: #e6fffb; }
+.pa-ico.pa-ico-copy { color: #722ed1; }
+.pa-ico.pa-ico-copy:hover { background: #f9f0ff; }
+html[data-theme='dark'] .pa-ico.pa-ico-view { color: #69b1ff; }
+html[data-theme='dark'] .pa-ico.pa-ico-view:hover { background: #111a2c; }
+html[data-theme='dark'] .pa-ico.pa-ico-jump { color: #36cfc9; }
+html[data-theme='dark'] .pa-ico.pa-ico-jump:hover { background: #0e2929; }
+html[data-theme='dark'] .pa-ico.pa-ico-copy { color: #b37feb; }
+html[data-theme='dark'] .pa-ico.pa-ico-copy:hover { background: #1a1425; }
 .pa-url { color: var(--text2); max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pa-code {
   font-size: 12px;
@@ -478,8 +550,59 @@ html[data-theme='dark'] .pa-st-running { color: #69b1ff; background: rgba(22, 11
 html[data-theme='dark'] .pa-st-never { color: var(--text3); background: rgba(255, 255, 255, 0.06); }
 
 /* ===== 行操作五色按钮（颜色即语义）：
-   执行=蓝 / 编辑=青 / 排除=橙（带计数徽标）/ 详情=中性 / 删除=红（Popconfirm 确认） ===== */
+   执行=蓝 / 编辑=青 / 排除=橙（带计数徽标）/ 详情=中性 / 删除=红（Popconfirm 确认）
+   桌面用 .pa-ico 图标钮（26px 方块，悬浮出 tooltip + 染色底），手机卡片仍用文字 .pa-op ===== */
 .pa-ops { display: flex; gap: 4px; justify-content: flex-end; }
+.pa-ico {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+  position: relative;
+  color: var(--text2);
+  transition: background 0.15s, color 0.15s;
+  font-family: inherit;
+}
+.pa-ico:hover { background: var(--surface-3); }
+/* 计数徽标：右上角小角标，不占按钮内部空间 */
+.pa-ico .pa-op-num {
+  position: absolute;
+  top: -4px;
+  right: -6px;
+  font-size: 10px;
+  line-height: 14px;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-style: normal;
+  background: #fff1b8;
+  color: #d48806;
+  border: 1px solid #ffe58f;
+}
+.pa-ico.pa-op-run { color: #1677ff; }
+.pa-ico.pa-op-run:hover { background: #f0f8ff; }
+.pa-ico.pa-op-edit { color: #08979c; }
+.pa-ico.pa-op-edit:hover { background: #e6fffb; }
+.pa-ico.pa-op-excl { color: #d48806; }
+.pa-ico.pa-op-excl:hover { background: #fffbe6; }
+.pa-ico.pa-op-detail { color: var(--text2); }
+.pa-ico.pa-op-detail:hover { background: var(--surface-3); color: var(--text); }
+.pa-ico.pa-op-del { color: #ff4d4f; }
+.pa-ico.pa-op-del:hover { background: #fff1f0; }
+/* 暗色：底色压暗、语义色提亮一档 */
+html[data-theme='dark'] .pa-ico:hover { background: rgba(255, 255, 255, 0.08); }
+html[data-theme='dark'] .pa-ico.pa-op-run:hover { background: #111a2c; }
+html[data-theme='dark'] .pa-ico.pa-op-edit:hover { background: #0e2929; }
+html[data-theme='dark'] .pa-ico.pa-op-excl:hover { background: #2b2111; }
+html[data-theme='dark'] .pa-ico.pa-op-detail:hover { background: rgba(255, 255, 255, 0.1); color: var(--text); }
+html[data-theme='dark'] .pa-ico.pa-op-del:hover { background: #2b1314; }
+html[data-theme='dark'] .pa-ico .pa-op-num { background: #594214; color: #ffe58f; border-color: #594214; }
 .pa-op {
   height: 28px;
   padding: 0 10px;

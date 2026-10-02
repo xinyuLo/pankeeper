@@ -272,10 +272,9 @@ const greeting = computed(() => {
 })
 
 const heroSummary = computed(() => {
-  const total = pans.value.length
   const conn = pans.value.filter((p) => p.status === 'connected').length
   const unset = pans.value.filter((p) => p.status === 'unset').length
-  const parts: string[] = [`${conn}/${total} 个网盘已连接`]
+  const parts: string[] = [`${conn} 个网盘已连接`]
   if (overview.value.fails > 0) parts.push(`${overview.value.fails} 个任务最近失败，建议看一眼`)
   else if (overview.value.ok > 0) parts.push(`${overview.value.ok} 个任务最近跑成功`)
   else if (overview.value.enabled > 0) parts.push(`${overview.value.enabled} 个定时任务在跑`)
