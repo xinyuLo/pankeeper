@@ -149,7 +149,12 @@ function onOk() {
     // 空 = 该类型默认账号（后端兜底取 id 最小）
     acc_id: it.account ? Number(it.account) : null,
   })
-  message.success(`已加入转存队列 · 当前第 ${pos} 位，完成后去「转存记录 → 队列」看日志`)
+  if (pos < 0) {
+    // 后端同链接去重：wait/run 里已有同一 shareUrl
+    message.warning('该分享已在转存队列中，勿重复添加')
+    return
+  }
+  message.success(`已加入转存队列 · 当前第 ${pos} 位，完成后去右下角队列抽屉看日志`)
   close()
 }
 </script>
