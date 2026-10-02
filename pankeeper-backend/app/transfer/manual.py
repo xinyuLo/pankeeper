@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import time
 
-from ..adapters.base import AdapterError, CredentialExpired, TaskSpec
+from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, TaskSpec
 from ..adapters.factory import make_adapter
 from ..db import SessionLocal
 from ..models import Account, DdItem, Record
