@@ -5,9 +5,11 @@
  * dd- 前缀私有样式在本文件 <style scoped>；数据直接读写 ddStore（内存态），
  * 增删改走 api/modules/dd.ts（mockDelay 包一层，后端就绪后只换实现）。
  * ===================================================================== */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import LazyDirTree from '@/components/LazyDirTree.vue'
+import PkPager from '@/components/PkPager.vue'
+import { useIsMobile } from '@/composables/useIsMobile'
 import { ddStore, ddFind } from '@/api/mock/dd'
 import { DD_MEDIA, MAIN_ORDER, DRIVE_META } from '@/api/mock/meta'
 import { accountStore } from '@/api/mock/accounts'
@@ -17,6 +19,8 @@ import type { DdItem, DdQmsPath, DdStrmPath, MainDriveType } from '@/types/model
 
 /* ===== 列表态 ===== */
 const active = ref<MainDriveType>('baidu')
+/* 手机（<768px）表格换卡片列表：横滑表格的「操作」列在窄屏上永远滑不到头 */
+const isMobile = useIsMobile()
 
 /** 当前 tab 的行，按 sort 升序（数字越小在快速转存下拉里越靠前） */
 const rows = computed<DdItem[]>(() =>
@@ -26,6 +30,16 @@ const rows = computed<DdItem[]>(() =>
 function countOf(t: MainDriveType): number {
   return ddStore.items.filter((x) => x.type === t).length
 }
+
+/* ===== 分页（内存切片；切网盘 tab 回第 1 页） ===== */
+const page = ref(1)
+const size = ref(20)
+const pagedRows = computed(() => rows.value.slice((page.value - 1) * size.value, page.value * size.value))
+watch(() => active.value, () => (page.value = 1))
+watch(() => rows.value.length, () => {
+  const max = Math.max(1, Math.ceil(rows.value.length / size.value))
+  if (page.value > max) page.value = max
+})
 
 /** 账号 id → 展示名（真实账号：别名/昵称；查不到时兜底显示原始值） */
 function accLabel(acc: string): string {
@@ -277,20 +291,20 @@ async function confirmEditor() {
         </div>
       </div>
 
-      <!-- 表格：排序 / 名称+路径同格 / 所属账号 / 默认 / 操作（手机包横滑容器保列宽） -->
-      <div v-if="rows.length" class="pk-hscroll">
+      <!-- 表格：排序 / 名称+路径同格 / 所属账号 / 默认 / 操作（PC；手机换下方卡片列表） -->
+      <div v-if="rows.length && !isMobile" class="pk-hscroll">
         <table class="dd-table">
           <thead>
             <tr>
-              <th class="dd-th" style="width: 52px">排序</th>
-              <th class="dd-th">名称 / 网盘路径</th>
-              <th class="dd-th" style="width: 170px">所属账号</th>
-              <th class="dd-th" style="width: 110px">默认</th>
-              <th class="dd-th" style="width: 150px; text-align: right">操作</th>
+              <th class="dd-th" style="width: 48px">排序</th>
+              <th class="dd-th" style="width: 50%">名称 / 网盘路径</th>
+              <th class="dd-th" style="width: 16%">所属账号</th>
+              <th class="dd-th" style="width: 12%">默认</th>
+              <th class="dd-th" style="width: 12%; text-align: right">操作</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="it in rows" :key="it.id" class="dd-row">
+            <tr v-for="it in pagedRows" :key="it.id" class="dd-row">
               <td class="dd-td"><span class="dd-sort">{{ it.sort }}</span></td>
               <td class="dd-td">
                 <span class="dd-name">{{ it.name }}</span>
@@ -303,14 +317,15 @@ async function confirmEditor() {
               </td>
               <td class="dd-td">
                 <div class="dd-ops">
-                  <button class="dd-op" type="button" @click="openEditor(it.id)">编辑</button>
+                  <a-button type="link" size="small" class="dd-linkop" @click="openEditor(it.id)">编辑</a-button>
+                  <span class="dd-opdiv">丨</span>
                   <a-popconfirm
                     :title="`确定删除「${it.name}」？删除后「快速转存」将不再显示它。`"
                     ok-text="删除"
                     cancel-text="取消"
                     @confirm="doDelete(it)"
                   >
-                    <button class="dd-op dd-op-del" type="button">删除</button>
+                    <a-button type="link" danger size="small" class="dd-linkop">删除</a-button>
                   </a-popconfirm>
                 </div>
               </td>
@@ -318,11 +333,38 @@ async function confirmEditor() {
           </tbody>
         </table>
       </div>
+      <!-- 手机卡片列表：一行 = 排序 + 名称 + 默认标记，次行路径，末行账号 + 操作 -->
+      <div v-else-if="rows.length" class="dd-cards">
+        <div v-for="it in pagedRows" :key="it.id" class="dd-mcard">
+          <div class="dd-mtop">
+            <span class="dd-sort">{{ it.sort }}</span>
+            <span class="dd-mname">{{ it.name }}</span>
+            <span v-if="it.is_default" class="dd-default-tag">默认</span>
+            <button v-else class="dd-setdefault" type="button" @click="setDefault(it)">设为默认</button>
+          </div>
+          <div class="dd-mpath" :title="it.path">{{ it.path }}</div>
+          <div class="dd-mfoot">
+            <span class="dd-acc">{{ accLabel(it.account) }}</span>
+            <div class="dd-ops">
+              <button class="dd-op" type="button" @click="openEditor(it.id)">编辑</button>
+              <a-popconfirm
+                :title="`确定删除「${it.name}」？删除后「快速转存」将不再显示它。`"
+                ok-text="删除"
+                cancel-text="取消"
+                @confirm="doDelete(it)"
+              >
+                <button class="dd-op dd-op-del" type="button">删除</button>
+              </a-popconfirm>
+            </div>
+          </div>
+        </div>
+      </div>
       <div v-else class="dd-empty">
         <b>还没有配置转存目录</b>
         给 {{ DRIVE_META[active].full }} 添加一个别名（如「电视剧」）并绑定路径，<br />
         搜索结果里的「快速转存」就能一键选它。
       </div>
+      <PkPager v-model:current="page" v-model:pageSize="size" :total="rows.length" />
     </div>
   </div>
 
@@ -557,6 +599,17 @@ async function confirmEditor() {
   gap: 4px;
   justify-content: flex-end;
 }
+/* 桌面表格操作列：编辑丨删除 文字链接（与转存记录页同款），红色删除走 antd danger */
+.dd-linkop {
+  padding: 0;
+}
+.dd-opdiv {
+  color: var(--text4);
+  font-size: 12px;
+  margin: 0 2px;
+  user-select: none;
+  align-self: center;
+}
 .dd-op {
   height: 28px;
   padding: 0 10px;
@@ -751,6 +804,54 @@ html[data-theme='dark'] .dd-tnode.on {
   /* 弹窗里「网盘 + 所属账号」双列改单列 */
   .dd-row2 { display: block; }
   .dd-row2 > * + * { margin-top: 12px; }
+
+  /* ---- 手机卡片列表（表格的替代渲染，仅 <768px 存在） ---- */
+  .dd-mcard {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--split);
+    -webkit-tap-highlight-color: transparent;
+  }
+  .dd-mcard:last-child { border-bottom: none; }
+  .dd-mcard:active { background: var(--surface-3); }
+  .dd-mtop {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .dd-mname {
+    flex: 1;
+    min-width: 0;
+    font-weight: 500;
+    font-size: 13.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .dd-mpath {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--text3);
+    margin: 4px 0 0 22px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .dd-mfoot {
+    display: flex;
+    align-items: center;
+    margin: 8px 0 0 22px;
+  }
+  .dd-mfoot .dd-acc {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .dd-mfoot .dd-ops { flex: none; }
+  /* 触屏目标放大一点：编辑/删除 32px 高 */
+  .dd-mfoot .dd-op { height: 32px; padding: 0 14px; }
 }
 </style>
 

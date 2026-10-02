@@ -131,26 +131,27 @@
 .mt-btn-sm { height: 30px; padding: 0 12px; font-size: 13px; }
 .mt-btn-inline {
   height: 34px;
-  padding: 0 16px;
-  font-size: 13.5px;
+  padding: 0 14px;
+  font-size: 13px;
   white-space: nowrap;
   flex: 0 0 auto;
-  min-width: 64px;
+  min-width: 0;
   justify-content: center;
 }
+/* 输入框旁边的动作钮（解析/浏览）：无边框淡蓝 chip，轻、不抢输入框的戏 */
 .mt-btn-soft {
-  background: color-mix(in srgb, var(--primary) 10%, var(--card));
-  border-color: color-mix(in srgb, var(--primary) 35%, var(--border));
+  background: rgba(22, 119, 255, 0.08);
+  border: none;
   color: var(--primary);
+  font-weight: 500;
 }
 .mt-btn-soft:hover {
-  background: color-mix(in srgb, var(--primary) 18%, var(--card));
-  border-color: var(--primary);
+  background: rgba(22, 119, 255, 0.16);
+  border: none;
   color: var(--primary);
 }
-html[data-theme='dark'] .mt-btn-soft {
-  background: color-mix(in srgb, var(--primary) 20%, var(--card));
-}
+html[data-theme='dark'] .mt-btn-soft { background: rgba(64, 150, 255, 0.16); }
+html[data-theme='dark'] .mt-btn-soft:hover { background: rgba(64, 150, 255, 0.26); }
 .mt-btn-link { border: none; background: transparent; color: var(--primary); height: 30px; padding: 0 6px; }
 .mt-btn-link:hover { text-decoration: underline; }
 .mt-icon-btn {

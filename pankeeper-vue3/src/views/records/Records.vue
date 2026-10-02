@@ -104,17 +104,23 @@ async function openDrawer(r: RecordRow) {
   curLog.value = await getRecordLog(r)
 }
 
-// cron 表达式 → 人话（原型 openTaskDetail 的 cronText）
-const CRON_LABEL: Record<string, string> = {
-  '0 3 * * *': '每天 03:00',
-  '0 12 * * *': '每天 12:00',
-  '0 */6 * * *': '每 6 小时',
-  '0 9 * * 1': '每周一 09:00',
-  '30 8 * * *': '每天 08:30',
+// 详情抽屉里「最近结果 → 详情」的文件清单弹窗
+const filesOpen = ref(false)
+function fileCls(st: string): string {
+  if (st === '已转存') return 't-ok'
+  if (st === '未转存') return 't-bad'
+  return 't-off'
 }
-function cronText(c: string): string {
-  if (!c) return '未开启定时'
-  return (CRON_LABEL[c] || '自定义表达式') + '（' + c + '）'
+function fmtSize(v: number): string {
+  if (!v) return '—'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let x = v
+  let i = 0
+  while (x >= 1024 && i < units.length - 1) {
+    x /= 1024
+    i++
+  }
+  return `${i === 0 || x >= 100 ? Math.round(x) : x.toFixed(1)} ${units[i]}`
 }
 
 async function onRetry() {
@@ -133,6 +139,13 @@ async function onDelete() {
   await deleteRecord(cur.value.id)
   message.success('记录已删除')
   drawerOpen.value = false
+  await reload()
+}
+
+/** 操作列的行内删除（红字，popconfirm 二次确认） */
+async function onRowDelete(r: RecordRow) {
+  await deleteRecord(r.id)
+  message.success('记录已删除')
   await reload()
 }
 
@@ -159,15 +172,34 @@ const trigStrmOpts = computed(() => [
   { value: '', label: '（不触发）' },
   ...strmPaths.value.map((p) => ({ value: String(p.id), label: strmLabel(p) })),
 ])
-async function openTrig() {
-  // 候选来自转存配置页暴露的 QMS/STRM 目录，进弹窗时拉一次即可
-  if (!qmsPaths.value.length) {
-    qmsPaths.value = await listQmsPaths()
-    strmPaths.value = await listStrmPaths()
+/** 目录列表拉取中：弹窗先开，下拉转圈等数据（QMS 在 NAS 上，现场拉要几百 ms～秒级） */
+const pathsLoading = ref(false)
+
+/** QMS/STRM 目录拉取：失败自动重试一次（代理偶发抖动别当成 QMS 没配），两连败才返回 null */
+async function fetchPathsSafe(): Promise<[DdQmsPath[], DdStrmPath[]] | null> {
+  for (let i = 0; i < 2; i++) {
+    try {
+      return [await listQmsPaths(), await listStrmPaths()]
+    } catch {
+      if (i) return null
+      await new Promise((r) => setTimeout(r, 800))
+    }
   }
+  return null
+}
+
+async function openTrig() {
+  // 弹窗立即开，目录后台拉（loading 态）——点按钮卡半秒的体验太差
   trigQms.value = ''
   trigStrm.value = ''
   trigOpen.value = true
+  if (qmsPaths.value.length) return
+  pathsLoading.value = true
+  const got = await fetchPathsSafe()
+  pathsLoading.value = false
+  if (!got) message.warning('QMS 未启用或连接失败，目录列表拉不到；先到「转存配置」里联动 QMS')
+  qmsPaths.value = got?.[0] || []
+  strmPaths.value = got?.[1] || []
 }
 async function confirmTrig() {
   const qv = trigQms.value
@@ -218,14 +250,16 @@ async function confirmTrig() {
         <table v-if="!isMobile" class="rk-table">
           <thead>
             <tr>
-              <th style="width: 24%">资源名称</th>
+              <!-- 列宽配比：名称/结果双主力列，长报错在结果列内截断（title 看全文），
+                   右侧 QMS/STRM/时间/操作收窄，别让宽屏下中间断崖、右边全空 -->
+              <th style="width: 28%">资源名称</th>
               <th style="width: 64px">来源</th>
-              <th style="width: 160px">目标位置</th>
-              <th>结果</th>
+              <th style="width: 200px">目标位置</th>
+              <th style="width: 30%">结果</th>
               <th style="width: 96px">QMS 整理</th>
               <th style="width: 96px">STRM 生成</th>
-              <th style="width: 76px">时间</th>
-              <th style="width: 60px">操作</th>
+              <th style="width: 88px">时间</th>
+              <th style="width: 110px">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -242,7 +276,13 @@ async function confirmTrig() {
               <td><span class="tag rk-tagclip" :class="r.qms.cls" :title="r.qms.st">{{ r.qms.st }}</span></td>
               <td><span class="tag rk-tagclip" :class="r.strm.cls" :title="r.strm.st">{{ r.strm.st }}</span></td>
               <td class="small muted rk-nowrap">{{ r.tm }}</td>
-              <td><a-button type="link" size="small" class="rk-detail" @click="openDrawer(r)">详情</a-button></td>
+              <td>
+                <a-button type="link" size="small" class="rk-detail" @click="openDrawer(r)">详情</a-button>
+                <span class="rk-opdiv">丨</span>
+                <a-popconfirm title="确定删除这条记录？" ok-text="删除" cancel-text="取消" @confirm="onRowDelete(r)">
+                  <a-button type="link" danger size="small" class="rk-detail">删除</a-button>
+                </a-popconfirm>
+              </td>
             </tr>
             <tr v-if="!paged.length">
               <td colspan="8" class="pq-empty">没有匹配的记录 · 换个筛选条件试试</td>
@@ -264,6 +304,9 @@ async function confirmTrig() {
             <div class="rk-card-top">
               <span class="srcbar" :style="{ background: metaOf(r).color }"></span>
               <span class="rk-card-name">{{ r.n }}</span>
+            </div>
+            <!-- 结果/报错独占一行：都放开换行——名字看得全，errno 长文案也看得全 -->
+            <div class="rk-card-tagline">
               <span class="tag" :class="r.cls">{{ r.st }}</span>
             </div>
             <div class="rk-card-meta">
@@ -271,8 +314,8 @@ async function confirmTrig() {
               <span class="small muted rk-card-path">{{ r.p }}</span>
             </div>
             <div class="rk-card-foot">
-              <span class="tag" :class="r.qms.cls">{{ r.qms.st }}</span>
-              <span class="tag" :class="r.strm.cls">{{ r.strm.st }}</span>
+              <span class="tag rk-card-tag" :class="r.qms.cls" :title="r.qms.st">整理：{{ r.qms.st }}</span>
+              <span class="tag rk-card-tag" :class="r.strm.cls" :title="r.strm.st">STRM：{{ r.strm.st }}</span>
               <span class="small muted rk-card-tm">{{ r.tm }}</span>
             </div>
           </div>
@@ -281,12 +324,12 @@ async function confirmTrig() {
         <PkPager v-model:current="page" v-model:pageSize="size" :total="filtered.length" />
       </div>
 
-    <!-- 详情抽屉：快照字段 + 执行日志 + 记录级操作 -->
-    <a-drawer v-model:open="drawerOpen" :width="660" title="转存详情">
+    <!-- 详情抽屉：快照字段 + 执行日志 + 记录级操作（手机版宽度 100%，与队列抽屉同规矩） -->
+    <a-drawer v-model:open="drawerOpen" :width="isMobile ? '100%' : 660" title="转存详情">
       <template v-if="cur">
         <dl class="snap">
           <dt>任务名称</dt>
-          <dd>{{ cur.n }}</dd>
+          <dd class="rk-taskname">{{ cur.n }}</dd>
           <dt>所属网盘</dt>
           <dd><span class="tag" :class="metaOf(cur).tag">{{ metaOf(cur).full }}</span></dd>
           <dt>分享链接</dt>
@@ -295,22 +338,29 @@ async function confirmTrig() {
           </dd>
           <dt>保存到</dt>
           <dd class="rk-mono">{{ cur.p }}</dd>
-          <dt>定时策略</dt>
-          <dd>{{ cronText(cur.cron) }}</dd>
           <dt>包含子目录</dt>
           <dd><span class="tag" :class="cur.include_subdirs ? 't-ok' : 't-off'">{{ cur.include_subdirs ? '是' : '否' }}</span></dd>
           <dt>排除文件</dt>
           <dd>{{ cur.exclude_count }} 个</dd>
           <dt>完成后动作</dt>
           <dd>
-            <span v-if="cur.post_qms" class="tag t-ok">触发 QMS</span>
+            <span class="tag" :class="cur.qms.cls">QMS {{ cur.qms.st }}</span>
+            <span class="tag" :class="cur.strm.cls">STRM {{ cur.strm.st }}</span>
             <span v-if="cur.post_notify" class="tag t-ok">Server 酱推送</span>
-            <span v-if="!cur.post_qms && !cur.post_notify" class="small muted">—</span>
+            <span
+              v-if="cur.qms.cls === 't-off' && cur.strm.cls === 't-off' && !cur.post_notify"
+              class="small muted"
+            >—</span>
           </dd>
           <dt>上次执行</dt>
           <dd class="small muted">{{ cur.tm }}</dd>
           <dt>最近结果</dt>
-          <dd><span class="tag" :class="cur.cls">{{ cur.st }}</span></dd>
+          <dd>
+            <span class="tag" :class="cur.cls">{{ cur.st }}</span>
+            <a-button v-if="cur.files && cur.files.length" type="link" size="small" class="rk-filesbtn" @click="filesOpen = true">
+              详情
+            </a-button>
+          </dd>
         </dl>
         <div class="sect">执行日志</div>
         <LogBox :lines="curLog" />
@@ -322,6 +372,20 @@ async function confirmTrig() {
       </template>
     </a-drawer>
 
+    <!-- 转存文件清单弹窗：转存当时的分享内文件快照（后端 files_json），逐文件标去向 -->
+    <a-modal v-model:open="filesOpen" title="转存文件清单" :width="isMobile ? '94%' : 560" :footer="null">
+      <div class="rk-filelist">
+        <div v-for="(f, i) in cur?.files || []" :key="i" class="rk-file">
+          <div class="rk-file-info">
+            <div class="rk-file-path" :title="f.path">{{ f.path || f.name }}</div>
+            <div class="small muted">{{ fmtSize(f.size) }}</div>
+          </div>
+          <span class="tag" :class="fileCls(f.st)">{{ f.st }}</span>
+        </div>
+        <div v-if="!cur?.files?.length" class="pq-empty">这条记录没有文件清单快照</div>
+      </div>
+    </a-modal>
+
     <!-- 手动触发弹窗：QMS / STRM 都可空，选哪个触发哪个；都选时隔 10 秒触发第二个 -->
     <a-modal v-model:open="trigOpen" title="手动触发" :width="480" ok-text="立即触发" cancel-text="取消" @ok="confirmTrig">
       <div class="rk-tip">
@@ -329,11 +393,11 @@ async function confirmTrig() {
       </div>
       <div class="rk-field">
         <label>QMS 刮削目录</label>
-        <a-select v-model:value="trigQms" :options="trigQmsOpts" style="width: 100%" />
+        <a-select v-model:value="trigQms" :options="trigQmsOpts" :loading="pathsLoading" placeholder="目录加载中…" style="width: 100%" />
       </div>
       <div class="rk-field">
         <label>STRM 生成</label>
-        <a-select v-model:value="trigStrm" :options="trigStrmOpts" style="width: 100%" />
+        <a-select v-model:value="trigStrm" :options="trigStrmOpts" :loading="pathsLoading" placeholder="目录加载中…" style="width: 100%" />
       </div>
     </a-modal>
   </div>
@@ -404,6 +468,13 @@ async function confirmTrig() {
 .rk-detail {
   padding: 0;
 }
+/* 详情丨删除 之间的竖线分隔 */
+.rk-opdiv {
+  color: var(--text4);
+  font-size: 12px;
+  margin: 0 2px;
+  user-select: none;
+}
 
 /* 详情抽屉：快照 dl 网格（原型 .snap/.sect 结构） */
 .snap {
@@ -422,6 +493,44 @@ async function confirmTrig() {
 }
 .rk-mono {
   font-family: var(--font-mono);
+}
+/* 任务名称：手机上长名不折行会把 dl 网格顶乱，强制可断行 */
+.rk-taskname {
+  font-weight: 500;
+  word-break: break-all;
+}
+.rk-filesbtn {
+  padding: 0 4px;
+}
+/* 文件清单弹窗：等宽路径单行省略，右侧去向 tag 固定不挤 */
+.rk-filelist {
+  max-height: 62vh;
+  overflow: auto;
+}
+.rk-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 2px;
+  border-bottom: 1px solid var(--split);
+}
+.rk-file:last-child {
+  border-bottom: none;
+}
+.rk-file-info {
+  flex: 1;
+  min-width: 0;
+}
+.rk-file-path {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rk-file .tag {
+  flex: none;
+  margin-right: 0;
 }
 .sect {
   font-size: 13px;
@@ -458,9 +567,21 @@ async function confirmTrig() {
 /* ---- 移动端（<768px）：8 列表格换卡片列表；PC 一条不动 ---- */
 .rk-cards { display: none; }
 @media (max-width: 767px) {
-  /* 筛选条两颗动作按钮换行时占满整行，好按 */
-  .filterbar :deep(.ant-btn) {
-    flex: 1 1 auto;
+  /* 筛选条手机版分行：状态/网盘挤一行，资源名称独占一行，两个按钮各占一行 */
+  .fb-head :deep(.ant-select) {
+    flex: 1 1 0;
+    width: auto !important; /* 压掉行内 style="width:120px"，两个下拉平分一行 */
+  }
+  .fb-head .rk-flex1 {
+    display: none; /* 弹性占位会拉着输入框同行，手机版去掉 */
+  }
+  .fb-head :deep(.ant-input-affix-wrapper),
+  .fb-head :deep(.ant-input) {
+    flex: 1 1 100%;
+    width: auto !important;
+  }
+  .fb-head :deep(.ant-btn) {
+    flex: 1 1 100%; /* 触发 / 清空各占一整行，好按 */
   }
 
   .rk-cards { display: block; }
@@ -483,10 +604,27 @@ async function confirmTrig() {
     font-size: 13.5px;
     font-weight: 500;
     line-height: 1.45;
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
+    /* 名称独占一行放开换行（用户要求看得全），不再两行截断 */
     word-break: break-all;
+  }
+  /* 结果/报错行：tag 放开换行看全文（errno 长文案折两行也比截断强） */
+  .rk-card-tagline {
+    margin: 8px 0 0 11px;
+    min-width: 0;
+  }
+  .rk-card-tagline .tag {
+    white-space: normal;
+    word-break: break-all;
+    max-width: 100%;
+    margin-right: 0;
+  }
+  /* QMS/STRM 这类短 tag 保持限宽省略，别把时间挤跑 */
+  .rk-card-tag {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 72%;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .rk-card-meta {
     display: flex;

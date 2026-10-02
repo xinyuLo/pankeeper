@@ -1,7 +1,6 @@
 <script setup lang="ts">
-/* 「查看」弹窗：实时拉取分享链接内的文件树。
- * 真实模式打 GET /pa/tasks/:id/share-files（每次现拉）；
- * mock 模式用演示树（SHARE_TREE）。 */
+/* 「查看」弹窗：分享内文件树。走后端分享清单缓存（转存跑完自动刷新），
+ * 「刷新」按钮忽略缓存直连重拉；mock 模式用演示树（SHARE_TREE）。 */
 import { ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { LoadingOutlined, FolderOutlined, FileOutlined } from '@ant-design/icons-vue'
@@ -20,9 +19,12 @@ const props = defineProps<{ open: boolean; taskId: number | null; taskName: stri
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>()
 
 const loading = ref(false)
+const refreshing = ref(false)
 const error = ref('')
 const tree = ref<TreeNode[]>([])
 const total = ref(0)
+const cachedAt = ref(0)
+const fresh = ref(false)
 const openSet = ref(new Set<string>())
 
 function fmtSize(n: number): string {
@@ -30,6 +32,11 @@ function fmtSize(n: number): string {
   if (n > 1024 ** 3) return (n / 1024 ** 3).toFixed(1) + ' GB'
   if (n > 1024 ** 2) return (n / 1024 ** 2).toFixed(0) + ' MB'
   return Math.max(1, Math.round(n / 1024)) + ' KB'
+}
+function fmtTs(ts: number): string {
+  const d = new Date(ts)
+  const p = (v: number) => String(v).padStart(2, '0')
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
 function toggleOpen(key: string) {
@@ -39,21 +46,25 @@ function toggleOpen(key: string) {
   openSet.value = s
 }
 
-async function load() {
+async function load(refresh = false) {
   if (!props.taskId) return
-  loading.value = true
+  refresh ? (refreshing.value = true) : (loading.value = true)
   error.value = ''
   openSet.value = new Set()
   try {
-    const res = await getShareFiles(props.taskId)
+    const res = await getShareFiles(props.taskId, refresh)
     tree.value = res.tree
     total.value = res.total
+    cachedAt.value = res.cached_at * 1000
+    fresh.value = res.fresh
+    if (refresh) message.success('文件清单已刷新')
   } catch (e: unknown) {
     const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-    error.value = detail || '实时获取失败'
+    error.value = detail || '获取分享内容失败'
     tree.value = []
   } finally {
     loading.value = false
+    refreshing.value = false
   }
 }
 
@@ -65,6 +76,8 @@ watch(
       // mock：演示树（顶层名换成任务名）
       error.value = ''
       total.value = 12
+      cachedAt.value = Date.now()
+      fresh.value = true
       tree.value = JSON.parse(JSON.stringify(SHARE_TREE)).map((n: TreeNode) => ({
         ...n,
         name: props.taskName || n.name,
@@ -95,10 +108,18 @@ void message
     destroy-on-close
     @update:open="(v: boolean) => emit('update:open', v)"
   >
+    <template #title>
+      <div class="sfm-title">
+        <span>分享内容 · {{ taskName }}</span>
+        <a-button size="small" :loading="refreshing" @click="load(true)">刷新</a-button>
+      </div>
+    </template>
     <div class="sfm-meta small muted">
-      <template v-if="loading"><LoadingOutlined /> 正在实时获取分享内容…</template>
+      <template v-if="loading"><LoadingOutlined /> 正在获取分享内容…</template>
       <template v-else-if="error">{{ error }}</template>
-      <template v-else>实时获取 · 共 {{ total }} 个文件</template>
+      <template v-else>
+        {{ fresh ? '刚从网盘拉取' : '来自缓存 · 转存执行后自动刷新' }} · 共 {{ total }} 个文件 · 获取于 {{ fmtTs(cachedAt) }}
+      </template>
     </div>
 
     <div v-if="loading" class="sfm-body">
@@ -137,6 +158,7 @@ void message
 </template>
 
 <style scoped>
+.sfm-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-right: 30px; font-size: 15px; font-weight: 600; }
 .sfm-meta { margin-bottom: 10px; }
 .sfm-body {
   max-height: 52vh;
