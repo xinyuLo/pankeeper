@@ -69,13 +69,14 @@ class PaTask(Base):
     include_subdirs: Mapped[bool] = mapped_column(Boolean, default=True)
     cron: Mapped[str] = mapped_column(Text, default="")  # 空 = 仅手动
     exclude_json: Mapped[str] = mapped_column(Text, default="[]")  # 排除清单（文件名列表）
+    exclude_md5_json: Mapped[str] = mapped_column(Text, default="[]")  # 排除清单（MD5 列表，与文件名任一命中即排除）
     exclude_count: Mapped[int] = mapped_column(Integer, default=0)
     qms_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     strm_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     regex_pattern: Mapped[str] = mapped_column(Text, default="")
     regex_replace: Mapped[str] = mapped_column(Text, default="")
     drill_on: Mapped[bool] = mapped_column(Boolean, default=False)
-    drill_json: Mapped[str] = mapped_column(Text, default="[]")
+    drill_json: Mapped[str] = mapped_column(Text, default="[]")  # 下钻勾选：字段保留、配置不丢；功能短期不实现（2026-10-03 定）
     post_qms: Mapped[bool] = mapped_column(Boolean, default=False)
     post_notify: Mapped[bool] = mapped_column(Boolean, default=True)
     last_run: Mapped[str] = mapped_column(Text, default="")
@@ -139,6 +140,7 @@ class QueueTaskRow(Base):
     acc_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 指定账号；空=该类型默认
     pa_task_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 来源 PaTask（自动任务才有）
     exclude_json: Mapped[str] = mapped_column(Text, default="[]")  # 排除清单（文件名列表）
+    exclude_md5_json: Mapped[str] = mapped_column(Text, default="[]")  # 排除清单（MD5，与文件名任一命中即排除）
 
 
 class Setting(Base):
@@ -192,6 +194,7 @@ class RunHistory(Base):
     duration: Mapped[int] = mapped_column(Integer, default=0)  # 耗时（秒）
     transferred_json: Mapped[str] = mapped_column(Text, default="[]")  # 本次实际转存的文件名
     excluded_json: Mapped[str] = mapped_column(Text, default="[]")  # 排除清单跳过的文件名
+    regex_hit_json: Mapped[str] = mapped_column(Text, default="[]")  # 正则命中（过滤后放行）的文件名
     logs_json: Mapped[str] = mapped_column(Text, default="[]")
 
 

@@ -58,6 +58,8 @@ class TaskSpec:
     include_subdirs: bool = True
     rename_map: dict[str, str] = field(default_factory=dict)  # 原名 → 目标名
     exclude_names: set[str] = field(default_factory=set)
+    # 排除清单（MD5）：与文件名任一命中即排除（分享内改名的文件靠 MD5 兜住）
+    exclude_md5s: set[str] = field(default_factory=set)
     # MD5 对比基线目录（自动任务的去重对比路径；空=用 save_dir）
     compare_path: str = ""
     # 只转存分享内这些相对路径（勾选清单；None/空 = 全部）。

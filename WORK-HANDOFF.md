@@ -62,7 +62,15 @@
 - 115 适配器 `transferred` 补文件名（原先空串，media_push 推送名单受益）。
 - **NAS baidu-autosave 任务已迁移**：兰香如故（baidu，cron 0 20 * * *，正则 4k，排除 5 项，compare_path 灿如繁星 S1）→ PaTask id=1，调度已注册。
 
+## 2.6 本批增量（2026-10-03 凌晨）
+
+- **正则命中清单落库**：RunHistory 新列 `regex_hit_json`（自动迁移），auto 流程正则过滤后记录放行文件名，`/pa/runs/{id}` 详情直出 `regex_hit`，转存日志详情弹窗新增「正则命中（N）」区块（旧记录为空数组不显示，下次真实转存起生效）。过滤逻辑抽成纯函数 `_apply_regex` / `_apply_exclusion`（auto.py），4 条单元测试覆盖。
+- **排除清单加 MD5 粒度**：PaTask/QueueTaskRow 新列 `exclude_md5_json`；排除弹窗「确定」同时回写文件名+MD5（`POST /pa/tasks/{id}/exclude` 带 `md5s`）；转存链路按「名字或 MD5 任一命中」剔除（baidu/quark/pan115 三适配器同语义），分享里改过名的文件靠 MD5 兜住。**顺手修了个隐患**：此前排除在适配器 list_share 内先过滤，auto.py 记排除名单的代码实际永远为空——现在排除统一由 auto 流程做并如实落库。
+- **`share/list` 相邻调用强制 2 秒间隔**（BaiduClient._pace_share_list，实例级时间戳）：覆盖转存 walk 全部列目录请求，防 -7 风控。
+- **下钻功能（转存文件夹多选）短期不实现**（2026-10-03 定）：`drill_on`/`drill_json` 字段保留、已有任务配置不丢，界面/链路/端点均不做。将来重启开发时的既定方案：浏览端点优先命中分享清单缓存（零请求），未命中走全量 list_share 回填缓存；bdsavePro 参照 AddTaskDialog.vue（逐层进入+多选勾选）+ storage.py transfer_folders 语义（keep_folder 控制是否连文件夹本身一起存）。
+
 ## 3. 关键定论（别忘，别再改回去）
+
 
 ### 3.1 风控与缓存纪律
 
@@ -92,7 +100,7 @@
 | Gitea | 本次提交（见 git log），NAS 从同一提交部署 |
 | NAS | pankeeper 容器 = 本提交；兰香如故任务 cron 0 20 * * * 生效 |
 | 分享清单缓存 | `share_list_cache` 表，兰香如故 106 文件已缓存（30h 内有效语义见 §2.2） |
-| 已知待办 | 正则过滤后文件清单未单独落库（详情用 转存+排除 近似）；排除粒度按文件名（无 MD5 对比）；下钻功能待回填 UI |
+| 已知待办 | ~~正则过滤后文件清单未单独落库~~ ✅ 已做（§2.6）；~~排除粒度按文件名~~ ✅ 已加 MD5（§2.6）；下钻功能**短期不实现**（方案已定，见 §2.6） |
 
 ## 5. 快速自检 / 部署命令
 

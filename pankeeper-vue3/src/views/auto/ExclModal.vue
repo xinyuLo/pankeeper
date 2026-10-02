@@ -88,8 +88,11 @@ function toggle(i: number, e: Event) {
 
 async function onOk() {
   if (!props.task) return
-  const names = [...sel.value].sort((a, b) => a - b).map((i) => files.value[i]?.name || '').filter(Boolean)
-  await commitExcl(props.task.id, names)
+  const idxs = [...sel.value].sort((a, b) => a - b)
+  const names = idxs.map((i) => files.value[i]?.name || '').filter(Boolean)
+  // 有校验值的文件同时记 MD5：分享里改名的文件靠 MD5 兜住（名字对不上也能排掉）
+  const md5s = idxs.map((i) => files.value[i]?.md5 || '').filter(Boolean)
+  await commitExcl(props.task.id, names, md5s)
   message.success(`已排除 ${names.length} 个文件`)
   emit('committed')
   close()

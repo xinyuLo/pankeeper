@@ -166,8 +166,12 @@ class QuarkAdapter(CloudAdapter):
         # 排除清单 + 改名映射
         for f in files:
             f.target_name = spec.rename_map.get(f.name)
-        if spec.exclude_names:
-            files = [f for f in files if f.name not in spec.exclude_names]
+        if spec.exclude_names or spec.exclude_md5s:
+            files = [
+                f
+                for f in files
+                if f.name not in spec.exclude_names and not (not f.is_dir and f.md5 and f.md5 in spec.exclude_md5s)
+            ]
         return files
 
     def _walk_share(self, stoken: str, pwd_id: str, pdir_fid: str, include_subdirs: bool, depth: int, base: str = "/") -> list[ShareFile]:
