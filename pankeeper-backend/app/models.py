@@ -141,6 +141,7 @@ class QueueTaskRow(Base):
     pa_task_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 来源 PaTask（自动任务才有）
     exclude_json: Mapped[str] = mapped_column(Text, default="[]")  # 排除清单（文件名列表）
     exclude_md5_json: Mapped[str] = mapped_column(Text, default="[]")  # 排除清单（MD5，与文件名任一命中即排除）
+    regex_pattern: Mapped[str] = mapped_column(Text, default="")  # 任务正则（引擎透传 run_auto；此前漏存致正则失效）
 
 
 class Setting(Base):

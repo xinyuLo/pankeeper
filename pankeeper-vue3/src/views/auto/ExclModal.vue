@@ -155,7 +155,7 @@ onBeforeUnmount(() => {
               <span class="mt-section-tip">勾选的文件在转存时会被排除</span>
             </div>
           </div>
-          <div class="mt-hint">标注「无 MD5」的文件无校验值，转存时按文件名去重。</div>
+          <div class="mt-hint">候选已按任务的文件过滤正则筛过（正则匹配不上的不会转存，不用排除）；「无 MD5」的文件无校验值，转存时按文件名去重。</div>
         </div>
         <div class="mt-dialog-foot">
           <button class="mt-btn" @click="close">取消</button>

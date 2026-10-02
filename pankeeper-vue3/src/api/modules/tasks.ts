@@ -115,9 +115,9 @@ export interface ShareFilesMeta {
   fresh: boolean
 }
 
-export function getShareFiles(taskId: number, refresh = false): Promise<ShareFilesMeta> {
+export function getShareFiles(taskId: number, refresh = false, filtered = false): Promise<ShareFilesMeta> {
   if (USE_MOCK) return Promise.resolve({ total: 0, tree: [], files: [], cached_at: 0, fresh: false })
-  return get<ShareFilesMeta>(`/pa/tasks/${taskId}/share-files`, { params: { refresh } })
+  return get<ShareFilesMeta>(`/pa/tasks/${taskId}/share-files`, { params: { refresh, filtered } })
 }
 
 /* ===================== 任务弹窗的扩展配置 =====================
@@ -198,9 +198,10 @@ export interface PaExclFetch {
   files: PaExclFile[]
 }
 
-/** 拉排除候选清单：走后端分享清单缓存（转存跑完自动刷新），refresh=true 忽略缓存直连 */
+/** 拉排除候选清单：走后端分享清单缓存（转存跑完自动刷新），refresh=true 忽略缓存直连。
+ * filtered=true：候选按任务正则过滤——匹配不上的文件本来就不会被转存，不进排除清单 */
 export async function fetchExclFiles(taskId: number, force = false): Promise<PaExclFetch> {
-  const r = await getShareFiles(taskId, force)
+  const r = await getShareFiles(taskId, force, true)
   return {
     fresh: r.fresh,
     ts: r.cached_at * 1000,

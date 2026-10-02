@@ -278,7 +278,7 @@ function detailCron(c: string): string {
       </table>
       <PkPager v-if="!isMobile" v-model:current="page" v-model:pageSize="size" :total="tasks.length" />
 
-      <!-- 手机端：一任务一卡（名称+开关 / 状态+定时 / 链接+复制 / 执行信息 / 五动作铺开） -->
+      <!-- 手机端：一任务一卡（名称+开关 / 状态+定时 / 网盘链接+提取码+复制 / 执行信息 / 主操作+次操作字链） -->
       <div v-else class="pa-cards">
         <div v-for="t in pagedTasks" :key="t.id" class="pa-carditem" :style="{ borderLeft: '3px solid ' + meta.color }">
           <div class="pa-c-top">
@@ -298,12 +298,10 @@ function detailCron(c: string): string {
             <span class="small muted">{{ cronText(t.cron) }}</span>
           </div>
           <div class="pa-c-row">
+            <!-- 网盘链接本体：点击直接打开分享（替代原「跳转」按钮） -->
+            <a class="pa-url" :href="t.share_url" target="_blank" rel="noopener" :title="t.share_url">{{ linkTrunc(t.share_url) }}</a>
             <span v-if="t.share_code" class="pa-code">{{ t.share_code }}</span>
-            <div class="pa-linkops">
-              <button class="pa-op" @click="onViewFiles(t)">查看</button>
-              <button class="pa-op" @click="onJump(t)">跳转</button>
-              <button class="pa-op" @click="onCopy(t)">复制</button>
-            </div>
+            <button class="pa-op" @click="onCopy(t)">复制</button>
           </div>
           <div class="pa-c-row pa-c-info">
             <span>上次执行 {{ t.last_run || '—' }}</span>
@@ -311,11 +309,13 @@ function detailCron(c: string): string {
           </div>
           <div class="pa-c-ops">
             <button class="pa-op pa-op-run" @click="openRun(t)">执行</button>
+            <button class="pa-op pa-op-log" @click="openRunHistory(t)">转存日志</button>
             <button class="pa-op pa-op-edit" @click="openEdit(t)">编辑</button>
-            <button class="pa-op pa-op-excl" @click="openExcl(t)">
-              排除<i v-if="t.exclude_count" class="pa-op-num">{{ t.exclude_count }}</i>
-            </button>
-            <button class="pa-op pa-op-detail" @click="openDetail(t)">详情</button>
+          </div>
+          <div class="pa-c-sub">
+            <button class="pa-sublink" @click="onViewFiles(t)">查看文件</button>
+            <button class="pa-sublink" @click="openExcl(t)">排除<i v-if="t.exclude_count" class="pa-op-num">{{ t.exclude_count }}</i></button>
+            <button class="pa-sublink" @click="openDetail(t)">详情</button>
             <a-popconfirm
               :title="`确认删除任务「${t.name}」？此操作不可恢复。`"
               ok-text="删除"
@@ -323,7 +323,7 @@ function detailCron(c: string): string {
               :ok-button-props="{ danger: true }"
               @confirm="onDel(t)"
             >
-              <button class="pa-op pa-op-del">删除</button>
+              <button class="pa-sublink danger">删除</button>
             </a-popconfirm>
           </div>
         </div>
@@ -647,6 +647,7 @@ html[data-theme='dark'] .pa-op-excl:hover { background: #2b2111; border-color: #
 html[data-theme='dark'] .pa-op-num { background: #594214; color: #ffe58f; }
 html[data-theme='dark'] .pa-op-del { color: #ff7875; border-color: #582a27; }
 html[data-theme='dark'] .pa-op-del:hover { background: #2b1314; border-color: #ff7875; }
+html[data-theme='dark'] .pa-sublink.danger { color: #ff7875; }
 
 /* ===== 详情抽屉：快照 dl 网格（与转存记录页同一长相） ===== */
 .pa-snap { display: grid; grid-template-columns: 96px 1fr; gap: 11px 14px; font-size: 13.5px; margin-bottom: 22px; }
@@ -698,7 +699,7 @@ html[data-theme='dark'] .pa-op-del:hover { background: #2b1314; border-color: #f
     margin-top: 8px;
     min-width: 0;
   }
-  .pa-c-row .pa-url { flex: 1; min-width: 0; max-width: none; }
+  .pa-c-row .pa-url { flex: 1; min-width: 0; max-width: none; color: var(--primary); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pa-c-info { color: var(--text3); font-size: 12px; justify-content: space-between; flex-wrap: wrap; gap: 4px 10px; }
   .pa-c-ops {
     display: flex;
@@ -707,6 +708,26 @@ html[data-theme='dark'] .pa-op-del:hover { background: #2b1314; border-color: #f
     flex-wrap: wrap;
   }
   .pa-c-ops .pa-op { flex: 1 1 auto; justify-content: center; height: 32px; }
+  /* 次操作字链：低频动作收一行小字，别跟主操作挤成一堆按钮 */
+  .pa-c-sub {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+  }
+  .pa-sublink {
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: 12.5px;
+    color: var(--text3);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+  }
+  .pa-sublink.danger { color: #cf1322; }
   .pa-c-empty { padding: 40px 16px; text-align: center; color: var(--text3); font-size: 13px; }
 }
 </style>
