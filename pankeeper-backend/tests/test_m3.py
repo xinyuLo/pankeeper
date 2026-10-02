@@ -9,15 +9,15 @@ from app.services.pa_scheduler import run_task  # noqa: F401  确认可导入
 
 def test_parse_share_url_forms():
     # 页面短码返回全长（含前导 1）；verify 用的 22 位码由 _verify_surl 剥
-    assert BaiduClient.parse_share_url("https://pan.baidu.com/s/1abcDEF-_/") == "1abcDEF-_"
-    assert BaiduClient.parse_share_url("https://pan.baidu.com/s/1abcDEF-_?pwd=xy12") == "1abcDEF-_"
-    assert BaiduClient.parse_share_url("https://pan.baidu.com/share/init?surl=abcDEF-_") == "abcDEF-_"
-    assert BaiduClient.parse_share_url(" https://pan.baidu.com/s/1xyz12 #comment") == "1xyz12"
+    assert BaiduClient.parse_share_url("https://pan.baidu.com/s/1abcDEF-_1234567890123/") == "1abcDEF-_1234567890123"
+    assert BaiduClient.parse_share_url("https://pan.baidu.com/s/1abcDEF-_1234567890123?pwd=xy12") == "1abcDEF-_1234567890123"
+    assert BaiduClient.parse_share_url("https://pan.baidu.com/share/init?surl=abcDEF-_12345678901") == "abcDEF-_12345678901"
+    assert BaiduClient.parse_share_url(" https://pan.baidu.com/s/1xyz1234567890123456789 #comment") == "1xyz1234567890123456789"
 
 
 def test_verify_surl_strips_leading_one():
-    assert BaiduClient._verify_surl("1tg7WGwRWH5MPZp92QWkbGQ") == "tg7WGwRWH5MPZp92QWkbGQ"
-    assert BaiduClient._verify_surl("abcDEF-_") == "abcDEF-_"
+    assert BaiduClient._verify_surl("1tg7WGwRWH5MPZp92QWkbGQ") == "tg7WGwRWH5MPZp92QWkbGQ"  # 23 位真实形态
+    assert BaiduClient._verify_surl("abcDEF-_12345678901") == "abcDEF-_12345678901"
 
 
 def test_parse_share_url_rejects_garbage():
