@@ -360,9 +360,26 @@ html[data-theme='dark'] .mt-dir-bar { color: #ffc069; }
 }
 
 /* ===== 执行监控 ===== */
-.mt-progress { height: 8px; background: var(--split); border-radius: 8px; overflow: hidden; margin: 4px 0 8px; }
-.mt-progress-bar { height: 100%; width: 0; background: linear-gradient(90deg, var(--primary), var(--primary-h)); transition: width 0.4s; }
-.mt-progress-text { font-size: 12px; color: var(--text3); }
+/* 不定量 loading 条（2026-10-04 用户要求）——
+   队列引擎没有细粒度进度，百分比其实在骗人（QMS 阶段数字停在 100% 但活还在跑）。
+   改成"流动条"：只表达"还在跑"，不假装知道进度。跑完 → is-done 变实心绿，一眼看出结束。 */
+.mt-progress { position: relative; height: 8px; background: var(--split); border-radius: 8px; overflow: hidden; margin: 4px 0 12px; }
+.mt-progress::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 34%;
+  border-radius: 8px;
+  background: linear-gradient(90deg, rgba(22, 119, 255, 0), var(--primary) 45%, rgba(22, 119, 255, 0));
+  animation: mt-flow 1.15s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+@keyframes mt-flow {
+  0% { left: -34%; }
+  100% { left: 100%; }
+}
+.mt-progress.is-done { background: var(--success); }
+.mt-progress.is-done::after { display: none; }
 .mt-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px; }
 .mt-stat-card { border: 1px solid var(--split); border-radius: 10px; padding: 12px; text-align: center; }
 .mt-stat-num { font-size: 24px; font-weight: 700; line-height: 1.1; }

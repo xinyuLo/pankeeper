@@ -73,6 +73,9 @@ def run_manual(eng, t: dict, cfg: dict) -> None:
         exclude_names=set(t.get("excludeNames") or []),
         compare_path=t.get("comparePath") or "",
         only_paths=(set(t.get("filePaths") or []) or None),
+        # 「带壳转存」（快速转存弹窗）：整壳转过来 + 根文件夹更名；自动任务不带壳（默认 False）
+        with_shell=bool(t.get("withShell")),
+        folder_rename=(t.get("rename") or "").strip(),
     )
     if not spec.share_url:
         _push_log(t, "ERROR", "任务缺少分享链接（shareUrl），无法转存")
@@ -141,7 +144,9 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
     t["phase"] = "qms"
     t["phaseStart"] = int(time.time() * 1000)
     ok, msg = qms.trigger_scrape(link["qms_id"])
-    qms_snap = {"st": "成功" if ok else f"失败 · {msg}", "cls": "t-ok" if ok else "t-bad"}
+    # 与自动转存同款口径（2026-10-04 用户要求："qms那已经是刮削失败了，pankeeper还显示qms触发成功"）：
+    # 触发受理 ≠ 刮削成功，快照先如实写「已触发」，真实结果由 run_watch 后台轮询回填
+    qms_snap = {"st": "已触发" if ok else f"失败 · {msg}", "cls": "t-off" if ok else "t-bad"}
     _push_log(t, "INFO" if ok else "ERROR", f"QMS 刮削任务 #{link['qms_id']} 触发{'成功' if ok else '失败'}：{msg or '详见 QMS 侧日志'}")
 
     strm_ok: bool | None = None
@@ -151,7 +156,7 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
         t["phaseStart"] = int(time.time() * 1000)
         ok2, msg2 = qms.trigger_strm(link["strm_id"])
         strm_ok = ok2
-        strm_snap = {"st": "成功" if ok2 else f"失败 · {msg2}", "cls": "t-ok" if ok2 else "t-bad"}
+        strm_snap = {"st": "已触发" if ok2 else f"失败 · {msg2}", "cls": "t-ok" if ok2 else "t-bad"}
         _push_log(t, "INFO" if ok2 else "ERROR", f"STRM 同步 #{link['strm_id']} 触发{'成功' if ok2 else '失败'}：{msg2 or '详见 QMS 侧日志'}")
 
     if ok:
@@ -216,24 +221,35 @@ def _finish(eng, t: dict, status: str, message: str = "", qms_snap: dict | None 
             eng.state["lastDone"] = now_ms
         eng._cond.notify_all()
     # 记录快照（手动任务不接富文本推送——交互契约；失败提示走 notify 内部的 search_fail 开关）
+    rid = None
     with SessionLocal() as s:
-        s.add(
-            Record(
-                n=t["name"],
-                t=t["type"],
-                p=t["path"],
-                st=("完成 %d/%d" % (result.add, t["files"] or result.add)) if status == "done" and result else (message or ("已完成" if status == "done" else "失败")),
-                cls="t-ok" if status == "done" else ("t-warn" if status == "warn" else "t-bad"),
-                tm=time.strftime("%m-%d %H:%M"),
-                qms_json=json.dumps(qms_snap or {"st": "未执行", "cls": "t-off"}, ensure_ascii=False),
-                strm_json=json.dumps(strm_snap or {"st": "未执行", "cls": "t-off"}, ensure_ascii=False),
-                share_url=t.get("shareUrl", ""),
-                share_code=t.get("shareCode", ""),
-                source="search",  # 手动查询转存：记录页唯一来源
-                logs_json=json.dumps(t["logs"], ensure_ascii=False),
-                files_json=json.dumps(files_snap or [], ensure_ascii=False),
-            )
+        hist = Record(
+            n=t["name"],
+            t=t["type"],
+            p=t["path"],
+            st=("完成 %d/%d" % (result.add, t["files"] or result.add)) if status == "done" and result else (message or ("已完成" if status == "done" else "失败")),
+            cls="t-ok" if status == "done" else ("t-warn" if status == "warn" else "t-bad"),
+            tm=time.strftime("%m-%d %H:%M"),
+            qms_json=json.dumps(qms_snap or {"st": "未执行", "cls": "t-off"}, ensure_ascii=False),
+            strm_json=json.dumps(strm_snap or {"st": "未执行", "cls": "t-off"}, ensure_ascii=False),
+            share_url=t.get("shareUrl", ""),
+            share_code=t.get("shareCode", ""),
+            source="search",  # 手动查询转存：记录页唯一来源
+            logs_json=json.dumps(t["logs"], ensure_ascii=False),
+            files_json=json.dumps(files_snap or [], ensure_ascii=False),
         )
+        s.add(hist)
         s.commit()
+        rid = hist.id
+    # QMS 触发受理 ≠ 刮削成功：挂真实结果回填（与自动转存同款，写回 Record.qms_json）
+    if qms_snap and qms_snap.get("st") == "已触发" and result and result.transferred:
+        from ..services import run_watch
+
+        run_watch.watch_qms(
+            rid,
+            t["name"].split(".")[0],
+            [e.get("name") for e in result.transferred],
+            table=Record,
+        )
     if status == "fail":
         notify.push("转存失败", f"{t['name']}：{message or '未知原因'}", kind="search_fail")

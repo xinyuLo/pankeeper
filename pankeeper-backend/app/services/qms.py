@@ -112,6 +112,57 @@ def scrape_records(name: str | None = None, status: str | None = None, page_size
         client.close()
 
 
+def clear_scrape_records(ids: list[int]) -> tuple[bool, str]:
+    """DELETE /api/scrape/records?ids=1,2,3 —— 按 ID 删除刮削记录（QMS 侧源码 route 实锤）。
+
+    为什么需要：QMS **按文件路径去重**，失败记录还在时再触发刮削它不会重新刮
+    （用户实测：删掉失败记录后再点才真重刮）。这里只删我们点名的 ID，比 UI 上那个
+    `POST /api/scrape/clear-failed`（清**所有**目录的失败记录）精准，不误伤别的任务。
+    ids 为空直接算成功（没什么可删）。
+    """
+    ids = [int(i) for i in (ids or []) if i]
+    if not ids:
+        return True, ""
+    c = _client()
+    if c is None:
+        return False, "QMS 未启用"
+    client, _ = c
+    try:
+        resp = client.delete("/api/scrape/records", params={"ids": ",".join(str(i) for i in ids)})
+        data = resp.json()
+        if resp.status_code == 200 and data.get("code") in (0, 200):
+            return True, ""
+        return False, str(data.get("message") or f"HTTP {resp.status_code}")
+    except (httpx.HTTPError, ValueError) as e:
+        return False, f"QMS 连接失败：{e}"
+    finally:
+        client.close()
+
+
+def scrape_path_status(path_id: int) -> dict | None:
+    """GET /api/scrape/pathes/{id} —— 刮削路径运行状态（判断"刮完了没"用）。
+
+    2026-10-04 实测字段：`is_running`（int：0 未运行 / 1 已入队 / 2 正在跑）、
+    `is_scraping`（bool）、`updated_at`（**int 秒级时间戳**）。
+    失败/未启用返回 None（调用方据此退化处理，别当"已完成"）。
+    """
+    c = _client()
+    if c is None:
+        return None
+    client, _ = c
+    try:
+        resp = client.get(f"/api/scrape/pathes/{path_id}")
+        data = resp.json()
+        if resp.status_code == 200 and data.get("code") in (0, 200):
+            d = data.get("data")
+            return d if isinstance(d, dict) else None
+        return None
+    except (httpx.HTTPError, ValueError):
+        return None
+    finally:
+        client.close()
+
+
 def trigger_strm(strm_id: int) -> tuple[bool, str]:
     """POST /api/sync/path/start {"id": N}（STRM 同步目录挂在 QMS 侧管理）。"""
     c = _client()

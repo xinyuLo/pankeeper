@@ -281,6 +281,76 @@ def run_task_now(task_id: int, _user=CurrentUser):
     return res
 
 
+@router.post("/tasks/{task_id}/retrigger-qms")
+def retrigger_task_qms(task_id: int, _user=CurrentUser):
+    """重新触发 QMS 刮削（手动补救链路，2026-10-04 用户定稿）：
+
+    ① **门禁**：只有最新一次运行是「QMS 失败」（快照 cls=t-bad / 任务行"部分失败"）才允许点，
+       没失败时重刷无意义（QMS 还会按文件去重挡掉）；
+    ② **清失败记录**：按本次转存文件的记录 ID 精确删除（`DELETE /api/scrape/records?ids=`）——
+       QMS 按文件去重，失败记录不删就不会重刮（用户实测踩过）；
+    ③ **重新触发**：`POST /api/scrape/pathes/start {id}`（目录匹配规则同自动流程）；
+    ④ **STRM**：该目录配了 strm_id 就等「队列配置」的 strm 秒数后触发 STRM 同步；
+    ⑤ 挂 run_watch 回填（只认删除后的新记录），刮好了这次运行自动改判成功。
+    """
+    from ..services import qms, run_watch
+    from ..services.settings_svc import get_group
+    from ..transfer.auto import resolve_media_link
+
+    with SessionLocal() as db:
+        t = db.get(PaTask, task_id)
+        if t is None:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        save_dir = (t.save_dir or "").rstrip("/")
+        task_name = (t.name or "").split(".")[0]
+        latest = (
+            db.query(RunHistory)
+            .filter(RunHistory.task_id == task_id)
+            .order_by(RunHistory.id.desc())
+            .first()
+        )
+        latest_id = latest.id if latest else None
+        latest_names = json.loads(latest.transferred_json or "[]") if latest else []
+        latest_snap = _safe_snap(getattr(latest, "qms_json", "")) if latest else None
+
+    # 联动目标：**任务弹窗里配的 qms_id/strm_id 优先**，没配才按保存目录落回「转存配置」目录
+    # （历史 bug：执行侧只读目录级，任务弹窗配的 STRM 形同虚设，2026-10-04 用户实拍发现）
+    link = resolve_media_link(save_dir, task_id)
+    if link is None:
+        return {"ok": False, "message": "该任务没配 QMS 联动（任务弹窗里选 QMS 目录，或去「转存配置」给目录打开 QMS）"}
+    qms_id = link["qms_id"]
+    strm_id = link["strm_id"]
+    # ① 门禁
+    if not (latest_snap and latest_snap.get("cls") == "t-bad"):
+        return {"ok": False, "message": "当前没有需要重刷的 QMS 失败（只有刮削失败的运行才需要重刷）"}
+    if not latest_names:
+        return {"ok": False, "message": "最新一次运行没有转存文件，无从重刷"}
+
+    # ② 清掉本次文件的失败记录（只删失败态；成功记录不动，免得已整理的又被重新刮）
+    fp = run_watch.record_fingerprint(latest_names)
+    failed_ids = [v[0] for v in fp.values() if v and v[1] in run_watch.FAILED_STATUS]
+    ok, msg = qms.clear_scrape_records(failed_ids)
+    if not ok:
+        return {"ok": False, "message": f"清除 QMS 失败记录失败：{msg}"}
+
+    # ③ 重新触发
+    ok, msg = qms.trigger_scrape(qms_id)
+    if not ok:
+        return {"ok": False, "message": f"QMS 触发失败：{msg}"}
+
+    # ⑤ 回填（删除后的指纹：任何再次出现的记录都算新）
+    run_watch.watch_qms(latest_id, task_name, latest_names, run_watch.record_fingerprint(latest_names))
+
+    # ④ STRM：配了才做——**等 QMS 刮削真跑完**（轮询 pathes/{id}）再等队列配置的间隔秒数触发
+    delay = int(get_group("queue_cfg").get("strm", 10))
+    if strm_id:
+        run_watch.trigger_strm_after_scrape(latest_id, int(qms_id), int(strm_id), delay)
+
+    parts = [f"已清除 {len(failed_ids)} 条失败记录，重新触发 QMS 刮削（目录 #{qms_id}）"]
+    parts.append(f"；STRM 同步（#{strm_id}）将在刮削完成后 +{delay}s 触发" if strm_id else "；该目录未配 STRM，跳过")
+    return {"ok": True, "qms_id": qms_id, "cleared": len(failed_ids), "strm_id": strm_id, "message": "".join(parts)}
+
+
 @router.get("/next-runs")
 def next_runs(_user=CurrentUser):
     """各自动任务的下一次 cron 执行时间。"""
@@ -332,6 +402,8 @@ def all_runs(
             q = q.filter(or_(PaTask.name.like(like), RunHistory.message.like(like)))
         total = q.count()
         rows = q.order_by(RunHistory.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
+        from ..services.run_watch import overall_of
+
         items = [
             {
                 "id": r.id,
@@ -341,6 +413,8 @@ def all_runs(
                 "started": r.started,
                 "finished": r.finished,
                 "status": r.status,
+                # 整单结果：转存 + QMS 合成（只看转存会把"QMS 失败"误报成成功）
+                "overall": overall_of(r.status, _safe_snap(getattr(r, "qms_json", ""))),
                 "add": r.add,
                 "skip": r.skip,
                 "skip_md5": r.skip_md5,
@@ -396,6 +470,9 @@ def run_detail(run_id: int, _user=CurrentUser):
         if r is None:
             raise HTTPException(status_code=404, detail="记录不存在")
         t = db.get(PaTask, r.task_id)
+        from ..services.run_watch import overall_of
+
+        qms_snap = _safe_snap(getattr(r, "qms_json", ""))
         return {
             "id": r.id,
             "task_id": r.task_id,
@@ -403,6 +480,8 @@ def run_detail(run_id: int, _user=CurrentUser):
             "started": r.started,
             "finished": r.finished,
             "status": r.status,
+            # 整单结果（转存 + QMS 合成）；与列表同一份口径
+            "overall": overall_of(r.status, qms_snap),
             "message": r.message or "",
             "add": r.add,
             "skip": r.skip,
@@ -419,5 +498,20 @@ def run_detail(run_id: int, _user=CurrentUser):
             "transferred": json.loads(r.transferred_json or "[]"),
             "excluded": json.loads(r.excluded_json or "[]"),
             "regex_hit": json.loads(r.regex_hit_json or "[]"),
+            # MD5 去重命中的文件名（旧记录为空——早于本功能上线的运行没存这个字段）
+            "md5_skipped": json.loads(getattr(r, "md5_skipped_json", "") or "[]"),
+            # QMS/STRM 联动结果快照；旧记录为空串 → None，前端显示「—」
+            "qms": _safe_snap(getattr(r, "qms_json", "")),
+            "strm": _safe_snap(getattr(r, "strm_json", "")),
             "logs": json.loads(r.logs_json or "[]"),
         }
+
+
+def _safe_snap(raw: str) -> dict | None:
+    """联动快照解析：空串/坏 JSON 都回 None（旧记录没有这个字段，别让详情 500）。"""
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return None

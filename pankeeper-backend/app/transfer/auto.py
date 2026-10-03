@@ -178,13 +178,16 @@ def run_auto(eng, t: dict, cfg: dict) -> None:
 
 def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict, dict]:
     """触发 QMS / STRM。链接来源：转存配置里 qms_on 的目录（按目标路径前缀匹配）。"""
-    link = _match_dd_link(t["path"])
-    qms_snap = {"st": "未执行", "cls": "t-off"}
-    strm_snap = {"st": "未执行", "cls": "t-off"}
+    link = resolve_media_link(t["path"], t.get("paTaskId"))
+    qms_snap = {"st": "未配置", "cls": "t-off"}
+    strm_snap = {"st": "未配置", "cls": "t-off"}
     if link is None:
         _push_log(t, "INFO", "该目录未配置 QMS 联动，跳过刮削")
         return qms_snap, strm_snap
     if result.add == 0:
+        # 有联动配置但本次没有新增文件：不触发（在库文件刮削无意义），如实标注
+        qms_snap = {"st": "未执行（无新增）", "cls": "t-off"}
+        strm_snap = {"st": "未执行（无新增）", "cls": "t-off"}
         _push_log(t, "INFO", "没有新增文件，不触发 QMS（在库文件刮削无意义）")
         return qms_snap, strm_snap
 
@@ -192,38 +195,84 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
     t["phase"] = "qms"
     t["phaseStart"] = int(time.time() * 1000)
     ok, msg = qms.trigger_scrape(link["qms_id"])
-    qms_snap = {"st": "成功" if ok else f"失败 · {msg}", "cls": "t-ok" if ok else "t-bad"}
+    # ⚠️ 这里只能证明"QMS 受理了触发请求"，不是刮削结果——快照如实写「已触发」，
+    # 真实结果由 run_watch 后台轮询回填（2026-10-04 用户实锤：QMS 侧 scrape_failed
+    # 而这边显示"成功"）。别改回"成功"，那是骗人。
+    qms_snap = {"st": "已触发" if ok else f"失败 · {msg}", "cls": "t-off" if ok else "t-bad"}
     _push_log(t, "INFO" if ok else "ERROR", f"QMS 刮削任务 #{link['qms_id']} 触发{'成功' if ok else '失败'}：{msg or '详见 QMS 侧日志'}")
 
-    strm_ok: bool | None = None
-    if link.get("strm_id") and ok:
-        _sleep_phase(eng, t, "waitstrm", int(cfg.get("strm", 10)), f"QMS 触发完成，{cfg.get('strm', 10)} 秒后触发 STRM 生成")
-        t["phase"] = "strm"
-        t["phaseStart"] = int(time.time() * 1000)
-        ok2, msg2 = qms.trigger_strm(link["strm_id"])
-        strm_ok = ok2
-        strm_snap = {"st": "成功" if ok2 else f"失败 · {msg2}", "cls": "t-ok" if ok2 else "t-bad"}
-        _push_log(t, "INFO" if ok2 else "ERROR", f"STRM 同步 #{link['strm_id']} 触发{'成功' if ok2 else '失败'}：{msg2 or '详见 QMS 侧日志'}")
+    # STRM 不在这里等、也不在这里触发：正确做法是「等 QMS 刮削真跑完再触发」
+    # （run_watch.trigger_strm_after_scrape：轮询 /api/scrape/pathes/{id} 到 is_running=0
+    #  && is_scraping=false && updated_at>=触发时刻）。放这里会**堵住队列 worker 好几分钟**，
+    # 所以改为收尾落库后由 _sync_pa_task 挂后台线程（2026-10-04 用户要求对齐 bdsavepro 语义）。
+    if link.get("strm_id"):
+        strm_snap = {"st": "等待刮削完成…", "cls": "t-off"}
+        _push_log(t, "STEP", f"STRM 同步 #{link['strm_id']} 将在 QMS 刮削完成后触发（后台等待）")
 
-    if ok:
-        # 联动推送：等 QMS 刮削完成后查记录 + TMDB 拼富文本推送（后台守护，不阻塞队列）
-        media_push.watch_and_spawn({
-            "drive": t["type"],
-            "task": name_head,
-            "names": [e["name"] for e in result.transferred],
-            "qms_ok": ok,
-            "strm_ok": strm_ok,
-            "source": t.get("source", "auto"),
-        })
+    # 推送（watch_and_spawn）挪到 _sync_pa_task 落库后：那里才有 run_id，推送线程才能
+    # 等 STRM 触发结果、信息条如实显示「STRM 已生成」（2026-10-04 用户要求）
     return qms_snap, strm_snap
 
 
 def _match_dd_link(path: str) -> dict | None:
+    """按保存目录前缀匹配「转存配置」里开了 QMS 的目录（**目录级兜底**）。"""
     with SessionLocal() as s:
         for d in s.query(DdItem).filter(DdItem.qms_on.is_(True), DdItem.qms_id.isnot(None)).all():
             if path == d.path or path.startswith(d.path.rstrip("/") + "/"):
                 return {"qms_id": d.qms_id, "strm_id": d.strm_id}
     return None
+
+
+def _hit_dd_dir(path: str) -> dict | None:
+    """save_dir 命中的转存配置目录（最长前缀优先）。
+
+    ⚠️ **刻意不过滤 `qms_on`**：调用方需要能区分「没登记这个目录」和「登记了但把 QMS 关了」。
+    后者代表用户明确关掉了联动开关 —— 那时任务级配置也该一并作废（2026-10-04 用户定稿）。
+    """
+    if not path:
+        return None
+    hit = None
+    with SessionLocal() as s:
+        for d in s.query(DdItem).all():
+            base = (d.path or "").rstrip("/")
+            if not base:
+                continue
+            if path == base or path.startswith(base + "/"):
+                if hit is None or len(base) > len(hit["path"]):
+                    hit = {"path": base, "qms_on": bool(d.qms_on), "qms_id": d.qms_id, "strm_id": d.strm_id}
+    return hit
+
+
+def resolve_media_link(path: str, task_id: int | None = None) -> dict | None:
+    """解析一个任务要用的 QMS/STRM 联动目标。
+
+    判定顺序（2026-10-04 用户定稿："那个目录要是关闭了，就等于没配"）：
+    ① **总闸**：`save_dir` 命中的「转存配置」目录若 `qms_on=False` → **一律视为未配**，
+       哪怕任务弹窗里显式选了 QMS/STRM 目录也不联动（否则会出现"目录明明关了、任务还在偷偷联动"
+       这种没人能预期的事）；
+    ② 总闸开着（或 `save_dir` 没命中任何目录）时：**任务弹窗里选的 `qms_id`/`strm_id` 优先**，
+       没填的字段各自回退到命中目录的值。
+
+    历史：执行侧原只读目录级 DdItem，任务弹窗配的 `strm_id` 被无视 —— 用户任务 1 配了 5，
+    代码却拿到目录的 None，STRM 永远不触发（2026-10-04 用户实拍发现）。
+    """
+    qms_id: int | None = None
+    strm_id: int | None = None
+    if task_id:
+        with SessionLocal() as s:
+            row = s.get(PaTask, task_id)
+            if row is not None:
+                qms_id, strm_id = row.qms_id, row.strm_id
+    hit = _hit_dd_dir(path or "")
+    if hit is not None and not hit["qms_on"]:
+        return None  # 目录关了联动 → 未配（任务里选过什么一律作废）
+    dq = hit["qms_id"] if hit else None
+    ds = hit["strm_id"] if hit else None
+    rq = qms_id or dq
+    if not rq:
+        return None
+    rs = strm_id if strm_id is not None else ds
+    return {"qms_id": rq, "strm_id": rs}
 
 
 def _sleep_phase(eng, t: dict, phase: str, seconds: int, log_txt: str) -> None:
@@ -298,13 +347,13 @@ def _finish(eng, t: dict, status: str, message: str = "", qms_snap: dict | None 
             )
         )
         s.commit()
-    _sync_pa_task(t, status, result)
+    _sync_pa_task(t, status, result, qms_snap, strm_snap)
     if status == "fail" and t.get("enabled", True):
         # 推送统一走「推送通知」的全局开关（on_auto 时机）；只推启用中的任务
         notify.push("转存失败", f"{t['name']}：{message or '未知原因'}", kind="auto_fail")
 
 
-def _sync_pa_task(t: dict, status: str, result) -> None:
+def _sync_pa_task(t: dict, status: str, result, qms_snap: dict | None = None, strm_snap: dict | None = None) -> None:
     """自动任务（带 paTaskId）完成/失败后回写任务状态与执行历史。
 
     add/skip 统计只有成功路径才有 TransferResult；入队即拒（缺链接/无适配器）
@@ -338,44 +387,72 @@ def _sync_pa_task(t: dict, status: str, result) -> None:
         pa.last_result = f"新增 {add} / 跳过 {skip} / 失败 {fail}" if status == "done" else t["logs"][-1]["txt"] if t["logs"] else "失败"
         if status == "done":
             pa.ban_reason = ""
-        # MD5 去重跳过的文件回写任务排除清单（名字 + MD5 都记）：库里已有的就显式排除，
-        # 之后哪怕 QMS 转码改了库内 MD5、分享改了文件名，也靠这份清单挡住重复转存；
-        # 同时这些文件在「排除文件清单」弹窗里呈已勾选态，可见可取消（2026-10-03 用户要求）
-        if result and result.md5_skipped:
-            try:
-                ex_names = json.loads(pa.exclude_json or "[]")
-                ex_md5s = json.loads(pa.exclude_md5_json or "[]")
-            except ValueError:
-                ex_names, ex_md5s = [], []
-            nset = {n for n in ex_names if n}
-            mset = {m for m in ex_md5s if m}
-            for e in result.md5_skipped:
-                if e.get("name"):
-                    nset.add(e["name"])
-                if e.get("md5"):
-                    mset.add(e["md5"])
-            pa.exclude_json = json.dumps(sorted(nset), ensure_ascii=False)
-            pa.exclude_md5_json = json.dumps(sorted(mset), ensure_ascii=False)
-            pa.exclude_count = len(nset)
-        s.add(
-            RunHistory(
-                task_id=task_id,
-                started=started_txt,
-                finished=finished_txt,
-                status="success" if status == "done" else "fail",
-                add=add,
-                skip=skip,
-                skip_md5=result.skip_md5 if result else 0,
-                fail=fail,
-                excl=len(t.get("excludeNames") or []),
-                total_share=t.get("files") or 0,
-                regex_miss=stats.get("regex_miss", 0),
-                message=message,
-                transferred_json=json.dumps([e.get("name") for e in (result.transferred if result else [])], ensure_ascii=False),
-                excluded_json=json.dumps(stats.get("excluded_names", []), ensure_ascii=False),
-                regex_hit_json=json.dumps(stats.get("regex_hit", []), ensure_ascii=False),
-                duration=duration,
-                logs_json=json.dumps(t["logs"], ensure_ascii=False),
+        # ⚠️ 此处曾实现「MD5 去重跳过的文件自动回写任务排除清单（名字+MD5）」。
+        # 2026-10-04 用户拍板取消：那等于任务静默改自己的配置——删掉本地文件想重转时
+        # 会被清单挡住，而改动不看日志根本发现不了（实锤案例：40.4k.mp4 被自动勾进排除清单）。
+        # 现在只在日志 / RunHistory 如实记录（skip_md5 计数 + 适配器的「MD5 命中跳过」日志行），
+        # 要排除由用户在「排除文件清单」弹窗里手动勾选（走 POST /pa/tasks/{id}/exclude）。
+        # 不要恢复这段回写，除非用户再次明确要求。
+        hist = RunHistory(
+            task_id=task_id,
+            started=started_txt,
+            finished=finished_txt,
+            status="success" if status == "done" else "fail",
+            add=add,
+            skip=skip,
+            skip_md5=result.skip_md5 if result else 0,
+            fail=fail,
+            excl=len(t.get("excludeNames") or []),
+            total_share=t.get("files") or 0,
+            regex_miss=stats.get("regex_miss", 0),
+            message=message,
+            transferred_json=json.dumps([e.get("name") for e in (result.transferred if result else [])], ensure_ascii=False),
+            excluded_json=json.dumps(stats.get("excluded_names", []), ensure_ascii=False),
+            regex_hit_json=json.dumps(stats.get("regex_hit", []), ensure_ascii=False),
+            # MD5 去重命中的文件名：只记录供详情查看（"哪集被 MD5 滤掉"），不回写任务配置
+            md5_skipped_json=json.dumps(
+                [e.get("name") for e in (result.md5_skipped if result else []) if e.get("name")],
+                ensure_ascii=False,
+            ),
+            # QMS/STRM 联动结果快照（详情弹窗「执行结果」行展示）；入队即拒的失败为空串
+            qms_json=json.dumps(qms_snap, ensure_ascii=False) if qms_snap else "",
+            strm_json=json.dumps(strm_snap, ensure_ascii=False) if strm_snap else "",
+            duration=duration,
+            logs_json=json.dumps(t["logs"], ensure_ascii=False),
             )
-        )
+        s.add(hist)
         s.commit()
+        run_id_new = hist.id
+    # 触发后的两件后台事（都不阻塞队列，见 services/run_watch.py）：
+    # ① QMS 真实结果回填（"触发受理"≠"刮削成功"）；② 等刮削真跑完再触发 STRM
+    if qms_snap and qms_snap.get("st") == "已触发" and result and result.transferred:
+        from ..services import media_push, run_watch
+        from ..services.settings_svc import get_group
+
+        run_watch.watch_qms(
+            run_id_new,
+            t["name"].split(".")[0],
+            [e.get("name") for e in result.transferred],
+        )
+        link = resolve_media_link(t["path"], t.get("paTaskId"))
+        strm_plan = None
+        if link and link.get("strm_id"):
+            delay = int(get_group("queue_cfg").get("strm", 10))
+            strm_plan = {"strm_id": int(link["strm_id"]), "delay": delay}
+            run_watch.trigger_strm_after_scrape(
+                run_id_new,
+                int(link["qms_id"]),
+                int(link["strm_id"]),
+                delay,
+            )
+        # ③ 推送：ctx 带 run_id + STRM 计划，推送线程会等 STRM 触发结果再发，
+        #    信息条才能如实显示「STRM 已生成」（之前 strm_ok 恒 None，永远不显示）
+        media_push.watch_and_spawn({
+            "drive": t["type"],
+            "task": t["name"].split(".")[0],
+            "names": [e["name"] for e in result.transferred],
+            "qms_ok": True,
+            "strm_plan": strm_plan,
+            "run_id": run_id_new,
+            "source": t.get("source", "auto"),
+        })

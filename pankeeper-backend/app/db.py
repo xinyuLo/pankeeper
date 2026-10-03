@@ -94,6 +94,9 @@ def _migrate_columns() -> None:
             ("transferred_json", "TEXT DEFAULT '[]'"),
             ("excluded_json", "TEXT DEFAULT '[]'"),
             ("regex_hit_json", "TEXT DEFAULT '[]'"),
+            ("md5_skipped_json", "TEXT DEFAULT '[]'"),
+            ("qms_json", "TEXT DEFAULT ''"),
+            ("strm_json", "TEXT DEFAULT ''"),
         ],
         "queue_tasks": [
             ("acc_id", "INTEGER"),

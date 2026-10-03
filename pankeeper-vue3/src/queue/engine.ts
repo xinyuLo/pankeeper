@@ -21,6 +21,21 @@ const cfgListeners: Listener[] = []
 
 /** 渲染用响应式镜像 */
 export const queueView = reactive<QueueState>({ seq: 0, lastTick: 0, lastDone: 0, tasks: [] })
+
+/**
+ * 该队列项是否来自「自动转存」（定时任务）。
+ *
+ * 前台分区约定（2026-10-04 用户要求）：自动转存与搜索转存共用同一套后端队列
+ * （串行 / 限速门 / 熔断都在引擎里，这是刻意的），但**前台不混着展示**——
+ * 「转存队列」浮标与看板只列手动（搜索转存）任务；自动转存的执行看
+ * 「自动转存 → 转存历史」页和任务行的「转存日志」，以及点击执行时的执行监控弹窗。
+ *
+ * 判据用 paTaskId：后端 enqueue 会写 source，但 restore（重启恢复）重建任务时
+ * 不带 source，只带 pa_task_id——所以 paTaskId 才是跨重启稳定的标识。
+ */
+export function isAutoQueued(t: QueueTask): boolean {
+  return t.paTaskId != null || t.source === 'auto'
+}
 /** 队列配置响应式镜像 */
 export const cfgView = reactive<QueueCfg>({ ...CFG_DEF })
 
@@ -255,6 +270,9 @@ export const pkQueue = {
     include_subdirs?: boolean
     acc_id?: number | null
     file_paths?: string[]
+    /* 「带壳转存」（快速转存弹窗）：整壳转过来 + 根文件夹更名 */
+    rename?: string
+    with_shell?: boolean
   }): number {
     if (USE_MOCK) {
       const s = stateMock()
