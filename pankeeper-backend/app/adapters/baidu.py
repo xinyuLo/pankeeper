@@ -412,7 +412,14 @@ class BaiduClient(CloudAdapter):
                 raise AdapterError("该分享需要提取码，但请求里没有带上（请补提取码后重试）")
             if re.search(r"分享的文件已经被取消|分享已过期|分享不存在|链接不存在", html):
                 raise ShareBanned("分享页提示链接已失效")
-            raise AdapterError("分享页解析失败（未找到 yunData，可能需要先过提取码验证）")
+            # 兜底带上页面特征（2026-10-04：init 预热+重抓仍失败时，用户对着一句话没法排查）
+            title = re.search(r"<title>([^<]{0,60})", html)
+            feat = title.group(1).strip() if title else f"{len(html)} 字节、无 title"
+            if re.search(r"安全验证|滑动验证|验证码|wakeup|sec\.php|风险", html):
+                raise AdapterError(
+                    f"百度触发安全验证（疑似风控），页面：{feat}——过几分钟重试，或先在浏览器里打开一次该分享再点转存"
+                )
+            raise AdapterError(f"分享页解析失败（未找到 yunData）· 页面特征：{feat}")
         try:
             return json.loads(m.group(1))
         except ValueError as e:
@@ -781,12 +788,32 @@ class BaiduClient(CloudAdapter):
                     result.transferred[0]["name"] = new_name
                 on_log(f"根文件夹已更名：{shell.name} → {new_name}")
         else:
+            roots_dirs = [f for f in files if f.is_dir and f.fid and "/" not in f.path]
             self._ensure_dirs([target])
-            on_log(f"分享无根文件夹，已建壳「{shell_name}」承接全部内容")
-            # 只转根层条目（path 不含 "/"）：文件夹整体转（子树随之过来）、散文件直转
-            roots = [f for f in files if f.fid and "/" not in f.path]
-            for i in range(0, len(roots), 500):
-                self._transfer_group(self._share_ctx, roots[i : i + 500], target, spec, result, on_log)
+            if len(roots_dirs) == 1:
+                # 根层 = 1 个文件夹 + N 散文件：**剥原壳**——内容按相对路径直接进新壳。
+                # （2026-10-04 用户实锤套娃案：分享根层=「功夫女足（2026）/」+散文件，建壳后把
+                #   原壳文件夹又整转进新壳 → save_dir/新壳/原壳/ 双层同名。新壳名替代原壳名才对。）
+                prefix = roots_dirs[0].path + "/"
+                for f in files:
+                    if not f.is_dir and f.fid and f.path.startswith(prefix):
+                        f.path = f.path[len(prefix):]
+                on_log(f"分享根层为「{roots_dirs[0].name}」+散文件：剥原壳，内容进新壳「{shell_name}」")
+            else:
+                on_log(f"分享无根文件夹，已建壳「{shell_name}」承接全部内容")
+            # 全部按**文件条目**转（文件夹条目跳过，目录靠 _ensure_dirs 重建）——
+            # 文件夹整体转 + 其子文件再转 = 重复转存，别混两种方式
+            inner = [f for f in files if f.fid and not f.is_dir]
+            rel_dirs = sorted({f.path.rsplit("/", 1)[0] for f in inner if "/" in f.path})
+            if rel_dirs:
+                self._ensure_dirs([target.rstrip("/") + "/" + d for d in rel_dirs])
+            by_dir: dict[str, list[ShareFile]] = {}
+            for f in inner:
+                by_dir.setdefault(f.path.rsplit("/", 1)[0] if "/" in f.path else "", []).append(f)
+            for rel, group in by_dir.items():
+                tgt = target.rstrip("/") + "/" + rel if rel else target
+                for i in range(0, len(group), 500):
+                    self._transfer_group(self._share_ctx, group[i : i + 500], tgt, spec, result, on_log)
         on_progress(100)
         return result
 

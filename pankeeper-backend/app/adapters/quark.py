@@ -372,12 +372,28 @@ class QuarkAdapter(CloudAdapter):
                 else:
                     on_log(f"根文件夹更名失败：拿不到转存后的 fid（保持原名 {shell.name}）")
         else:
-            on_log(f"分享无根文件夹（或多文件夹混杂），已建壳「{shell_name}」承接全部内容")
-            target_fid = self.ensure_dir(target)
-            # 只转根层条目（path 形如 "/名"）：文件夹整转（子树随之过来）、散文件直转
-            roots = [f for f in files if f.fid and f.fid_token and f.path.count("/") <= 1]
-            for i in range(0, len(roots), BATCH):
-                self._save_batch(roots[i : i + BATCH], target_fid, spec, result, on_log)
+            roots_dirs = [f for f in files if f.is_dir and f.fid and f.path.count("/") <= 1]
+            if len(roots_dirs) == 1:
+                # 根层 = 1 个文件夹 + N 散文件：剥原壳（同 baidu，防同名套娃）
+                prefix = roots_dirs[0].path + "/"
+                for f in files:
+                    if not f.is_dir and f.fid and f.path.startswith(prefix):
+                        f.path = f.path[len(prefix):]
+                on_log(f"分享根层为「{roots_dirs[0].name}」+散文件：剥原壳，内容进新壳「{shell_name}」")
+            else:
+                on_log(f"分享无根文件夹（或多文件夹混杂），已建壳「{shell_name}」承接全部内容")
+            # 全部按**文件条目**转（文件夹条目跳过，目录靠 ensure_dir 重建）——防重复转存
+            inner = [f for f in files if f.fid and f.fid_token and not f.is_dir]
+            by_dir: dict[str, list[ShareFile]] = {}
+            for f in inner:
+                rel = f.path.lstrip("/").rsplit("/", 1)[0] if "/" in f.path.strip("/") else ""
+                by_dir.setdefault(rel, []).append(f)
+            base_fid = self._path_to_fid(spec.save_dir)
+            target_fid = self.ensure_dir(target)  # 壳：根层散文件（剥前缀后 rel 为空）也必须落进壳里
+            for rel, group in by_dir.items():
+                tgt_fid = self.ensure_dir(spec.save_dir.rstrip("/") + "/" + rel) if rel else target_fid
+                for i in range(0, len(group), BATCH):
+                    self._save_batch(group[i : i + BATCH], tgt_fid, spec, result, on_log)
         on_progress(100)
         return result
 
