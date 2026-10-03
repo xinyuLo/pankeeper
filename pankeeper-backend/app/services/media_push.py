@@ -32,10 +32,12 @@ FAILED_STATUS = {"scrape_failed", "rename_failed"}
 def watch_and_spawn(ctx: dict) -> None:
     """QMS 刮削触发成功后调用。推送未启用时直接返回，否则后台守护。
 
-    ctx: {drive, task, names, qms_ok: bool, strm_ok: bool | None, source: str}
+    ctx: {drive, task, names, qms_ok: bool, source: str,
+          run_id?: int, strm_plan?: {strm_id, delay} | None, strm_ok?: bool}
     - names：转存的文件名（QMS 记录的 file_name 与之对应）
-    - qms_ok/strm_ok：engine 里的"触发"结果（刮削/生成的最终成败以记录为准）
-    - strm_ok=None 表示该目录没配 STRM 联动，信息条不显示该项
+    - qms_ok：QMS 触发结果。strm_plan（自动转存）= STRM 后台触发计划，推送线程会等
+      run_watch 登记的真实触发结果再发（信息条显示「STRM 已生成」）；
+      strm_ok（manual 同步触发）为旧通道，直接进信息条
     - source：search / auto，决定走「搜索转存」还是「自动转存」推送开关
     """
     cfg = get_group("settings")["notify"]
@@ -51,14 +53,35 @@ def watch_and_spawn(ctx: dict) -> None:
 
 def _watch(ctx: dict) -> None:
     records = _wait_records(ctx)
-    header = _header(ctx, records)
+    strm_res = _wait_strm(ctx)  # 自动转存：等后台线程触发完 STRM，信息条才能如实显示
+    header = _header(ctx, records, strm_res)
+
+
+def _wait_strm(ctx: dict) -> dict | None:
+    """等 STRM 触发结果（run_watch 后台线程完成时登记）。没配 STRM（strm_plan=None）→ None。
+
+    超时上限 = delay + run_watch 的刮削确认超时(300s) + 缓冲：STRM 触发在「确认刮完 + delay」后，
+    而确认可能比 QMS 记录终态晚（10s 轮询间隔）。
+    """
+    plan = ctx.get("strm_plan")
+    if not plan:
+        return None
+    from . import run_watch  # 延迟导入避免循环
+
+    deadline = time.time() + int(plan.get("delay", 10)) + 340
+    while time.time() < deadline:
+        r = run_watch.get_strm_result(ctx.get("run_id"))
+        if r is not None:
+            return r
+        time.sleep(3)
+    return None
     renamed = [r for r in records if r.get("status") == "renamed" and r.get("tmdb_id")]
     if renamed:
         body, title = _build(renamed)
         if body:
             notify.push(title, f"{header}\n\n{body}", kind=f"{ctx.get('source', 'search')}_done", short="简介")
             return
-    _fallback(ctx, records)
+    _fallback(ctx, records, strm_res)
 
 
 def _wait_records(ctx: dict) -> list[dict]:
@@ -69,7 +92,10 @@ def _wait_records(ctx: dict) -> list[dict]:
     deadline = time.time() + POLL_TIMEOUT
     names = set(ctx["names"])
     while True:
-        rows = qms.scrape_records(name=ctx.get("task")) or []
+        # ⚠️ 不按 name= 筛：QMS 的 name 过滤实测会漏记录（2026-10-04：41.4k.mp4 有 scrape_failed
+        # 记录，带 name 查却查不到）——一旦漏掉就会白等 30 分钟后退化成无图纯文字推送。
+        # 改拉最新 500 条按 file_name 精确匹配（记录新→旧，刚转存的必在前排）。
+        rows = qms.scrape_records(page_size=500) or []
         matched = [r for r in rows if r.get("file_name") in names]
         hit = {r.get("file_name") for r in matched}
         missing = names - hit
@@ -86,10 +112,10 @@ def _wait_records(ctx: dict) -> list[dict]:
         time.sleep(POLL_INTERVAL)
 
 
-def _header(ctx: dict, records: list[dict]) -> str:
+def _header(ctx: dict, records: list[dict], strm_res: dict | None = None) -> str:
     """信息条：网盘 · 任务名 + 整单状态徽章 / 转存集数 / QMS 结果 / STRM 结果（带图标）。"""
     icon, drive_name = DRIVE_META.get(ctx.get("drive"), ("📁", ctx.get("drive", "")))
-    st_icon, st_text = _overall_status(ctx, records)
+    st_icon, st_text = _overall_status(ctx, records, strm_res)
     lines = [f"{icon} **{drive_name} · {ctx.get('task', '')}** {st_icon} {st_text}"]
     stats: list[str] = []
     is_tv = any(r.get("type") == "tvshow" for r in records) if records else False
@@ -108,16 +134,26 @@ def _header(ctx: dict, records: list[dict]) -> str:
                 stats.append("❌ QMS 刮削失败")
         else:
             stats.append("⚠️ QMS 无记录")
-    if ctx.get("strm_ok") is True:
+    # STRM：自动转存走 strm_res（run_watch 后台线程的真实触发结果）；manual 同步触发走 strm_ok 旧通道
+    if strm_res is not None:
+        if strm_res.get("cls") == "t-bad":
+            stats.append(f"❌ STRM {strm_res.get('st', '触发失败')}")
+        elif strm_res.get("cls") == "t-ok":
+            stats.append("✅ STRM 已生成")
+        else:
+            stats.append(f"⏳ STRM {strm_res.get('st', '状态未知')}")
+    elif ctx.get("strm_ok") is True:
         stats.append("✅ STRM 生成")
     elif ctx.get("strm_ok") is False:
         stats.append("❌ STRM 触发失败")
+    elif ctx.get("strm_plan"):
+        stats.append("⏳ STRM 状态未知")
     lines.append("")
     lines.append(" · ".join(stats))
     return "\n".join(lines)
 
 
-def _overall_status(ctx: dict, records: list[dict]) -> tuple[str, str]:
+def _overall_status(ctx: dict, records: list[dict], strm_res: dict | None = None) -> tuple[str, str]:
     """整单状态徽章：一眼看出这个定时任务跑得怎么样。
 
     ✅ 成功 = 转存全成且刮削/STRM 无失败；🟡 部分成功 = 好的居多；
@@ -127,7 +163,7 @@ def _overall_status(ctx: dict, records: list[dict]) -> tuple[str, str]:
         return "❌", "失败"
     ok = sum(1 for r in records if r.get("status") == "renamed")
     fail = sum(1 for r in records if r.get("status") in FAILED_STATUS)
-    if ctx.get("strm_ok") is False:
+    if ctx.get("strm_ok") is False or (strm_res is not None and strm_res.get("cls") == "t-bad"):
         fail += 1
     if not records and ctx.get("qms_ok") is not True:
         return "✅", "成功"
@@ -220,7 +256,7 @@ def _clip(text: str) -> str:
     return text[:OVERVIEW_MAX] + "…" if len(text) > OVERVIEW_MAX else text
 
 
-def _fallback(ctx: dict, records: list[dict]) -> None:
+def _fallback(ctx: dict, records: list[dict], strm_res: dict | None = None) -> None:
     """富文本拿不到时的兜底：信息条 + 文件清单（失败的标注原因），通知不丢。"""
     print("[push] 富文本推送回退纯文字")
     failed = {r.get("file_name"): r.get("failed_reason") or "刮削失败" for r in records if r.get("status") in FAILED_STATUS}
@@ -229,4 +265,4 @@ def _fallback(ctx: dict, records: list[dict]) -> None:
         mark = f"（{failed[n]}）" if n in failed else ""
         lines.append(f"- {n}{mark}")
     body = "\n".join(lines)
-    notify.push(f"{ctx.get('task', '转存')} · 转存完成", f"{_header(ctx, records)}\n\n{body}", kind=f"{ctx.get('source', 'search')}_done")
+    notify.push(f"{ctx.get('task', '转存')} · 转存完成", f"{_header(ctx, records, strm_res)}\n\n{body}", kind=f"{ctx.get('source', 'search')}_done")

@@ -43,7 +43,6 @@ watch(form, (v) => {
         <label>线程数</label>
         <div class="ctl">
           <a-input-number v-model:value="form.threads" :min="1" :max="4" class="cq-num" />
-          <span class="muted small">同一时刻并行处理的任务数；调大会快，但同一网盘并行请求多、更容易触发风控</span>
         </div>
       </div>
       <div class="formrow">
@@ -51,7 +50,6 @@ watch(form, (v) => {
         <div class="ctl">
           <a-input-number v-model:value="form.gap" :min="0" class="cq-num" />
           <span class="muted cq-unit">秒</span>
-          <span class="muted small">一个任务结束后，等这么久再开始下一个</span>
         </div>
       </div>
       <div class="formrow">
@@ -59,7 +57,6 @@ watch(form, (v) => {
         <div class="ctl">
           <a-input-number v-model:value="form.qms" :min="0" class="cq-num" />
           <span class="muted cq-unit">秒</span>
-          <span class="muted small">转存结束后，延迟这么久触发 QMS 刮削</span>
         </div>
       </div>
       <div class="formrow">
@@ -67,7 +64,6 @@ watch(form, (v) => {
         <div class="ctl">
           <a-input-number v-model:value="form.strm" :min="0" class="cq-num" />
           <span class="muted cq-unit">秒</span>
-          <span class="muted small">QMS 整理触发完成后再等这么久，触发 STRM 生成</span>
         </div>
       </div>
 

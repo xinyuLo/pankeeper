@@ -222,6 +222,8 @@ export interface PaRunRow {
   started: string
   finished: string
   status: 'success' | 'fail' | 'running'
+  /** 整单结果（后端合成：转存 + QMS）——列表/卡片/任务行都用它，别只看 status */
+  overall?: { st: string; cls: string }
   add: number
   skip: number
   skip_md5: number
@@ -242,7 +244,24 @@ export interface PaRunDetail extends PaRunRow {
   excluded: string[]
   /** 正则命中（过滤后放行）的文件名；未配正则的任务为空 */
   regex_hit: string[]
+  /** MD5 去重命中的文件名（只记录、不回写任务配置）；旧运行未记录该字段时为空数组 */
+  md5_skipped: string[]
+  /** QMS/STRM 联动结果快照（{st, cls}）；旧记录/联动没跑为 null，前端显示「—」 */
+  qms: { st: string; cls: string } | null
+  strm: { st: string; cls: string } | null
   logs: QueueLogLine[]
+}
+
+/** 立即执行（真实）：入队走队列引擎，返回 {queued, task}；被去重/停用时 queued=false + reason */
+export function runPaTaskNow(taskId: number): Promise<{ queued: boolean; task?: string; reason?: string }> {
+  if (USE_MOCK) return mockDelay({ queued: true, task: 'mock' })
+  return post<{ queued: boolean; task?: string; reason?: string }>(`/pa/tasks/${taskId}/run`)
+}
+
+/** 手动重新触发该任务的 QMS 刮削（QMS 侧刮失败后重刷；不动任务配置、不写历史） */
+export function retriggerTaskQms(taskId: number): Promise<{ ok: boolean; message: string }> {
+  if (USE_MOCK) return mockDelay({ ok: true, message: 'mock' })
+  return post<{ ok: boolean; message: string }>(`/pa/tasks/${taskId}/retrigger-qms`)
 }
 
 /** 转存日志列表：该任务的执行历史（新→旧，最多 50 条） */

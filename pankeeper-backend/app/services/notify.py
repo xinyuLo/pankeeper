@@ -100,7 +100,9 @@ def _serverchan(sendkey: str, title: str, content: str, short: str | None = None
     except httpx.HTTPError as e:
         return False, str(e)
     if resp.status_code != 200:
-        return False, f"HTTP {resp.status_code}"
+        # 带上 Server酱 原始原因——只写「HTTP 400」等于没说，实测这里能直接看到
+        # 「[AUTH]错误的Key」（占位符 sendkey）之类，秒定位（2026-10-04 踩坑）
+        return False, f"HTTP {resp.status_code}{_sc_reason(resp)}"
     try:
         body = resp.json()
     except ValueError:
@@ -109,6 +111,19 @@ def _serverchan(sendkey: str, title: str, content: str, short: str | None = None
     if code in (0, None):
         return True, ""
     return False, str(body.get("message") or f"code={code}")
+
+
+def _sc_reason(resp: httpx.Response) -> str:
+    """从失败响应里抠一句人话（message/info 优先，其次裸文本前 80 字）。"""
+    try:
+        body = resp.json()
+        msg = body.get("message") or body.get("info")
+        if msg:
+            return f" · {msg}"
+    except ValueError:
+        pass
+    txt = (resp.text or "").strip()[:80]
+    return f" · {txt}" if txt else ""
 
 
 def _webhook(url: str, title: str, content: str) -> tuple[bool, str]:
@@ -127,7 +142,7 @@ def test_sendkey(sendkey: str) -> tuple[bool, str]:
     except httpx.HTTPError as e:
         return False, str(e)
     if resp.status_code != 200:
-        return False, f"HTTP {resp.status_code}"
+        return False, f"HTTP {resp.status_code}{_sc_reason(resp)}"
     # 两个版本都回 {code, message}：HTTP 200 也可能 body 里报错，得看 code
     try:
         body = resp.json()

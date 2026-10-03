@@ -145,6 +145,9 @@ function onOk() {
     size: '—',
     share_url: props.shareUrl,
     share_code: props.shareCode,
+    /* 带壳转存：分享根文件夹整体转过来（记录页显示的就是它）；填了更名就改根文件夹名 */
+    rename: raw,
+    with_shell: true,
     // 转存配置条目属于哪个账号就用哪个转（account 是账号 id 字符串）；
     // 空 = 该类型默认账号（后端兜底取 id 最小）
     acc_id: it.account ? Number(it.account) : null,

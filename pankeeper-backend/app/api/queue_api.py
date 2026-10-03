@@ -27,6 +27,9 @@ class EnqueueBody(BaseModel):
     include_subdirs: bool = True
     # 勾选清单：只转存分享内这些相对路径（目录=整棵子树）；空/None=全部
     file_paths: list[str] | None = None
+    # 「带壳转存」（快速转存弹窗）：单壳分享把根文件夹整体转过来 + 可选根文件夹更名
+    rename: str = ""
+    with_shell: bool = False
     # 任务来源：search（默认，搜索转存）/ auto（定时调度）；决定推送走哪个开关
     source: str = "search"
 
