@@ -117,14 +117,15 @@ function durTxt(s: number): string {
       <table v-if="!isMobile" class="hr-table">
         <thead>
           <tr>
-            <th style="width: 22%">任务</th>
+            <th style="width: 18%">任务</th>
             <th style="width: 64px">网盘</th>
-            <th style="width: 168px">执行时间</th>
-            <th style="width: 84px">结果</th>
-            <th style="width: 26%">统计</th>
-            <th style="width: 150px">说明</th>
-            <th style="width: 80px">耗时</th>
-            <th style="width: 74px">操作</th>
+            <th style="width: 152px">开始时间</th>
+            <th style="width: 152px">结束时间</th>
+            <th style="width: 72px">结果</th>
+            <th style="width: 240px">统计</th>
+            <th>说明</th>
+            <th style="width: 72px">耗时</th>
+            <th style="width: 64px">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -136,26 +137,25 @@ function durTxt(s: number): string {
               </div>
             </td>
             <td><span class="tag" :class="metaOf(r.task_type).tag">{{ metaOf(r.task_type).name }}</span></td>
-            <td class="small muted hr-nowrap">
-              {{ r.started }}<template v-if="r.finished"><br />→ {{ r.finished }}</template>
-            </td>
-            <td><span class="tag" :class="r.status === 'success' ? 't-ok' : 't-bad'">{{ r.status === 'success' ? '成功' : '失败' }}</span></td>
+            <td class="small muted hr-nowrap">{{ r.started }}</td>
+            <td class="small muted hr-nowrap">{{ r.finished || '—' }}</td>
+            <td><span class="tag" :class="r.overall?.cls || (r.status === 'success' ? 't-ok' : 't-bad')">{{ r.overall?.st || (r.status === 'success' ? '成功' : '失败') }}</span></td>
             <td>
               <div class="hr-statline">
-                <span class="hr-kv">新增：<b>{{ r.add }}</b></span>
-                <span class="hr-kv">跳过：<b>{{ r.skip }}</b></span>
-                <span class="hr-kv">失败：<b :class="{ 'is-bad': r.fail }">{{ r.fail }}</b></span>
+                <span class="hr-pill" :class="r.add ? 'ok' : 'dim'">新增 {{ r.add }}</span>
+                <span class="hr-pill dim">跳过 {{ r.skip }}</span>
+                <span class="hr-pill" :class="r.fail ? 'bad' : 'dim'">失败 {{ r.fail }}</span>
               </div>
               <span class="hr-substat">分享 {{ r.total_share }} · 正则未命中 {{ r.regex_miss }} · MD5 跳过 {{ r.skip_md5 }}</span>
             </td>
-            <td class="small muted hr-msgclip" :title="r.message">{{ r.message || '—' }}</td>
+            <td class="small hr-msgclip" :class="r.status === 'success' ? 'hr-msg-ok' : 'hr-msg-bad'" :title="r.message">{{ r.message || '—' }}</td>
             <td class="small muted hr-nowrap">{{ durTxt(r.duration) }}</td>
             <td>
               <a-button type="link" size="small" class="hr-op" @click="openDetail(r.id)">详情</a-button>
             </td>
           </tr>
           <tr v-if="!rows.length">
-            <td colspan="8" class="pq-empty">{{ loading ? '加载中…' : '还没有执行历史 · 自动任务跑过一次这里就有记录' }}</td>
+            <td colspan="9" class="pq-empty">{{ loading ? '加载中…' : '还没有执行历史 · 自动任务跑过一次这里就有记录' }}</td>
           </tr>
         </tbody>
       </table>
@@ -174,7 +174,7 @@ function durTxt(s: number): string {
           <div class="hr-card-top">
             <span class="hr-srcbar" :style="{ background: metaOf(r.task_type).color }"></span>
             <span class="hr-card-name">{{ r.task_name }}</span>
-            <span class="tag" :class="r.status === 'success' ? 't-ok' : 't-bad'">{{ r.status === 'success' ? '成功' : '失败' }}</span>
+            <span class="tag" :class="r.overall?.cls || (r.status === 'success' ? 't-ok' : 't-bad')">{{ r.overall?.st || (r.status === 'success' ? '成功' : '失败') }}</span>
           </div>
           <div class="hr-card-meta small muted">{{ r.started }}<template v-if="r.finished"> → {{ r.finished }}</template></div>
           <div class="hr-card-stats small">
@@ -206,13 +206,30 @@ function durTxt(s: number): string {
 .hr-table th,
 .hr-table td { padding-left: 12px; padding-right: 12px; vertical-align: middle; }
 .hr-nowrap { white-space: nowrap; }
-/* 统计列：带标签的三段（新增/跳过/失败），数字绿色等宽；有失败时失败数染红 */
-.hr-statline { display: flex; gap: 12px; align-items: baseline; white-space: nowrap; }
-.hr-kv { font-size: 12.5px; color: var(--text2); }
-.hr-kv b { font-family: var(--font-mono); font-size: 13.5px; font-weight: 600; color: var(--success); }
-.hr-kv b.is-bad { color: var(--error); }
+/* 统计列 tag 三段配色（2026-10-03 晚定稿，原则：颜色只传递信号，不做装饰）——
+   绿 = 确实新增了（新增 0 不染绿，免得跟「结果·成功」tag 混成一个脸）；
+   红 = 确实有失败；灰 = 中性/零值。跳过永远是灰：它是预期行为，不该抢眼睛。
+   三段统一细边框，形状一致，只有语义色不同（与「结果」tag 同族长相）。 */
+.hr-statline { display: flex; gap: 8px; align-items: center; white-space: nowrap; }
+.hr-pill { font-size: 12px; padding: 1px 8px; border-radius: 6px; border: 1px solid var(--split); background: var(--surface-2); color: var(--text2); }
+.hr-pill.ok { color: #389e0d; background: #f6ffed; border-color: #b7eb8f; }
+.hr-pill.bad { color: #cf1322; background: #fff1f0; border-color: #ffa39e; }
+.hr-pill.dim { color: var(--text3); background: var(--surface-2); border-color: var(--split); }
+html[data-theme='dark'] .hr-pill { color: var(--text2); background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.14); }
+html[data-theme='dark'] .hr-pill.ok { color: #95de64; background: rgba(82, 196, 26, 0.16); border-color: rgba(82, 196, 26, 0.38); }
+html[data-theme='dark'] .hr-pill.bad { color: #ff9c9c; background: rgba(255, 77, 79, 0.16); border-color: rgba(255, 77, 79, 0.38); }
+html[data-theme='dark'] .hr-pill.dim { color: var(--text3); background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.12); }
 .hr-substat { display: block; margin-top: 2px; font-size: 12px; color: var(--text3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.hr-msgclip { max-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* ⚠️ 别再加 max-width: 0——那是 auto 布局时代的技巧，fixed 布局下会把单元格内容盒压成 0，
+   说明列直接一片空白（2026-10-03 实测踩过） */
+.hr-msgclip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 说明列与统计列之间留一点间距（用户要求，16px 温和不挤） */
+.hr-table td.hr-msgclip { padding-left: 16px; }
+/* 说明列按成败染色（同转存日志弹窗口径） */
+.hr-msg-ok { color: #389e0d; }
+.hr-msg-bad { color: #cf1322; }
+html[data-theme='dark'] .hr-msg-ok { color: #95de64; }
+html[data-theme='dark'] .hr-msg-bad { color: #ff9c9c; }
 /* 操作列文字链与记录页同款（link 按钮去掉内边距，密集排布才不飘） */
 .hr-op { padding: 0; }
 /* 手机卡片：与记录页同款形态——平铺行 + 细分隔线 + 内容缩进对齐色条，不用独立小盒子 */

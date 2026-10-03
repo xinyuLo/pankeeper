@@ -162,7 +162,10 @@ class QuarkAdapter(CloudAdapter):
         files = self._walk_share(stoken, parsed["pwd_id"], parsed["pdir_fid"], spec.include_subdirs, depth=0)
         # 根目录只有 1 个文件夹时自动下钻（对齐前端「转存文件夹下钻」的直觉）
         if parsed["pdir_fid"] == "0" and len(files) == 1 and files[0].is_dir:
+            self._root_shell = files[0]  # 「带壳转存」用：壳条目（fid/fid_token 可整体转存）
             files = self._walk_share(stoken, parsed["pwd_id"], files[0].fid, spec.include_subdirs, depth=1)
+        else:
+            self._root_shell = None
         # 排除清单 + 改名映射
         for f in files:
             f.target_name = spec.rename_map.get(f.name)
@@ -297,6 +300,12 @@ class QuarkAdapter(CloudAdapter):
 
     def save_files(self, files: list[ShareFile], spec: TaskSpec, on_progress, on_log) -> TransferResult:
         result = TransferResult()
+        # 「带壳转存」（spec.with_shell，搜索转存快速弹窗）：单壳分享整壳转 + 可选根文件夹更名。
+        # 早期 return——跳过文件级名字去重（整壳模式按"目标已有同名文件夹"去重）
+        if spec.with_shell and not spec.only_paths:
+            shell = getattr(self, "_root_shell", None)
+            if shell is not None and shell.fid and shell.fid_token:
+                return self._save_with_shell(spec, shell, result, on_progress, on_log)
         save_list = [f for f in files if not f.is_dir and f.fid]
         # 去重：目标目录已有同名（按目标名比对，改名后的名字也算已存在）
         existing = self.list_dir_names(spec.save_dir)
@@ -322,6 +331,35 @@ class QuarkAdapter(CloudAdapter):
             on_progress(min(99, int(done / total * 100)))
         on_progress(100)
         self._patch_target_cache(spec, to_fid, result)
+        return result
+
+    def _save_with_shell(self, spec: TaskSpec, shell: ShareFile, result: TransferResult, on_progress, on_log) -> TransferResult:
+        """整壳转存分享根文件夹（fid 直接转，目标侧自带文件夹名）+ 可选更名。
+
+        去重口径：目标目录已有同名文件夹 → 整壳跳过（文件级 MD5 比对在整壳模式下不适用）。
+        目录缓存不打补丁（_patch_target_cache 只认文件条目）——树展开时按需回源即可。
+        """
+        if shell.name in self.list_dir_names(spec.save_dir):
+            result.skip += 1
+            on_log(f"目标已存在同名文件夹「{shell.name}」，跳过整壳转存")
+            on_progress(100)
+            return result
+        on_log(f"整壳转存分享根文件夹「{shell.name}」→ {spec.save_dir}/")
+        to_fid = self._path_to_fid(spec.save_dir)
+        self._save_batch([shell], to_fid, spec, result, on_log)
+        new_name = (spec.folder_rename or "").strip()
+        if new_name and new_name != shell.name:
+            fid = (result.transferred[-1].get("fid") or "") if result.transferred else ""
+            time.sleep(1)  # 转存任务刚完就 rename 是写操作连打，歇一拍
+            if fid:
+                self.rename_dir(fid, new_name)
+                result.renamed += 1
+                if result.transferred:
+                    result.transferred[-1]["name"] = new_name
+                on_log(f"根文件夹已更名：{shell.name} → {new_name}")
+            else:
+                on_log(f"根文件夹更名失败：拿不到转存后的 fid（保持原名 {shell.name}）")
+        on_progress(100)
         return result
 
     def _patch_target_cache(self, spec: TaskSpec, to_fid: str, result: TransferResult) -> None:

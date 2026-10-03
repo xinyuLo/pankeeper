@@ -198,6 +198,12 @@ class RunHistory(Base):
     transferred_json: Mapped[str] = mapped_column(Text, default="[]")  # 本次实际转存的文件名
     excluded_json: Mapped[str] = mapped_column(Text, default="[]")  # 排除清单跳过的文件名
     regex_hit_json: Mapped[str] = mapped_column(Text, default="[]")  # 正则命中（过滤后放行）的文件名
+    # MD5 去重命中的文件名（只记录、不回写任务排除清单——2026-10-04 取消回写，但要让用户能查到"哪集被滤掉"）
+    md5_skipped_json: Mapped[str] = mapped_column(Text, default="[]")
+    # QMS/STRM 联动结果快照（{"st": 展示文案, "cls": "t-ok"/"t-bad"/"t-off"}）；
+    # 旧记录为空串，前端对空值显示「—」。详情弹窗「执行结果」行用。
+    qms_json: Mapped[str] = mapped_column(Text, default="")
+    strm_json: Mapped[str] = mapped_column(Text, default="")
     logs_json: Mapped[str] = mapped_column(Text, default="[]")
 
 

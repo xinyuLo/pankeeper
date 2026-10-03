@@ -34,6 +34,11 @@ function durTxt(started: string, finished: string): string {
   if (s < 60) return `${s} 秒`
   return `${Math.floor(s / 60)} 分 ${s % 60} 秒`
 }
+
+/** 联动快照 cls（t-ok/t-bad/t-off）→ 本弹窗 tag 类（ok/bad/off） */
+function clsOf(cls: string): string {
+  return cls === 't-ok' ? 'ok' : cls === 't-bad' ? 'bad' : 'off'
+}
 </script>
 
 <template>
@@ -55,7 +60,16 @@ function durTxt(started: string, finished: string): string {
           <span class="rd-k">开始时间</span><span class="rd-v mono">{{ detail.started }}</span>
           <span class="rd-k">结束时间</span><span class="rd-v mono">{{ detail.finished }}</span>
           <span class="rd-k">耗时</span><span class="rd-v mono">{{ durTxt(detail.started, detail.finished) }}</span>
-          <span class="rd-k">执行结果</span><span class="rd-v"><span class="rh-tag" :class="detail.status === 'success' ? 'ok' : 'bad'">{{ detail.status === 'success' ? '成功' : '失败' }}</span></span>
+          <span class="rd-k">执行结果</span>
+          <span class="rd-v rd-result">
+            <span class="rh-tag" :class="detail.status === 'success' ? 'ok' : 'bad'">转存{{ detail.status === 'success' ? '成功' : '失败' }}</span>
+            <template v-if="detail.qms">
+              <span class="rd-sep">·</span> QMS <span class="rh-tag" :class="clsOf(detail.qms.cls)">{{ detail.qms.st }}</span>
+            </template>
+            <template v-if="detail.strm">
+              <span class="rd-sep">·</span> STRM <span class="rh-tag" :class="clsOf(detail.strm.cls)">{{ detail.strm.st }}</span>
+            </template>
+          </span>
           <span class="rd-k">转存路径</span><span class="rd-v mono link">{{ detail.save_dir || '—' }}</span>
           <span class="rd-k">对比路径</span><span class="rd-v mono link">{{ detail.compare_path || '—' }}</span>
           <span class="rd-k">包含子目录</span><span class="rd-v">{{ detail.include_subdirs ? '是（连子文件夹一起存）' : '否（只存里面的内容）' }}</span>
@@ -97,6 +111,16 @@ function durTxt(started: string, finished: string): string {
       </div>
 
       <div class="rd-section">
+        <div class="rd-title">MD5 去重跳过的文件（{{ detail.md5_skipped.length }}）</div>
+        <div v-if="detail.md5_skipped.length" class="rd-files">
+          <div v-for="n in detail.md5_skipped" :key="n" class="rd-file"><FileTextOutlined style="color: #722ed1" /> {{ n }}</div>
+        </div>
+        <div v-else class="rd-empty">
+          {{ detail.skip_md5 ? `统计显示 MD5 命中跳过 ${detail.skip_md5} 项，但明细未记录（早于本功能上线的旧运行）` : '本次没有因 MD5 重复被跳过的文件' }}
+        </div>
+      </div>
+
+      <div class="rd-section">
         <div class="rd-title">本次实际转存（{{ detail.transferred.length }}）</div>
         <div v-if="detail.transferred.length" class="rd-files">
           <div v-for="n in detail.transferred" :key="n" class="rd-file"><FileTextOutlined style="color: #52c41a" /> {{ n }}</div>
@@ -117,6 +141,10 @@ function durTxt(started: string, finished: string): string {
 .rh-tag { font-size: 12px; padding: 1px 8px; border-radius: 5px; border: 1px solid; }
 .rh-tag.ok { color: #389e0d; background: #f6ffed; border-color: #b7eb8f; }
 .rh-tag.bad { color: #cf1322; background: #fff1f0; border-color: #ffa39e; }
+/* 联动未配置/未执行：灰色中性 tag */
+.rh-tag.off { color: var(--text3); background: var(--surface-2); border-color: var(--split); }
+.rd-result { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.rd-sep { color: var(--text3); }
 html[data-theme='dark'] .rh-tag.ok { color: #95de64; background: rgba(82, 196, 26, 0.16); }
 html[data-theme='dark'] .rh-tag.bad { color: #ff9c9c; background: rgba(255, 77, 79, 0.16); }
 .rd-section { margin-bottom: 18px; }

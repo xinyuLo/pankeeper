@@ -67,6 +67,12 @@ class TaskSpec:
     # 只转存分享内这些相对路径（勾选清单；None/空 = 全部）。
     # 目录条目也按路径匹配：勾了目录 = 转该目录整棵子树（bdsavePro new_files 语义）
     only_paths: set[str] | None = None
+    # 「带壳转存」（搜索转存快速弹窗专用，2026-10-04 用户要求）：单壳分享时把根文件夹
+    # 整体转过来（fsid 直接转，目标侧自带文件夹名），而不是剥壳只转里面的文件——
+    # 记录页显示的就是根文件夹名，壳丢了名字就对不上
+    with_shell: bool = False
+    # 根文件夹更名：非空时转存后把壳文件夹 rename 成这个名字（rename_dir）
+    folder_rename: str = ""
 
 
 class CloudAdapter(ABC):

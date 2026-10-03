@@ -175,6 +175,10 @@ class QueueEngine:
                 # 勾选清单（搜索页分享树勾选；空=全部）。注意：不持久化，
                 # 重启恢复的任务勾选丢失回全量——有 MD5/名字去重兜底，宁可多查不少删
                 "filePaths": list(item.get("file_paths") or []),
+                # 「带壳转存」（快速转存弹窗）：整壳转过来 + 根文件夹更名。
+                # 与 filePaths 同款不持久化——重启恢复的任务退回剥壳模式（快速转存生命周期短，可接受）
+                "rename": str(item.get("rename") or ""),
+                "withShell": bool(item.get("with_shell", False)),
             }
             self.state["tasks"].append(t)
             pos = sum(1 for x in self.state["tasks"] if x["status"] in ("wait", "run"))

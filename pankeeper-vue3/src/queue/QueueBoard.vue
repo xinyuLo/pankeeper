@@ -5,14 +5,15 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { QueueTask } from '@/types/model'
 import { DRIVE_META } from '@/api/mock/meta'
-import { queueView, pkQueue, setOnNewTaskStart } from '@/queue/engine'
+import { queueView, pkQueue, setOnNewTaskStart, isAutoQueued } from '@/queue/engine'
 
 const pinnedLogId = ref<number | null>(null)
 setOnNewTaskStart(() => {
   pinnedLogId.value = null
 })
 
-const tasks = computed(() => queueView.tasks)
+/* 只列手动（搜索转存）任务：自动转存虽然后端同队列跑，但前台归「转存历史」/任务内转存日志 */
+const tasks = computed(() => queueView.tasks.filter((t) => !isAutoQueued(t)))
 const activeCount = computed(() => tasks.value.filter((t) => t.status === 'wait' || t.status === 'run').length)
 
 defineExpose({ activeCount })

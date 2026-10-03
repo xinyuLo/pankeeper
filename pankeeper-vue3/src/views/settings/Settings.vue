@@ -350,7 +350,6 @@ async function onRemoveAvatar() {
           <label>结果缓存</label>
           <div class="ctl">
             <a-select v-model:value="search.cache_mode" :options="CACHE_OPTS" style="width: 180px" />
-            <span class="muted small">开启后，同样的关键词 30 分钟内不重复打 PanSou</span>
           </div>
         </div>
       </div>

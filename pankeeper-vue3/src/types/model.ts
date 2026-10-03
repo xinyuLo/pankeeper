@@ -35,7 +35,7 @@ export interface PaTask {
   exclude_names?: string[]
   exclude_md5s?: string[]
   last_run: string
-  last_status: 'success' | 'fail' | 'running' | 'never'
+  last_status: 'success' | 'partial' | 'fail' | 'running' | 'never'
   last_result: string
   post_qms: boolean
   /** Server 酱推送已改全局开关（推送通知页）控制，字段保留兼容旧记录 */
@@ -67,6 +67,10 @@ export interface QueueTask {
   flags: Record<string, number>
   /** 完成时刻（出队计时：保留 1 小时） */
   doneAt: number
+  /** 来源自动任务的 id（自动转存入队时带；手动任务没有）——执行监控按它对上队列项 */
+  paTaskId?: number | null
+  /** 任务来源：search=搜索转存 / auto=自动转存（后端 enqueue 写入；restore 后可能缺失，别只认它） */
+  source?: string
   logs: QueueLogLine[]
 }
 

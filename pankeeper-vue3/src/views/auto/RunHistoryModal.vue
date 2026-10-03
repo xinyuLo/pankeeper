@@ -42,6 +42,12 @@ function openDetail(id: number) {
   detailOpen.value = true
 }
 
+/** 整单结果 → 样式类（后端 overall.cls 是 t-ok/t-warn/t-bad；t-warn = 部分失败） */
+function ovCls(r: PaRunRow): string {
+  const c = r.overall?.cls
+  return c === 't-warn' ? 'warn' : c === 't-bad' ? 'bad' : 'ok'
+}
+
 function close() {
   emit('update:open', false)
 }
@@ -54,7 +60,8 @@ function close() {
     <div v-else class="rh-list">
       <div v-for="r in rows" :key="r.id" class="rh-card">
         <div class="rh-head">
-          <span class="rh-tag" :class="r.status === 'success' ? 'ok' : 'bad'">{{ r.status === 'success' ? '成功' : '失败' }}</span>
+          <!-- 整单结果：转存成功但 QMS 有失败 = 部分失败（橙），别只报转存那一半 -->
+          <span class="rh-tag" :class="ovCls(r)">{{ r.overall?.st || (r.status === 'success' ? '成功' : '失败') }}</span>
           <span class="rh-time">{{ r.started }} → {{ r.finished }}</span>
           <a class="rh-detail" @click="openDetail(r.id)">详情</a>
         </div>
@@ -66,7 +73,7 @@ function close() {
           <span class="rh-chip">MD5 跳过 {{ r.skip_md5 }}</span>
         </div>
         <div class="rh-dir"><FolderOpenOutlined /> 转存到：{{ task?.save_dir || '—' }}</div>
-        <div class="rh-msg">{{ r.message || '—' }}</div>
+        <div class="rh-msg" :class="r.status === 'success' ? 'ok' : 'bad'">{{ r.message || '—' }}</div>
       </div>
     </div>
 
@@ -84,13 +91,20 @@ function close() {
 .rh-detail { color: var(--primary); font-size: 13px; cursor: pointer; }
 .rh-tag { font-size: 12px; padding: 1px 8px; border-radius: 5px; border: 1px solid; }
 .rh-tag.ok { color: #389e0d; background: #f6ffed; border-color: #b7eb8f; }
+.rh-tag.warn { color: #d48806; background: #fffbe6; border-color: #ffe58f; }
 .rh-tag.bad { color: #cf1322; background: #fff1f0; border-color: #ffa39e; }
 .rh-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .rh-chip { font-size: 12px; padding: 2px 10px; border-radius: 999px; background: var(--surface-2); color: var(--text2); border: 1px solid var(--split); }
 .rh-chip.ok { color: #389e0d; background: #f6ffed; border-color: #b7eb8f; }
 .rh-dir { margin-top: 8px; font-size: 12.5px; color: var(--text3); }
 .rh-dir svg { color: var(--primary); margin-right: 4px; }
-.rh-msg { margin-top: 6px; font-size: 13px; color: var(--text); }
+.rh-msg { margin-top: 6px; font-size: 13px; }
+/* 说明文案按成败染色（用户要求：像结果 tag 一样一眼分好坏） */
+.rh-msg.ok { color: #389e0d; }
+.rh-msg.bad { color: #cf1322; }
+html[data-theme='dark'] .rh-msg.ok { color: #95de64; }
+html[data-theme='dark'] .rh-msg.bad { color: #ff9c9c; }
 html[data-theme='dark'] .rh-tag.ok { color: #95de64; background: rgba(82, 196, 26, 0.16); }
+html[data-theme='dark'] .rh-tag.warn { color: #ffc53d; background: rgba(250, 173, 20, 0.16); }
 html[data-theme='dark'] .rh-tag.bad { color: #ff9c9c; background: rgba(255, 77, 79, 0.16); }
 </style>

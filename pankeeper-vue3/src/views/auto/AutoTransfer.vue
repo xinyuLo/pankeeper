@@ -16,6 +16,7 @@ import {
   FolderOpenOutlined,
   ExportOutlined,
   CopyOutlined,
+  SyncOutlined,
 } from '@ant-design/icons-vue'
 import LogBox from '@/components/LogBox.vue'
 import PkPager from '@/components/PkPager.vue'
@@ -30,6 +31,7 @@ import {
   deletePaTask,
   getPaDetailLog,
   listPaTasks,
+  retriggerTaskQms,
   togglePaTask,
 } from '@/api/modules/tasks'
 import type { MainDriveType, PaTask, QueueLogLine } from '@/types/model'
@@ -80,6 +82,7 @@ function cronText(cron: string): string {
 }
 const STATUS_TEXT: Record<PaTask['last_status'], string> = {
   success: '成功',
+  partial: '部分失败',
   fail: '失败',
   running: '执行中',
   never: '从未执行',
@@ -131,6 +134,23 @@ async function onDel(t: PaTask) {
   await deletePaTask(t.id)
   message.success(`已删除任务「${t.name}」`)
   await reload()
+}
+
+/* ===== 重新触发 QMS：QMS 侧刮失败后手动重刷（联动目标=任务配置优先、转存目录兜底；不动任务配置） ===== */
+const reQmsId = ref<number | null>(null)
+async function onRetriggerQms(t: PaTask) {
+  if (reQmsId.value) return // 防连点
+  reQmsId.value = t.id
+  try {
+    const r = await retriggerTaskQms(t.id)
+    if (r.ok) message.success(r.message || '已触发 QMS 刮削')
+    else message.warning(r.message || '触发失败')
+  } catch (e) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '触发失败，详见服务端日志')
+  } finally {
+    reQmsId.value = null
+  }
 }
 
 function onCheckAll() {
@@ -253,7 +273,7 @@ function detailCron(c: string): string {
             </td>
             <td class="pa-td pa-nowrap">{{ cronText(t.cron) }}</td>
             <td class="pa-td pa-muted">{{ t.exclude_count ? t.exclude_count + ' 项' : '—' }}</td>
-            <td class="pa-td pa-muted">{{ t.last_run || '—' }}</td>
+            <td class="pa-td pa-muted pa-nowrap">{{ t.last_run || '—' }}</td>
             <td class="pa-td">
               <span class="pa-tag" :class="'pa-st-' + t.last_status" :title="t.last_result || ''">
                 {{ STATUS_TEXT[t.last_status] }}<template v-if="t.last_result"> · {{ compactResult(t.last_result) }}</template>
@@ -270,6 +290,19 @@ function detailCron(c: string): string {
                 </a-tooltip>
                 <a-tooltip title="执行详情"><button class="pa-ico pa-op-detail" @click="openDetail(t)"><ProfileOutlined /></button></a-tooltip>
                 <a-tooltip title="转存日志"><button class="pa-ico pa-op-log" @click="openRunHistory(t)"><FileTextOutlined /></button></a-tooltip>
+                <a-tooltip
+                  :title="t.last_status === 'partial'
+                    ? '重新触发 QMS：先清掉 QMS 侧本次文件的失败记录再重刮（配了 STRM 会在刮削完成后自动续上）'
+                    : '仅当最近一次是「部分失败」（QMS 刮失败）时可重刷'"
+                >
+                  <button
+                    class="pa-ico pa-op-qms"
+                    :disabled="reQmsId === t.id || t.last_status !== 'partial'"
+                    @click="onRetriggerQms(t)"
+                  >
+                    <SyncOutlined :spin="reQmsId === t.id" />
+                  </button>
+                </a-tooltip>
                 <a-popconfirm
                   :title="`确认删除任务「${t.name}」？此操作不可恢复。`"
                   ok-text="删除"
@@ -326,6 +359,12 @@ function detailCron(c: string): string {
           </div>
           <div class="pa-c-sub">
             <button class="pa-sublink" @click="onViewFiles(t)">查看文件</button>
+            <button
+              class="pa-sublink"
+              :disabled="t.last_status !== 'partial'"
+              :style="t.last_status !== 'partial' ? 'opacity:.45;cursor:default' : ''"
+              @click="t.last_status === 'partial' && onRetriggerQms(t)"
+            >重触发 QMS</button>
             <button class="pa-sublink" @click="openExcl(t)">排除<i v-if="t.exclude_count" class="pa-op-num">{{ t.exclude_count }}</i></button>
             <button class="pa-sublink" @click="openDetail(t)">详情</button>
             <a-popconfirm
@@ -448,21 +487,17 @@ function detailCron(c: string): string {
 .pa-card { background: var(--card); border-radius: var(--r); box-shadow: var(--shadow); overflow: hidden; }
 /* 横向滚动兜底容器：表格 min-width 撑住列宽，窗口窄了滚列不毁版面 */
 .pa-tablewrap { overflow-x: auto; }
-.pa-table { width: 100%; border-collapse: collapse; table-layout: fixed; min-width: 1080px; }
-/* 列宽配比（2026-10-03 实测重配）：任务名/分享链接双主力，右列收窄但别截断内容。
-   ⚠️ fixed 布局下固定 px 列之和会先吃满表格，`auto` 的链接列只剩残羹——所以 px 列
-   必须压到「内容刚好放下」，否则链接被截成 https://pan...（实测截图踩过）。
-   min-width 1080：窗口再窄由外层容器横向滚动兜底，不牺牲列宽。 */
-.pa-table th:nth-child(1) { width: 12%; }
-/* 启用列必须装得下 40px 开关 + 左右各 12px 内边距 = 64，窄了开关会溢出去贴住链接列 */
+.pa-table { width: 100%; border-collapse: collapse; table-layout: auto; min-width: 1080px; }
+/* 列宽配比（2026-10-03 晚重配，用户反馈：链接列吃光空白、上次执行挤到换行、操作列贴死右缘）：
+   放弃 fixed 布局——fixed 下 `auto` 的链接列独吞全部剩余宽度（那格只有 230px 内容，其它全是空）。
+   改 auto 布局后剩余空间按各列内容占比分摊，链接列被 .pa-url max-width 230px 压住不再霸场。
+   仅保留必要 hint：启用（开关 64）与操作（六钮 196）按内容定死，其余交给浏览器。
+   min-width 1080：窗口再窄由外层容器横向滚动兜底。 */
 .pa-table th:nth-child(2) { width: 64px; }
-.pa-table th:nth-child(3) { width: auto; }
-.pa-table th:nth-child(4) { width: 92px; }
-.pa-table th:nth-child(5) { width: 64px; }
-.pa-table th:nth-child(6) { width: 84px; }
-.pa-table th:nth-child(7) { width: 184px; }
-/* 操作列 6 个 26px 图标钮 + 5×2px 间距 = 166，加单元格内边距 24 → 196 够 */
-.pa-table th:nth-child(8) { width: 196px; }
+/* 上次执行：MM-DD HH:MM 一行放下（84px 会折成两行——实测截图踩过） */
+.pa-table th:nth-child(6) { width: 110px; white-space: nowrap; }
+/* 操作列 7 个 26px 图标钮 + 6×2px 间距 = 194，加单元格内边距 24 → 230 够 */
+.pa-table th:nth-child(8) { width: 230px; }
 .pa-table .pa-td { overflow: hidden; }
 .pa-nowrap { white-space: nowrap; }
 /* 最近结果可能很长（成功 · 新增 106 / 跳过 0 / 失败 0），允许标签内换行，别截断 */
@@ -478,7 +513,8 @@ function detailCron(c: string): string {
   padding: 13px 12px;
   white-space: nowrap;
 }
-.pa-th-ops { text-align: right; }
+/* 操作列表头/图标都左对齐：右对齐会贴死卡片右缘（用户反馈看着奇怪），左对齐跟图标对齐更自然 */
+.pa-th-ops { text-align: left; }
 .pa-td {
   padding: 14px 12px;
   color: var(--text);
@@ -553,13 +589,15 @@ html[data-theme='dark'] .pa-ico.pa-ico-copy:hover { background: #1a1425; }
 }
 .pa-copy:hover { border-color: var(--primary-h); color: var(--primary); }
 
-/* 最近结果染色 tag：success 绿 / fail 红 / running 蓝 / never 灰 */
+/* 最近结果染色 tag：success 绿 / partial 橙（转存成功但 QMS 有失败）/ fail 红 / running 蓝 / never 灰 */
 .pa-tag { font-size: 12.5px; padding: 2px 8px; border-radius: 6px; display: inline-block; white-space: nowrap; }
 .pa-st-success { color: #52c41a; background: rgba(82, 196, 26, 0.12); }
+.pa-st-partial { color: #d48806; background: rgba(250, 173, 20, 0.14); }
 .pa-st-fail { color: #ff4d4f; background: rgba(255, 77, 79, 0.12); }
 .pa-st-running { color: #1677ff; background: rgba(22, 119, 255, 0.12); }
 .pa-st-never { color: var(--text3); background: rgba(0, 0, 0, 0.05); }
 html[data-theme='dark'] .pa-st-success { color: #95de64; background: rgba(82, 196, 26, 0.16); }
+html[data-theme='dark'] .pa-st-partial { color: #ffc53d; background: rgba(250, 173, 20, 0.16); }
 html[data-theme='dark'] .pa-st-fail { color: #ff9c9c; background: rgba(255, 77, 79, 0.16); }
 html[data-theme='dark'] .pa-st-running { color: #69b1ff; background: rgba(22, 119, 255, 0.2); }
 html[data-theme='dark'] .pa-st-never { color: var(--text3); background: rgba(255, 255, 255, 0.06); }
@@ -567,7 +605,7 @@ html[data-theme='dark'] .pa-st-never { color: var(--text3); background: rgba(255
 /* ===== 行操作五色按钮（颜色即语义）：
    执行=蓝 / 编辑=青 / 排除=橙（带计数徽标）/ 详情=中性 / 删除=红（Popconfirm 确认）
    桌面用 .pa-ico 图标钮（26px 方块，悬浮出 tooltip + 染色底），手机卡片仍用文字 .pa-op ===== */
-.pa-ops { display: flex; gap: 2px; justify-content: flex-end; }
+.pa-ops { display: flex; gap: 2px; justify-content: flex-start; }
 .pa-ico {
   width: 26px;
   height: 26px;
@@ -608,6 +646,10 @@ html[data-theme='dark'] .pa-st-never { color: var(--text3); background: rgba(255
 .pa-ico.pa-op-excl:hover { background: #fffbe6; }
 .pa-ico.pa-op-detail { color: var(--text2); }
 .pa-ico.pa-op-detail:hover { background: var(--surface-3); color: var(--text); }
+/* 重新触发 QMS = 紫色（媒体联动语义，与转存的绿/排除的橙区分开） */
+.pa-ico.pa-op-qms { color: #722ed1; }
+.pa-ico.pa-op-qms:hover { background: #f9f0ff; }
+.pa-ico.pa-op-qms:disabled { opacity: 0.55; cursor: default; }
 .pa-ico.pa-op-del { color: #ff4d4f; }
 .pa-ico.pa-op-del:hover { background: #fff1f0; }
 /* 暗色：底色压暗、语义色提亮一档 */
@@ -616,6 +658,8 @@ html[data-theme='dark'] .pa-ico.pa-op-run:hover { background: #111a2c; }
 html[data-theme='dark'] .pa-ico.pa-op-edit:hover { background: #0e2929; }
 html[data-theme='dark'] .pa-ico.pa-op-excl:hover { background: #2b2111; }
 html[data-theme='dark'] .pa-ico.pa-op-detail:hover { background: rgba(255, 255, 255, 0.1); color: var(--text); }
+html[data-theme='dark'] .pa-ico.pa-op-qms { color: #b37feb; }
+html[data-theme='dark'] .pa-ico.pa-op-qms:hover { background: #1a1425; }
 html[data-theme='dark'] .pa-ico.pa-op-del:hover { background: #2b1314; }
 html[data-theme='dark'] .pa-ico .pa-op-num { background: #594214; color: #ffe58f; border-color: #594214; }
 .pa-op {

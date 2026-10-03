@@ -12,7 +12,7 @@ import AutoDirModal from './AutoDirModal.vue'
 import CronPicker from './CronPicker.vue'
 import { DD_MEDIA, DRIVE_META } from '@/api/mock/meta'
 import { accountStore } from '@/api/mock/accounts'
-import { listQmsPaths, listStrmPaths } from '@/api/modules/dd'
+import { listDdItems, listQmsPaths, listStrmPaths } from '@/api/modules/dd'
 import {
   cronHuman,
   extractShareCode,
@@ -147,8 +147,47 @@ watch(
     drill.value = [...ex.drill]
     qmsId.value = ex.qms_id
     strmId.value = ex.strm_id
+    // 目录关了 QMS / 所选目录已从 QMS 消失 → 清空选择（用户定稿：等同于"没配"）
+    void syncMediaSelection(t)
   },
 )
+
+/**
+ * 目录总闸 + 幽灵值清理（2026-10-04 用户要求："那个目录要是关闭了，就把下拉框的值清空，这就相当于没配"）：
+ * ① save_dir 命中的转存配置目录若关了 QMS → 任务内选的 QMS/STRM 一并清空（执行侧同样拒用，见后端 resolve_media_link）；
+ * ② 所选的 QMS/STRM 目录已不在 QMS 列表里（被删/停用）→ 清掉残留 id，别留"看着配了其实无效"的幽灵值。
+ */
+async function syncMediaSelection(t: PaTask | null) {
+  if (!postQms.value) return
+  const dir = (t?.save_dir || saveDir.value || '').replace(/\/+$/, '')
+  try {
+    const items = await listDdItems()
+    const hit = items
+      .filter(
+        (d) => d.type === props.type && dir && (dir === d.path || dir.startsWith(d.path.replace(/\/+$/, '') + '/')),
+      )
+      .sort((a, b) => b.path.length - a.path.length)[0]
+    if (hit && !hit.qms_on) {
+      if (qmsId.value != null || strmId.value != null) {
+        qmsId.value = null
+        strmId.value = null
+        message.info('该保存目录已在「转存配置」里关闭 QMS 联动，任务内的目录选择已清空（等于没配）')
+      }
+      return
+    }
+  } catch {
+    /* 拉不到目录配置就跳过，不拦保存 */
+  }
+  try {
+    const [qs, ss] = await Promise.all([listQmsPaths(), listStrmPaths()])
+    const qIds = new Set(qs.map((x) => x.id))
+    const sIds = new Set(ss.map((x) => x.id))
+    if (qmsId.value != null && !qIds.has(qmsId.value)) qmsId.value = null
+    if (strmId.value != null && !sIds.has(strmId.value)) strmId.value = null
+  } catch {
+    /* QMS 连不上就不动，保持原值 */
+  }
+}
 
 /* ===== QMS 目录：点开「QMS 联动」时才拉（带 loading + 失败重试一次） ===== */
 const pathsLoading = ref(false)

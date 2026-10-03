@@ -517,6 +517,9 @@ class BaiduClient(CloudAdapter):
         roots_raw = page.get("file_list") or []
         roots = [self._share_row_to_file(r, "") for r in roots_raw]
         files.extend(roots)
+        # 「带壳转存」用（搜索转存快速弹窗）：单壳时记下根文件夹条目——fsid 可直接进
+        # fsidlist 整体转存（目标自带文件夹名）；非单壳 / 未开子目录时置空（无壳可带或结构本就保留）
+        self._root_shell = roots[0] if (spec.include_subdirs and len(roots) == 1 and roots[0].is_dir) else None
         if spec.include_subdirs:
             # ⚠️ share/list 的 dir 必须用**原始路径**（含 /sharelink<id>-<uk> 前缀，
             # 即 yunData file_list 返回的 path）——传剥了前缀的逻辑路径一律 -7。
@@ -660,6 +663,12 @@ class BaiduClient(CloudAdapter):
         if not ctx:
             raise AdapterError("分享上下文缺失（save_files 必须跟在 list_share 之后）")
         result = TransferResult()
+        # 「带壳转存」（spec.with_shell，搜索转存快速弹窗）：单壳分享整壳转 + 可选根文件夹更名。
+        # 早期 return——跳过文件级 MD5/名字去重（整壳模式按"目标已有同名文件夹"去重）
+        if spec.with_shell and not spec.only_paths:
+            shell = getattr(self, "_root_shell", None)
+            if shell is not None and shell.fid:
+                return self._save_with_shell(spec, shell, result, on_progress, on_log)
         save_list = [f for f in files if not f.is_dir and f.fid]
 
         # 勾选清单过滤（bdsavePro new_files 语义）：勾了文件=只转这些；
@@ -727,6 +736,38 @@ class BaiduClient(CloudAdapter):
                 self._transfer_group(ctx, group[i : i + 500], target, spec, result, on_log)
             done += len(group)
             on_progress(min(99, int(done / total * 100)))
+        on_progress(100)
+        return result
+
+    def _save_with_shell(self, spec: TaskSpec, shell: ShareFile, result: TransferResult, on_progress, on_log) -> TransferResult:
+        """把分享根文件夹整体转存到 save_dir（fsid 直接转，目标侧自带文件夹名）。
+
+        与文件级转存的差别：没法逐文件 MD5 去重，去重口径改为"目标已有同名文件夹 → 整壳跳过"；
+        folder_rename 非空时转存完成后 rename_dir 改根文件夹名（搜索转存记录页显示的就是它，
+        2026-10-04 用户："搜索转存得带着根文件夹一块过来，填了更名就改根文件夹名"）。
+        """
+        target = spec.save_dir.rstrip("/") + "/" + shell.name
+        try:
+            self.list_dir(target)
+            result.skip += 1
+            on_log(f"目标已存在同名文件夹「{shell.name}」，跳过整壳转存")
+            on_progress(100)
+            return result
+        except CredentialExpired:
+            raise
+        except AdapterError:
+            pass  # 目录不存在 = 没转过，继续
+        on_log(f"整壳转存分享根文件夹「{shell.name}」→ {spec.save_dir}/")
+        # ⚠️ 真实 _transfer_group 第一个参数是分享 ctx（save_files 开头已校验存在），别漏
+        self._transfer_group(self._share_ctx, [shell], spec.save_dir, spec, result, on_log)
+        new_name = (spec.folder_rename or "").strip()
+        if new_name and new_name != shell.name:
+            time.sleep(1)  # 转存刚落库就 rename 是写操作连打，歇一拍防 -65
+            self.rename_dir(target, new_name)
+            result.renamed += 1
+            if result.transferred:
+                result.transferred[0]["name"] = new_name
+            on_log(f"根文件夹已更名：{shell.name} → {new_name}")
         on_progress(100)
         return result
 

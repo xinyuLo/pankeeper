@@ -5,7 +5,7 @@
 
 ## 0. 一句话状态
 
-日志管理菜单组（搜索历史/转存历史/推送历史/请求日志）+ 推送历史真落库上线；浏览弹窗支持目录新建/重命名/删除（含缓存就地同步）；修复夸克转存套娃目录、去重真空窗、浏览缓存陈旧三个 bug；百度限速定稿 1s。**NAS 部署待更新**（本次推送后按 §1 姿势重建容器）。
+10-03 深夜~10-04 凌晨大批次已收口（工作日志见 `工作日志/2026-10-04-*.md`）：自动转存六连修（立即执行真执行/结果落库/染色/拆列）；**QMS 真实结果回填全链**（`run_watch`，"触发成功"改口"已触发"+回填，整单结果 `overall_of`，部分失败语义）；「重新触发 QMS」按钮（门禁+清失败记录+重刮+STRM 等刮完+回填）；联动目标解析（任务级优先+目录总闸）；搜索转存**带壳转存+文件夹更名**；vite 代理 keep-alive 修复（前端间歇 500 真凶）；`start-dev.bat`/`stop-dev.bat`。⚠️ 常驻自愈复查已按用户要求**删除**，别加回来。**NAS 部署待更新**（本批推送后按 §1 姿势重建容器）。
 
 ## 1. 环境与部署拓扑（本次实测更新）
 
@@ -44,12 +44,45 @@
 1. **夸克转存套娃**（`ensure_dir`）：把绝对路径当 fid 传 `_list_dir`（永远查空→每层误创建）+ 创建接口 `dir_path` 是相对 pdir_fid 却塞绝对路径 → `/1.影视/待整理-电影` 建成 `/1.影视/1.影视/待整理-电影`。修：逐层用当前 fid 列目录按名匹配，创建只传 file_name。一级路径不触发所以此前未暴露。
 2. **浏览映射表污染**（470 行）：全树预热/子层展开时 `_remember_paths` 拿不到父目录真实路径，把深层子目录全记成根路径 → `/1.影视` 解析指到套娃目录、浏览树只剩 1 个目录、路径显示 `1.影视/1.影视/…`。修：子层先反查父 fid 的已记路径，查不到整批放弃（宁缺勿错）；污染行已清，映射按正确路径重建。
 3. **百度去重真空窗**：去重基线 `compare_path or save_dir` 二选一，QMS 搬运窗口期两边都查不到 → cron 重跑同一集存两遍（40/41 重复案）。修：基线 = **compare_path ∪ save_dir 双扫**（每轮多 1 次列表请求，值得）。
-   - **MD5 去重跳过的文件回写任务排除清单**（名字+MD5，TransferResult.md5_skipped → auto.py 合并）：库里已有的显式排除，QMS 转码改 MD5/分享改名都挡得住；排除弹窗里呈已勾选态可见可取消。
+   - ~~**MD5 去重跳过的文件回写任务排除清单**（名字+MD5，TransferResult.md5_skipped → auto.py 合并）~~
+     **⚠️ 2026-10-04 已取消**（用户拍板）：该回写等于任务静默改自己的配置——删了本地文件想重转会被清单挡住、不看日志发现不了（实锤：`40.4k.mp4` 被自动勾进排除清单）。现在只在日志/RunHistory 如实记录（`skip_md5` 计数 + 适配器「MD5 命中跳过」日志行），要排除由用户手动勾（`POST /pa/tasks/{id}/exclude`）。**别再恢复这段回写**（`auto.py::_sync_pa_task` 留了同款警示注释）。残留的 1 项已通过接口清空。
 
 ### 2.5 界面小件
 - 转存配置页表格对齐全局基础样式（此前漏改：字号/字重/颜色自成一派）；序号并入名称格（独立排序列被 fixed 布局撑到 101px，序号和名称隔 90px 空白）。
 - 转存历史统计列改「新增：2 跳过：29 失败：0」（数字绿色等宽，失败染红）+ 表头简化「统计」；转存历史/推送历史刷新按钮统一 `primary ghost` + `#icon` 插槽（修 loading 时按钮宽度跳动）。
 - 日志管理四项按用户命名定稿；首页定时任务卡说明文字删除；联动 QMS 弹窗去掉写死的「15 秒」（实际间隔在队列配置）。
+
+## 2.9 本批增量四（2026-10-04 凌晨）
+
+- **QMS/STRM 快照语义修正 + 真实结果回填**（用户实锤：QMS 侧 `41.4k.mp4`、`35~38.4k_1002164941.mp4` 都是 `scrape_failed`，PanKeeper 详情却亮绿"成功"）：
+  - 根因：`qms.trigger_scrape` 只证明 QMS **受理了触发请求**（HTTP 200 + code 0），不是刮削成败；快照在触发瞬间写死成"成功"。
+  - 改：触发时如实写 **「已触发」**（`auto.py::_media_chain`，QMS/STRM 都改）；新增 `services/run_watch.py` —— 转存落库拿到 run id 后 spawn 守护线程，按**本次转存的文件名**轮询 `GET /api/scrape/records` 到终态（renamed/scrape_failed/rename_failed），把汇总（成功 N / 失败 M / 未见记录 K）回填 `run_history.qms_json`。**不依赖推送开关**（结果展示是独立诉求）。30s/轮、总超时 30 分钟、一条记录都没有时 10 分钟收工。
+  - **坑**：QMS 的 `name=` 过滤实测会漏记录（同一文件带 name 查不到、不带就查得到），所以 run_watch **不按任务名筛**，一次拉 500 条按 `file_name` 精确匹配（新→旧取第一条）。`media_push._wait_records` 仍在用 name 过滤，将来若发现推送"等不到终态"多半是这个原因。
+  - STRM 不做轮询（QMS 无对应查询接口），如实显示「已触发」。
+  - 验证：拿 run 8（文件 `41.4k.mp4`，QMS 里 `scrape_failed`）跑真实链路 → 回填 `{"st": "失败 1 项（详见 QMS）", "cls": "t-bad"}`，接口直出已确认；`_summary` 五个分支（全成功/有失败/全失败/无记录/部分未见）逐条自检通过。
+- **「整单结果」口径**（同批，用户要求："最近结果应该是部分失败吧"）：新增 `run_watch.overall_of(status, qms_snap)` —— 转存失败 → 失败（红）；转存成功但 QMS 有失败 → **部分失败**（橙 `t-warn`）；其余 → 成功（绿）。落地三处：`/pa/runs` 列表与 `/runs/{id}` 详情直出 `overall` 字段；`run_watch._write` 在该 run 仍是任务最新一次时，把 `PaTask.last_status` 升级为 `partial`（任务行「最近结果」显示"部分失败 · 新增 N"）。前端：`PaTask.last_status` 加 `partial`、`pa-st-partial` 橙色 tag、转存历史页「结果」列与转存日志卡片 tag 均改用 `overall`。**别再只看 `status` 报"成功"——那只是转存那一半。**
+- **「重新触发 QMS」按钮 + 重刷回填**（2026-10-04 用户要求："重新触发刮削，成功的话就帮我改成成功吧"）：`POST /pa/tasks/{id}/retrigger-qms`（`pa.py`）——联动目标走 `auto.resolve_media_link`（**任务级 `qms_id`/`strm_id` 优先，没配才回退 `dd_items`**，见下方"联动目标解析规则"）→ 触发刮削；**受理后顺带给该任务最新一次运行挂 `run_watch` 回填**：刮成功→那次运行改判「成功」、任务行从部分失败翻回成功；仍失败→维持原判。刻意不写"重刷中"中间态（判定会来回跳）。前端：自动转存行操作第 7 个紫色图标（`pa-op-qms`，SyncOutlined 转圈 + 防连点）+ 手机端次操作字链；操作列宽 196→230。实测：触发返回 `{"ok":true,"qms_id":10,...}`，日志 `[run-watch] run 8 QMS 结果回填：…`；成功/失败两条路径均验证并已还原真值。
+- `run_watch` 的 print 加了 `flush=True`——重定向到文件时块缓冲会吞日志（排查时踩过）。
+- **QMS 路由硬情报**（2026-10-04 从 Go 二进制符号 + GitHub `chen8945/QMediaSync` 源码双向确认；`backend/main.go` 注册处）：
+  - `POST /api/scrape/pathes/start {id}` 触发刮削；`GET /api/scrape/pathes/{id}` 运行状态
+  - `GET /api/scrape/records` 逐文件记录；**`DELETE /api/scrape/records?ids=1,2,3`** 按 ID 删记录（不限状态）
+  - **`POST /api/scrape/clear-failed`** 清除**所有**目录的失败记录（= QMS UI 上那个按钮）；`POST /api/scrape/truncate-all` 清空全部
+  - `POST /api/sync/path/start {id}` 触发 STRM；`GET /api/sync/path-list`
+  - 语义：`models.ClearFailedScrapeRecords(ids)` —— ids 空 = 只删 `status='scrape_failed'` 的；给了 ids = 按 ID 删。
+  - **QMS 按文件路径去重**：失败记录还在时再触发不会重刮 → 手动重刷必须先删记录。PanKeeper 用按 ID 精确删（不误伤别的目录），没用全局 clear-failed。
+- **STRM 改为「等刮削真跑完」再触发**（2026-10-04 用户拍板，对齐 bdsavepro 语义）：
+  - 原实现是**固定间隔**（`queue_cfg.strm`，默认 10s）就触发——刮削比它慢时 STRM 会在刮完前触发（元数据不全）。
+  - 现实现 `run_watch.trigger_strm_after_scrape(run_id, qms_id, strm_id, delay, timeout)`：后台线程轮询 `GET /api/scrape/pathes/{id}`，**完成判据 = 曾亲眼见它忙（is_running≠0 或 is_scraping）→ 现在不忙了**；`updated_at >= 触发时刻 - 60s` 作为辅助信号（**必须在 60s 容差内**：QMS 在 NAS、PanKeeper 在另一台机，时钟差会让严格比较误判为假——桩测试实测踩到）。确认跑完 → 再等 delay 秒 → 触发 STRM。
+  - 超时（默认 5 分钟）→ 记 `未确认（刮削超时，未触发 STRM）`，**不触发 STRM**；取不到状态 → 退化成"等 delay 秒直接触发"（不把能力弄丢）。
+  - **自动流程同步改造**：`auto.py::_media_chain` 不再在队列里 `_sleep_phase` 死等（原实现会堵住 worker），改为 strm 快照先写「等待刮削完成…」，落库后由 `_sync_pa_task` 挂后台线程。
+  - 桩验证四例：见过忙→闲=触发 / 一直闲且时间戳不前进=超时不触发 / 时间戳更新=触发（含容差）/ 取不到状态=退化触发。
+  - ⚠️ 注意：百度电视剧目录（`dd_items` id=3）**strm_id 为空**，所以该任务根本不会触发 STRM；只有配了 strm_id 的目录（如电影 id=4→strm_id=7）才有这一步。
+- **⚠️ 常驻「自愈复查」已按用户要求关闭（2026-10-04 01:23）**：曾实现过每 3 分钟扫「最近 24h 内未成功」的运行自动翻正（`start_reconciler`，一轮 1 个 QMS 请求）；用户明确不要后端全天候轮询 → 代码已删（`git log` 里有）。**现状：只有两条触发时轮询**——转存收尾（30s/次、上限 30 分钟、无记录 10 分钟收工）与手动重刷（多一个 120s 判定 QMS 是否真重刮）。QMS 晚成功**不再自动翻正**，要翻正就点任务行的「重新触发 QMS」。别自作主张加回来。
+- **「重新触发 QMS」定稿链路**（用户 2026-10-04 要求）：① 门禁——只有最新运行的 QMS 快照 `cls=t-bad`（任务行"部分失败"）才允许点（前端 disabled + 后端 400 双保险）；② `DELETE /api/scrape/records?ids=` 清本次文件的失败记录；③ `POST /api/scrape/pathes/start` 重刮；④ 该目录配了 `strm_id` → **等刮削真跑完**（`run_watch.trigger_strm_after_scrape`）再等「队列配置」的 `strm` 秒数触发 `POST /api/sync/path/start`（结果只写「已触发 / 失败 / 未确认」，QMS 侧没有 STRM 结果接口）；⑤ 挂 `run_watch` 回填（baseline 取删除后指纹 → 任何新记录都算 fresh），刮好自动改判成功。
+- **⚠️ 联动目标解析规则（2026-10-04 修，`auto.resolve_media_link(path, task_id)`）**：**任务弹窗里配的 `qms_id`/`strm_id` 优先，两个字段各自独立回退到按 `save_dir` 前缀匹配的 `dd_items` 目录**。历史 bug：执行侧（`auto._media_chain`、`pa.py` 重触发）**原只读目录级**——用户给任务 1 配了 `strm_id=5`，代码却只认目录（目录那层为空）→ **STRM 永不触发，且界面毫无提示**。实测 `resolve_media_link('/A罗/0.影视/待整理-电视剧/兰香如故(2026)', 1)` → `{'qms_id': 10, 'strm_id': 5}`（旧逻辑 `strm_id=None`）。**⚠️ 总闸（2026-10-04 用户定稿："那个目录要是关闭了，就等于没配"）**：`save_dir` 命中的「转存配置」目录若 `qms_on=false` → `resolve_media_link` **一律返回 None（未配）**，任务里选过什么都不算（前端打开任务弹窗也会把失效选择清空并提示）。**总闸开着、或 `save_dir` 未命中任何目录时**，才走上面的"任务级优先"。实测：目录开 → `{'qms_id':10,'strm_id':5}`；目录关 → `None`；恢复 → 又回来。
+- **推送信息条补「STRM 已生成」+ STRM「已触发」改绿（2026-10-04）**：自动转存的 `strm_ok` 在 STRM 改后台等待后恒为 `None`，推送信息条从不显示 STRM 项。修法：`run_watch` 加 `_STRM_RESULTS` 登记 + `get_strm_result(run_id)`；`watch_and_spawn` 从 `_media_chain` **挪到 `_sync_pa_task`**（那里才有 run_id），ctx 带 `run_id` + `strm_plan={strm_id,delay}`；`media_push._wait_strm` 在 QMS 终态后轮询等结果（上限 delay+340s）。信息条：✅ STRM 已生成 / ❌ 失败原因 / ⏳ 未确认；`_overall_status` 把 STRM 失败计入 fail（`_header`/`_fallback` 均传 `strm_res`）。manual（同步触发）走 `strm_ok` 旧通道不变。同时 STRM 快照「已触发」的 cls 由 t-off 改 **t-ok（绿色）**——用户要求；QMS 的"已触发"保持灰（它随后会被真实结果回填替换）。
+- **搜索转存同款回填（2026-10-04）**：`run_watch.watch_qms/_write` 加 `table` 参数（RunHistory=自动 / Record=搜索）；`manual._media_chain` QMS 受理写「已触发」、`_finish` 落库后挂回填（存量夸克 record 27 已按 QMS 真实状态订正「失败 4 项」）。
+- **搜索转存「带壳」+ 文件夹更名（2026-10-04 02:15）**：`TaskSpec.with_shell/folder_rename`；`baidu/quark list_share` 单壳时存 `self._root_shell`，`save_files` 带壳分支整壳转（百度 fsidlist=[壳fsid]、夸克 fid_list=[壳fid]，目标侧自带文件夹名）+ `folder_rename` 非空转完 `rename_dir`；去重口径=目标已有同名文件夹→整壳跳过。链路：QuickTransferModal（`rename/with_shell`）→ EnqueueBody → engine t（`rename/withShell`，与 filePaths 同款**不持久化**）→ manual spec。**auto 不传，行为不变**。桩测四例全过（并抓出漏 `on_progress`、漏 `ctx` 两个真 bug）。端到端待用户实点一次快速转存。
 
 ## 3. 踩坑（新）
 
