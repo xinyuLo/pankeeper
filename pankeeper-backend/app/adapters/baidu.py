@@ -392,9 +392,13 @@ class BaiduClient(CloudAdapter):
         resp = _grab()
         html = resp.text
         m = _parse(html)
-        if m is None and resp.status_code != 404 and "页面不存在" not in html:
-            # 冷启动 fallback：预热 init 提码页（建立会话上下文）后重抓一次
-            print(f"[baidu] 分享页未含 yunData（疑似会话冷启动），init 预热后重抓", flush=True)
+        # 冷启动/风控抢救：最多两轮（init 预热 [+ 重新验证提取码] → 重抓）。
+        # 2026-10-04 用户 NAS 实测：预热+重抓一轮仍失败。二轮追加"重新提交提取码"——
+        # init 预热可能洗掉 BDCLND 验证态；风控抖动则靠 3s 间隔 + verify 自带重试扛。
+        for round_ in range(2):
+            if m is not None or resp.status_code == 404 or "页面不存在" in html:
+                break
+            print(f"[baidu] 分享页未含 yunData（抢救轮 {round_ + 1}）：init 预热" + ("+重新验证提取码" if round_ else "") + "后重抓", flush=True)
             self.gate.wait()
             try:
                 cli.get(f"https://pan.baidu.com/share/init?surl={page_slug[1:]}", headers={"referer": "https://pan.baidu.com/"}, timeout=20.0)
@@ -402,9 +406,16 @@ class BaiduClient(CloudAdapter):
                 pass  # 预热失败不致命，沿用原 html 走错误分流
             self.gate.on_success()
             reqstat.bump("baidu")
+            if round_ and getattr(self, "_last_pwd", ""):
+                try:
+                    self._verify_password(self._verify_surl(page_slug), self._last_pwd)
+                except AdapterError:
+                    pass  # 重验失败不致命，沿用现状走错误分流
             resp = _grab()
             html = resp.text
             m = _parse(html)
+            if m is None and round_ == 0:
+                time.sleep(3)  # 疑似风控抖动：稍等再进第二轮
         if m is None:
             if "页面不存在" in html or resp.status_code == 404:
                 raise ShareBanned("分享链接不存在（页面 404）")
@@ -504,6 +515,7 @@ class BaiduClient(CloudAdapter):
             m = re.search(r"[?&](?:pwd|password)=([a-zA-Z0-9]+)", spec.share_url or "")
             pwd = m.group(1) if m else ""
         if pwd:
+            self._last_pwd = pwd  # 分享页抢救（_fetch_share_page 二轮）重验提取码用
             self._verify_password(self._verify_surl(slug), pwd)
         page = self._fetch_share_page(slug)
         ctx = {
@@ -781,12 +793,26 @@ class BaiduClient(CloudAdapter):
             self._transfer_group(self._share_ctx, [shell], spec.save_dir, spec, result, on_log)
             new_name = (spec.folder_rename or "").strip()
             if new_name and new_name != shell.name:
-                time.sleep(1)  # 转存刚落库就 rename 是写操作连打，歇一拍防 -65
-                self.rename_dir(target, new_name)
-                result.renamed += 1
-                if result.transferred:
-                    result.transferred[0]["name"] = new_name
-                on_log(f"根文件夹已更名：{shell.name} → {new_name}")
+                # ⚠️ 更名失败**绝不能让整单变 fail**（2026-10-04 用户实测：errno=2 把成功的
+                # 整壳转存拽成失败）——壳已经转过来了，改名失败降级为警告（保持原名）。
+                # errno=2 疑似转存落库可见性延迟/风控抖动：等 3s 重试一次再降级。
+                renamed = False
+                for attempt in range(2):
+                    time.sleep(1 if attempt == 0 else 3)
+                    try:
+                        self.rename_dir(target, new_name)
+                        renamed = True
+                        break
+                    except AdapterError as e:
+                        if attempt == 0:
+                            on_log(f"更名首次失败（{e}），3 秒后重试")
+                if renamed:
+                    result.renamed += 1
+                    if result.transferred:
+                        result.transferred[0]["name"] = new_name
+                    on_log(f"根文件夹已更名：{shell.name} → {new_name}")
+                else:
+                    on_log(f"⚠️ 根文件夹更名失败，保持原名「{shell.name}」——转存已完成，可稍后在网盘手动改名")
         else:
             roots_dirs = [f for f in files if f.is_dir and f.fid and "/" not in f.path]
             self._ensure_dirs([target])
