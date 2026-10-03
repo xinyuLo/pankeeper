@@ -73,6 +73,8 @@ class TaskSpec:
     with_shell: bool = False
     # 根文件夹更名：非空时转存后把壳文件夹 rename 成这个名字（rename_dir）
     folder_rename: str = ""
+    # 分享名/任务名（队列任务名 = 更名值或分享名）：非单壳建壳时没填更名就用它当壳名
+    share_name: str = ""
 
 
 class CloudAdapter(ABC):

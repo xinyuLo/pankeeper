@@ -304,8 +304,8 @@ class QuarkAdapter(CloudAdapter):
         # 早期 return——跳过文件级名字去重（整壳模式按"目标已有同名文件夹"去重）
         if spec.with_shell and not spec.only_paths:
             shell = getattr(self, "_root_shell", None)
-            if shell is not None and shell.fid and shell.fid_token:
-                return self._save_with_shell(spec, shell, result, on_progress, on_log)
+            if shell is None or (shell.fid and shell.fid_token):
+                return self._save_with_shell(spec, shell, files, result, on_progress, on_log)
         save_list = [f for f in files if not f.is_dir and f.fid]
         # 去重：目标目录已有同名（按目标名比对，改名后的名字也算已存在）
         existing = self.list_dir_names(spec.save_dir)
@@ -333,32 +333,51 @@ class QuarkAdapter(CloudAdapter):
         self._patch_target_cache(spec, to_fid, result)
         return result
 
-    def _save_with_shell(self, spec: TaskSpec, shell: ShareFile, result: TransferResult, on_progress, on_log) -> TransferResult:
-        """整壳转存分享根文件夹（fid 直接转，目标侧自带文件夹名）+ 可选更名。
+    def _save_with_shell(self, spec: TaskSpec, shell: ShareFile | None, files: list[ShareFile], result: TransferResult, on_progress, on_log) -> TransferResult:
+        """带壳转存（搜索转存快速弹窗，spec.with_shell）：
 
-        去重口径：目标目录已有同名文件夹 → 整壳跳过（文件级 MD5 比对在整壳模式下不适用）。
-        目录缓存不打补丁（_patch_target_cache 只认文件条目）——树展开时按需回源即可。
+        - 单壳（`_root_shell`）：整壳转过来 + `folder_rename` 非空时按转存返回的 fid rename；
+        - 非单壳（散文件/多文件夹，2026-10-04 用户："没壳的文件建个壳套进去，多文件也不用管了"）：
+          在 save_dir 下建壳（壳名 = 更名值或分享名），根层条目全部转进壳。
+        去重口径：目标已有同名文件夹 → 整壳跳过。目录缓存不打补丁（_patch_target_cache 只认
+        文件条目）——树展开时按需回源即可。
         """
-        if shell.name in self.list_dir_names(spec.save_dir):
+        rename = (spec.folder_rename or "").strip()
+        if shell is not None:
+            target = spec.save_dir.rstrip("/") + "/" + shell.name
+            shown = shell.name
+        else:
+            shell_name = rename or (spec.share_name or "").strip() or "分享资源"
+            target = spec.save_dir.rstrip("/") + "/" + shell_name
+            shown = shell_name
+        if shown in self.list_dir_names(spec.save_dir):
             result.skip += 1
-            on_log(f"目标已存在同名文件夹「{shell.name}」，跳过整壳转存")
+            on_log(f"目标已存在同名文件夹「{shown}」，跳过整壳转存")
             on_progress(100)
             return result
-        on_log(f"整壳转存分享根文件夹「{shell.name}」→ {spec.save_dir}/")
-        to_fid = self._path_to_fid(spec.save_dir)
-        self._save_batch([shell], to_fid, spec, result, on_log)
-        new_name = (spec.folder_rename or "").strip()
-        if new_name and new_name != shell.name:
-            fid = (result.transferred[-1].get("fid") or "") if result.transferred else ""
-            time.sleep(1)  # 转存任务刚完就 rename 是写操作连打，歇一拍
-            if fid:
-                self.rename_dir(fid, new_name)
-                result.renamed += 1
-                if result.transferred:
-                    result.transferred[-1]["name"] = new_name
-                on_log(f"根文件夹已更名：{shell.name} → {new_name}")
-            else:
-                on_log(f"根文件夹更名失败：拿不到转存后的 fid（保持原名 {shell.name}）")
+
+        if shell is not None:
+            on_log(f"整壳转存分享根文件夹「{shell.name}」→ {spec.save_dir}/")
+            to_fid = self._path_to_fid(spec.save_dir)
+            self._save_batch([shell], to_fid, spec, result, on_log)
+            if rename and rename != shell.name:
+                fid = (result.transferred[-1].get("fid") or "") if result.transferred else ""
+                time.sleep(1)  # 转存任务刚完就 rename 是写操作连打，歇一拍
+                if fid:
+                    self.rename_dir(fid, rename)
+                    result.renamed += 1
+                    if result.transferred:
+                        result.transferred[-1]["name"] = rename
+                    on_log(f"根文件夹已更名：{shell.name} → {rename}")
+                else:
+                    on_log(f"根文件夹更名失败：拿不到转存后的 fid（保持原名 {shell.name}）")
+        else:
+            on_log(f"分享无根文件夹（或多文件夹混杂），已建壳「{shell_name}」承接全部内容")
+            target_fid = self.ensure_dir(target)
+            # 只转根层条目（path 形如 "/名"）：文件夹整转（子树随之过来）、散文件直转
+            roots = [f for f in files if f.fid and f.fid_token and f.path.count("/") <= 1]
+            for i in range(0, len(roots), BATCH):
+                self._save_batch(roots[i : i + BATCH], target_fid, spec, result, on_log)
         on_progress(100)
         return result
 

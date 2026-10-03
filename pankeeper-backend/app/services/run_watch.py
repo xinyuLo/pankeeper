@@ -40,11 +40,11 @@ PAGE_SIZE = 500           # 记录拉取条数：不按任务名筛（实测会�
 _STRM_RESULTS: dict[int, dict] = {}
 
 
-def get_strm_result(run_id: int | None) -> dict | None:
+def get_strm_result(run_id: int | None, table=RunHistory) -> dict | None:
     """取该次运行的 STRM 触发结果（后台线程完成时登记；没配/没跑完 → None）。"""
     if run_id is None:
         return None
-    return _STRM_RESULTS.get(run_id)
+    return _STRM_RESULTS.get(f"{table.__name__}:{run_id}")
 
 # 与 media_push 同一套口径：renamed = 整理完成；两种 failed 也算"到了"
 TERMINAL_STATUS = {"renamed", "scrape_failed", "rename_failed"}
@@ -105,6 +105,7 @@ def trigger_strm_after_scrape(
     strm_id: int,
     delay: int = 10,
     timeout: int = SCRAPE_WAIT_TIMEOUT,
+    table=RunHistory,
 ) -> None:
     """等 QMS 刮削**真的跑完**，再等 delay 秒，才触发 STRM 同步（对齐参照项目 bdsavepro 语义）。
 
@@ -146,12 +147,31 @@ def trigger_strm_after_scrape(
         if not reached and not degraded:
             snap = {"st": "未确认（刮削超时，未触发 STRM）", "cls": "t-off"}
             if run_id:
-                _write_strm(run_id, snap)
-                _STRM_RESULTS[run_id] = snap
+                _write_strm(run_id, snap, table)
+                _STRM_RESULTS[f"{table.__name__}:{run_id}"] = snap
             print(f"[run-watch] QMS 刮削 #{qms_id} 等待超时（{timeout}s），不触发 STRM", flush=True)
             return
         if degraded:
             print(f"[run-watch] 取不到 QMS 刮削状态，退化为等 {delay}s 后直接触发 STRM", flush=True)
+        else:
+            # QMS 刮削有失败 → 不生成 STRM（2026-10-04 用户："刮削失败了就不用生成 strm 了没意义"）
+            # STRM 同步是目录级的，刮失败的文件生成了也是垃圾；想补救走「重新触发 QMS」（重刷成功会照常续上 STRM）
+            names = _record_names(run_id, table)
+            if names:
+                want = set(names)
+                statuses: dict[str, str] = {}
+                for r in qms.scrape_records(page_size=PAGE_SIZE) or []:
+                    fn = r.get("file_name")
+                    if fn in want and fn not in statuses and r.get("status") not in IGNORE_STATUS:
+                        statuses[fn] = r.get("status")
+                failed = [n for n, s_ in statuses.items() if s_ in FAILED_STATUS]
+                if failed:
+                    snap = {"st": f"QMS 刮削失败 {len(failed)} 项，未生成 STRM", "cls": "t-off"}
+                    if run_id:
+                        _write_strm(run_id, snap, table)
+                        _STRM_RESULTS[f"{table.__name__}:{run_id}"] = snap
+                    print(f"[run-watch] QMS 刮削有失败（{len(failed)}/{len(statuses)}），不触发 STRM #{strm_id}", flush=True)
+                    return
 
         time.sleep(max(0, int(delay)))
         ok, msg = qms.trigger_strm(strm_id)
@@ -159,17 +179,31 @@ def trigger_strm_after_scrape(
         # （2026-10-04 用户要求改绿；QMS 的"已触发"保持灰——它随后会被真实结果回填替换）
         snap = {"st": "已触发" if ok else f"失败 · {msg}", "cls": "t-ok" if ok else "t-bad"}
         if run_id:
-            _write_strm(run_id, snap)
-            _STRM_RESULTS[run_id] = snap  # 推送线程（media_push._wait_strm）来取
+            _write_strm(run_id, snap, table)
+            _STRM_RESULTS[f"{table.__name__}:{run_id}"] = snap  # 推送线程（media_push._wait_strm）来取
         print(f"[run-watch] STRM #{strm_id} 触发：{'成功' if ok else f'失败 {msg}'}", flush=True)
 
     threading.Thread(target=_job, daemon=True).start()
 
 
-def _write_strm(run_id: int, snap: dict) -> None:
+def _record_names(run_id: int, table=RunHistory) -> list[str]:
+    """该次运行实际转存的文件名（QMS 刮削结果判定用）。RunHistory=transferred_json；Record=files_json。"""
+    if not run_id:
+        return []
+    with SessionLocal() as s:
+        r = s.get(table, run_id)
+        if r is None:
+            return []
+        if table is RunHistory:
+            return [n for n in json.loads(r.transferred_json or "[]") if n]
+        files = json.loads(getattr(r, "files_json", "") or "[]")
+        return [e.get("name") for e in files if isinstance(e, dict) and e.get("name")]
+
+
+def _write_strm(run_id: int, snap: dict, table=RunHistory) -> None:
     """只更新该次运行的 STRM 快照（任务行的整单判定只看 QMS，别混进来）。"""
     with SessionLocal() as s:
-        r = s.get(RunHistory, run_id)
+        r = s.get(table, run_id)
         if r is None:
             return
         r.strm_json = json.dumps(snap, ensure_ascii=False)

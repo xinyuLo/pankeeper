@@ -66,11 +66,13 @@ def _wait_strm(ctx: dict) -> dict | None:
     plan = ctx.get("strm_plan")
     if not plan:
         return None
+    from ..models import Record, RunHistory
     from . import run_watch  # 延迟导入避免循环
 
+    tbl = Record if ctx.get("strm_table") == "Record" else RunHistory
     deadline = time.time() + int(plan.get("delay", 10)) + 340
     while time.time() < deadline:
-        r = run_watch.get_strm_result(ctx.get("run_id"))
+        r = run_watch.get_strm_result(ctx.get("run_id"), tbl)
         if r is not None:
             return r
         time.sleep(3)
