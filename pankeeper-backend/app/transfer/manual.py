@@ -76,6 +76,8 @@ def run_manual(eng, t: dict, cfg: dict) -> None:
         # 「带壳转存」（快速转存弹窗）：整壳转过来 + 根文件夹更名；自动任务不带壳（默认 False）
         with_shell=bool(t.get("withShell")),
         folder_rename=(t.get("rename") or "").strip(),
+        # 非单壳分享建壳时的壳名兜底（队列任务名 = 更名值或分享名）
+        share_name=t["name"],
     )
     if not spec.share_url:
         _push_log(t, "ERROR", "任务缺少分享链接（shareUrl），无法转存")
@@ -149,26 +151,13 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
     qms_snap = {"st": "已触发" if ok else f"失败 · {msg}", "cls": "t-off" if ok else "t-bad"}
     _push_log(t, "INFO" if ok else "ERROR", f"QMS 刮削任务 #{link['qms_id']} 触发{'成功' if ok else '失败'}：{msg or '详见 QMS 侧日志'}")
 
-    strm_ok: bool | None = None
     if link.get("strm_id") and ok:
-        _sleep_phase(eng, t, "waitstrm", int(cfg.get("strm", 10)), f"QMS 触发完成，{cfg.get('strm', 10)} 秒后触发 STRM 生成")
-        t["phase"] = "strm"
-        t["phaseStart"] = int(time.time() * 1000)
-        ok2, msg2 = qms.trigger_strm(link["strm_id"])
-        strm_ok = ok2
-        strm_snap = {"st": "已触发" if ok2 else f"失败 · {msg2}", "cls": "t-ok" if ok2 else "t-bad"}
-        _push_log(t, "INFO" if ok2 else "ERROR", f"STRM 同步 #{link['strm_id']} 触发{'成功' if ok2 else '失败'}：{msg2 or '详见 QMS 侧日志'}")
+        # STRM 不再固定秒数直接触发（2026-10-04 用户："QMS 刮削失败了就不用生成 strm 了没意义"）：
+        # 与 auto 统一——_finish 落库后挂 trigger_strm_after_scrape 后台线程（真等刮完 + 有失败就不触发）
+        strm_snap = {"st": "等待刮削完成…", "cls": "t-off"}
+        _push_log(t, "STEP", f"STRM 同步 #{link['strm_id']} 将在 QMS 刮削完成后触发（后台等待）")
 
-    if ok:
-        # 联动推送：等 QMS 刮削完成后查记录 + TMDB 拼富文本推送（后台守护，不阻塞队列）
-        media_push.watch_and_spawn({
-            "drive": t["type"],
-            "task": name_head,
-            "names": [e["name"] for e in result.transferred],
-            "qms_ok": ok,
-            "strm_ok": strm_ok,
-            "source": t.get("source", "search"),
-        })
+    # 推送（watch_and_spawn）挪到 _finish 落库后：那里才有 record id，推送线程才能等 STRM 结果
     return qms_snap, strm_snap
 
 
@@ -241,15 +230,28 @@ def _finish(eng, t: dict, status: str, message: str = "", qms_snap: dict | None 
         s.add(hist)
         s.commit()
         rid = hist.id
-    # QMS 触发受理 ≠ 刮削成功：挂真实结果回填（与自动转存同款，写回 Record.qms_json）
+    # QMS 触发受理 ≠ 刮削成功：挂真实结果回填 + STRM 等刮完再触发（有失败不生成）+ 富文本推送
     if qms_snap and qms_snap.get("st") == "已触发" and result and result.transferred:
-        from ..services import run_watch
+        from ..services import media_push, run_watch
+        from ..services.settings_svc import get_group
 
-        run_watch.watch_qms(
-            rid,
-            t["name"].split(".")[0],
-            [e.get("name") for e in result.transferred],
-            table=Record,
-        )
+        names = [e.get("name") for e in result.transferred]
+        run_watch.watch_qms(rid, t["name"].split(".")[0], names, table=Record)
+        strm_plan = None
+        link = _match_dd_link(t["path"])
+        if link and link.get("strm_id"):
+            delay = int(get_group("queue_cfg").get("strm", 10))
+            strm_plan = {"strm_id": int(link["strm_id"]), "delay": delay}
+            run_watch.trigger_strm_after_scrape(rid, int(link["qms_id"]), int(link["strm_id"]), delay, table=Record)
+        media_push.watch_and_spawn({
+            "drive": t["type"],
+            "task": t["name"].split(".")[0],
+            "names": names,
+            "qms_ok": True,
+            "strm_plan": strm_plan,
+            "run_id": rid,
+            "strm_table": "Record",
+            "source": t.get("source", "search"),
+        })
     if status == "fail":
         notify.push("转存失败", f"{t['name']}：{message or '未知原因'}", kind="search_fail")

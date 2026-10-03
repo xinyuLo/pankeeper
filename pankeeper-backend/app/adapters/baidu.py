@@ -667,8 +667,8 @@ class BaiduClient(CloudAdapter):
         # 早期 return——跳过文件级 MD5/名字去重（整壳模式按"目标已有同名文件夹"去重）
         if spec.with_shell and not spec.only_paths:
             shell = getattr(self, "_root_shell", None)
-            if shell is not None and shell.fid:
-                return self._save_with_shell(spec, shell, result, on_progress, on_log)
+            if shell is None or shell.fid:
+                return self._save_with_shell(spec, shell, files, result, on_progress, on_log)
         save_list = [f for f in files if not f.is_dir and f.fid]
 
         # 勾选清单过滤（bdsavePro new_files 语义）：勾了文件=只转这些；
@@ -739,35 +739,54 @@ class BaiduClient(CloudAdapter):
         on_progress(100)
         return result
 
-    def _save_with_shell(self, spec: TaskSpec, shell: ShareFile, result: TransferResult, on_progress, on_log) -> TransferResult:
-        """把分享根文件夹整体转存到 save_dir（fsid 直接转，目标侧自带文件夹名）。
+    def _save_with_shell(self, spec: TaskSpec, shell: ShareFile | None, files: list[ShareFile], result: TransferResult, on_progress, on_log) -> TransferResult:
+        """带壳转存（搜索转存快速弹窗，spec.with_shell）：
 
-        与文件级转存的差别：没法逐文件 MD5 去重，去重口径改为"目标已有同名文件夹 → 整壳跳过"；
-        folder_rename 非空时转存完成后 rename_dir 改根文件夹名（搜索转存记录页显示的就是它，
-        2026-10-04 用户："搜索转存得带着根文件夹一块过来，填了更名就改根文件夹名"）。
+        - 单壳（list_share 剥壳时记下的 `_root_shell`）：整壳转过来，`folder_rename` 非空时
+          转存完成后 rename_dir 更名；
+        - 非单壳（散文件/多文件夹，2026-10-04 用户："没壳的文件建个壳套进去，多文件也不用管了"）：
+          在 save_dir 下建一个壳文件夹（壳名 = 更名值或分享名），根层条目全部转进壳——
+          文件夹整转（自带名）、散文件直转，子树随文件夹整体过来不重复转。
+        去重口径（两种模式一致）：目标已有同名文件夹 → 整壳跳过（没法逐文件 MD5 比对）。
         """
-        target = spec.save_dir.rstrip("/") + "/" + shell.name
+        shell_name = (spec.folder_rename or "").strip()
+        if shell is not None:
+            target = spec.save_dir.rstrip("/") + "/" + shell.name
+            shown = shell.name
+        else:
+            shell_name = shell_name or (spec.share_name or "").strip() or "分享资源"
+            target = spec.save_dir.rstrip("/") + "/" + shell_name
+            shown = shell_name
         try:
             self.list_dir(target)
             result.skip += 1
-            on_log(f"目标已存在同名文件夹「{shell.name}」，跳过整壳转存")
+            on_log(f"目标已存在同名文件夹「{shown}」，跳过整壳转存")
             on_progress(100)
             return result
         except CredentialExpired:
             raise
         except AdapterError:
             pass  # 目录不存在 = 没转过，继续
-        on_log(f"整壳转存分享根文件夹「{shell.name}」→ {spec.save_dir}/")
-        # ⚠️ 真实 _transfer_group 第一个参数是分享 ctx（save_files 开头已校验存在），别漏
-        self._transfer_group(self._share_ctx, [shell], spec.save_dir, spec, result, on_log)
-        new_name = (spec.folder_rename or "").strip()
-        if new_name and new_name != shell.name:
-            time.sleep(1)  # 转存刚落库就 rename 是写操作连打，歇一拍防 -65
-            self.rename_dir(target, new_name)
-            result.renamed += 1
-            if result.transferred:
-                result.transferred[0]["name"] = new_name
-            on_log(f"根文件夹已更名：{shell.name} → {new_name}")
+
+        if shell is not None:
+            on_log(f"整壳转存分享根文件夹「{shell.name}」→ {spec.save_dir}/")
+            # ⚠️ 真实 _transfer_group 第一个参数是分享 ctx（save_files 开头已校验存在），别漏
+            self._transfer_group(self._share_ctx, [shell], spec.save_dir, spec, result, on_log)
+            new_name = (spec.folder_rename or "").strip()
+            if new_name and new_name != shell.name:
+                time.sleep(1)  # 转存刚落库就 rename 是写操作连打，歇一拍防 -65
+                self.rename_dir(target, new_name)
+                result.renamed += 1
+                if result.transferred:
+                    result.transferred[0]["name"] = new_name
+                on_log(f"根文件夹已更名：{shell.name} → {new_name}")
+        else:
+            self._ensure_dirs([target])
+            on_log(f"分享无根文件夹，已建壳「{shell_name}」承接全部内容")
+            # 只转根层条目（path 不含 "/"）：文件夹整体转（子树随之过来）、散文件直转
+            roots = [f for f in files if f.fid and "/" not in f.path]
+            for i in range(0, len(roots), 500):
+                self._transfer_group(self._share_ctx, roots[i : i + 500], target, spec, result, on_log)
         on_progress(100)
         return result
 
