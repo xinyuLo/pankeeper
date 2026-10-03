@@ -368,16 +368,27 @@ class QuarkAdapter(CloudAdapter):
             to_fid = self._path_to_fid(spec.save_dir)
             self._save_batch([shell], to_fid, spec, result, on_log)
             if rename and rename != shell.name:
+                # 同 baidu：更名失败降级为警告（保持原名），绝不让成功的整壳转存变 fail
                 fid = (result.transferred[-1].get("fid") or "") if result.transferred else ""
-                time.sleep(1)  # 转存任务刚完就 rename 是写操作连打，歇一拍
-                if fid:
-                    self.rename_dir(fid, rename)
+                renamed = False
+                for attempt in range(2):
+                    time.sleep(1 if attempt == 0 else 3)
+                    if not fid:
+                        break
+                    try:
+                        self.rename_dir(fid, rename)
+                        renamed = True
+                        break
+                    except AdapterError as e:
+                        if attempt == 0:
+                            on_log(f"更名首次失败（{e}），3 秒后重试")
+                if renamed:
                     result.renamed += 1
                     if result.transferred:
                         result.transferred[-1]["name"] = rename
                     on_log(f"根文件夹已更名：{shell.name} → {rename}")
                 else:
-                    on_log(f"根文件夹更名失败：拿不到转存后的 fid（保持原名 {shell.name}）")
+                    on_log(f"⚠️ 根文件夹更名失败，保持原名「{shell.name}」——转存已完成，可稍后在网盘手动改名")
         else:
             roots_dirs = [f for f in files if f.is_dir and f.fid and f.path.count("/") <= 1]
             if len(roots_dirs) == 1:
