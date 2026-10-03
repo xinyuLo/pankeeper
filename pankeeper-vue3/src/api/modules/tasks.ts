@@ -199,9 +199,10 @@ export interface PaExclFetch {
 }
 
 /** 拉排除候选清单：走后端分享清单缓存（转存跑完自动刷新），refresh=true 忽略缓存直连。
- * filtered=true：候选按任务正则过滤——匹配不上的文件本来就不会被转存，不进排除清单 */
+ * 传 filtered=false 拉**全量**：正则外的文件（含已排除的）也必须在弹窗里可见可取消，
+ * 否则已排除清单一旦被正则筛掉就永远解不开了；正则外标识由弹窗侧自行标注 */
 export async function fetchExclFiles(taskId: number, force = false): Promise<PaExclFetch> {
-  const r = await getShareFiles(taskId, force, true)
+  const r = await getShareFiles(taskId, force, false)
   return {
     fresh: r.fresh,
     ts: r.cached_at * 1000,
