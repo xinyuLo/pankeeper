@@ -64,7 +64,16 @@ watch(
 
 /* ===== 表格展示助手 ===== */
 function linkTrunc(url: string): string {
-  return url.length > 30 ? url.slice(0, 30) + '…' : url
+  // 18 字符封顶：链接列只要够认出是哪条分享即可，完整 URL 在 title 与「复制」里
+  return url.length > 18 ? url.slice(0, 18) + '…' : url
+}
+/* 最近结果压缩显示：后端格式是「新增 N / 跳过 N / 失败 N」，跳过为 0 时是纯噪音，
+   失败必须留（非 0 才显示）——压到一行「新增 106」量级，整格一行放得下（用户要求） */
+function compactResult(s: string): string {
+  const m = /新增\s*(\d+)\s*\/\s*跳过\s*(\d+)\s*\/\s*失败\s*(\d+)/.exec(s || '')
+  if (!m) return s || ''
+  const fail = Number(m[3])
+  return fail ? `新增 ${m[1]} / 失败 ${m[3]}` : `新增 ${m[1]}`
 }
 function cronText(cron: string): string {
   return cronHuman(cron, '仅手动')
@@ -205,7 +214,9 @@ function detailCron(c: string): string {
 
     <!-- 任务表：PC 表格 / 手机卡片列表互斥 -->
     <div class="pa-card">
-      <table v-if="!isMobile" class="pa-table">
+      <!-- 横向滚动兜底：表格自带 min-width，窗口过窄时滚列而不是毁列宽 -->
+      <div v-if="!isMobile" class="pa-tablewrap">
+      <table class="pa-table">
         <thead>
           <tr>
             <th class="pa-th">任务名</th>            <th class="pa-th">启用</th>
@@ -240,12 +251,12 @@ function detailCron(c: string): string {
                 <a-tooltip title="复制链接"><button class="pa-ico pa-ico-copy" @click="onCopy(t)"><CopyOutlined /></button></a-tooltip>
               </div>
             </td>
-            <td class="pa-td">{{ cronText(t.cron) }}</td>
+            <td class="pa-td pa-nowrap">{{ cronText(t.cron) }}</td>
             <td class="pa-td pa-muted">{{ t.exclude_count ? t.exclude_count + ' 项' : '—' }}</td>
             <td class="pa-td pa-muted">{{ t.last_run || '—' }}</td>
             <td class="pa-td">
-              <span class="pa-tag" :class="'pa-st-' + t.last_status">
-                {{ STATUS_TEXT[t.last_status] }}<template v-if="t.last_result"> · {{ t.last_result }}</template>
+              <span class="pa-tag" :class="'pa-st-' + t.last_status" :title="t.last_result || ''">
+                {{ STATUS_TEXT[t.last_status] }}<template v-if="t.last_result"> · {{ compactResult(t.last_result) }}</template>
               </span>
             </td>
             <td class="pa-td">
@@ -276,10 +287,11 @@ function detailCron(c: string): string {
           </tr>
         </tbody>
       </table>
+      </div>
       <PkPager v-if="!isMobile" v-model:current="page" v-model:pageSize="size" :total="tasks.length" />
 
       <!-- 手机端：一任务一卡（名称+开关 / 状态+定时 / 网盘链接+提取码+复制 / 执行信息 / 主操作+次操作字链） -->
-      <div v-else class="pa-cards">
+      <div v-if="isMobile" class="pa-cards">
         <div v-for="t in pagedTasks" :key="t.id" class="pa-carditem" :style="{ borderLeft: '3px solid ' + meta.color }">
           <div class="pa-c-top">
             <span class="pa-c-name">{{ t.name }}</span>
@@ -293,7 +305,7 @@ function detailCron(c: string): string {
           </div>
           <div class="pa-c-meta">
             <span class="pa-tag" :class="'pa-st-' + t.last_status">
-              {{ STATUS_TEXT[t.last_status] }}<template v-if="t.last_result"> · {{ t.last_result }}</template>
+              {{ STATUS_TEXT[t.last_status] }}<template v-if="t.last_result"> · {{ compactResult(t.last_result) }}</template>
             </span>
             <span class="small muted">{{ cronText(t.cron) }}</span>
           </div>
@@ -434,38 +446,41 @@ function detailCron(c: string): string {
 
 /* ===== 任务表 ===== */
 .pa-card { background: var(--card); border-radius: var(--r); box-shadow: var(--shadow); overflow: hidden; }
-.pa-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-/* 列宽配比：任务名/分享链接双主力，右列全收窄（操作列图标化后 150px 够） */
-/* 列宽配比：任务名/分享链接双主力（链接列含 URL+提取码+三钮），右列全收窄 */
-.pa-table th:nth-child(1) { width: 14%; }
-.pa-table th:nth-child(2) { width: 56px; }
+/* 横向滚动兜底容器：表格 min-width 撑住列宽，窗口窄了滚列不毁版面 */
+.pa-tablewrap { overflow-x: auto; }
+.pa-table { width: 100%; border-collapse: collapse; table-layout: fixed; min-width: 1080px; }
+/* 列宽配比（2026-10-03 实测重配）：任务名/分享链接双主力，右列收窄但别截断内容。
+   ⚠️ fixed 布局下固定 px 列之和会先吃满表格，`auto` 的链接列只剩残羹——所以 px 列
+   必须压到「内容刚好放下」，否则链接被截成 https://pan...（实测截图踩过）。
+   min-width 1080：窗口再窄由外层容器横向滚动兜底，不牺牲列宽。 */
+.pa-table th:nth-child(1) { width: 12%; }
+/* 启用列必须装得下 40px 开关 + 左右各 12px 内边距 = 64，窄了开关会溢出去贴住链接列 */
+.pa-table th:nth-child(2) { width: 64px; }
 .pa-table th:nth-child(3) { width: auto; }
-.pa-table th:nth-child(4) { width: 96px; }
-.pa-table th:nth-child(5) { width: 60px; }
+.pa-table th:nth-child(4) { width: 92px; }
+.pa-table th:nth-child(5) { width: 64px; }
 .pa-table th:nth-child(6) { width: 84px; }
-.pa-table th:nth-child(7) { width: 124px; }
-.pa-table th:nth-child(8) { width: 140px; }
+.pa-table th:nth-child(7) { width: 184px; }
+/* 操作列 6 个 26px 图标钮 + 5×2px 间距 = 166，加单元格内边距 24 → 196 够 */
+.pa-table th:nth-child(8) { width: 196px; }
 .pa-table .pa-td { overflow: hidden; }
+.pa-nowrap { white-space: nowrap; }
+/* 最近结果可能很长（成功 · 新增 106 / 跳过 0 / 失败 0），允许标签内换行，别截断 */
+.pa-table .pa-td .pa-tag { white-space: normal; overflow-wrap: anywhere; }
 .pa-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 任务名 + 三个链接小钮同格：名称截断，图标靠右 */
 .pa-namecell { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .pa-namecell .pa-name { flex: 1 1 auto; min-width: 0; }
+/* 表头/单元格吃全局表格约定（th 13px/600/text2、td 13.5px、行 hover），这里只做两件本地事：
+   ①横向内边距收窄到 12px（8 列，20px 太奢侈）；②表头与单元格左右内边距保持一致。
+   别再自己压字号/字重——那会让本表和记录页一眼两种风格（实测对比过）。 */
 .pa-th {
-  text-align: left;
-  font-size: 12.5px;
-  font-weight: 500;
-  color: var(--text3);
-  background: var(--surface-2);
-  padding: 11px 14px;
-  letter-spacing: 0.02em;
+  padding: 13px 12px;
   white-space: nowrap;
-  border-bottom: 1px solid var(--split);
 }
 .pa-th-ops { text-align: right; }
 .pa-td {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--split);
-  font-size: 13.5px;
+  padding: 14px 12px;
   color: var(--text);
   vertical-align: middle;
 }
@@ -500,7 +515,7 @@ tbody tr.pa-row:last-child .pa-td { border-bottom: none; }
 .pa-switch.pa-on .pa-knob { left: 20px; }
 
 /* 分享链接格 */
-.pa-link { display: flex; align-items: center; gap: 6px; }
+.pa-link { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .pa-linkops { display: flex; gap: 2px; }
 /* 链接三钮带语义色：查看=蓝 / 打开网盘=青 / 复制=紫，悬浮染同色浅底
    （双类选择器压过后面 .pa-ico 的默认色，单类会被盖掉——实测踩坑） */
@@ -552,7 +567,7 @@ html[data-theme='dark'] .pa-st-never { color: var(--text3); background: rgba(255
 /* ===== 行操作五色按钮（颜色即语义）：
    执行=蓝 / 编辑=青 / 排除=橙（带计数徽标）/ 详情=中性 / 删除=红（Popconfirm 确认）
    桌面用 .pa-ico 图标钮（26px 方块，悬浮出 tooltip + 染色底），手机卡片仍用文字 .pa-op ===== */
-.pa-ops { display: flex; gap: 4px; justify-content: flex-end; }
+.pa-ops { display: flex; gap: 2px; justify-content: flex-end; }
 .pa-ico {
   width: 26px;
   height: 26px;

@@ -29,9 +29,14 @@ def _row(r: Record) -> dict:
 
 
 @router.get("/records")
-def list_records(_user=CurrentUser):
+def list_records(source: str = "search", _user=CurrentUser):
+    """转存记录列表：默认只回手动转存（source=search）——自动转存的记录走
+    「转存历史」页（/pa/runs）与任务内「转存日志」，两条展示线刻意分开。"""
     with SessionLocal() as db:
-        rows = db.query(Record).order_by(Record.id.desc()).limit(500).all()
+        q = db.query(Record)
+        if source:
+            q = q.filter(Record.source == source)
+        rows = q.order_by(Record.id.desc()).limit(500).all()
     return [_row(r) for r in rows]
 
 

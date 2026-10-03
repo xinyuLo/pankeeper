@@ -54,6 +54,14 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '自动转存' },
       },
       {
+        // 注意：必须排在 auto/:type 之后（history 不匹配 baidu|quark|115 正则，顺序其实无碍，
+        // 但保持「具体路由靠后」的一致性，别再挪前面）
+        path: 'auto/history',
+        name: 'auto-history',
+        component: () => import('@/views/auto/RunHistoryPage.vue'),
+        meta: { title: '转存历史' },
+      },
+      {
         path: 'accounts',
         name: 'accounts',
         component: () => import('@/views/accounts/Accounts.vue'),

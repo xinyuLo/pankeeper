@@ -301,6 +301,62 @@ def toggle_task(task_id: int, _user=CurrentUser):
         return {"enabled": t.enabled}
 
 
+@router.get("/runs")
+def all_runs(
+    task_id: int | None = None,
+    type: str = "",
+    status: str = "",
+    keyword: str = "",
+    page: int = 1,
+    page_size: int = 20,
+    _user=CurrentUser,
+):
+    """转存历史：所有自动任务的历史执行记录（新→旧，分页 + 筛选）。
+
+    与「转存记录」页刻意分开：那边只看手动查询转存（records.source=search），
+    自动转存的执行历史统一在这里看（任务内的「转存日志」是同一份数据的单任务视图）。"""
+    from sqlalchemy import or_
+
+    page = max(1, page)
+    page_size = min(100, max(1, page_size))
+    with SessionLocal() as db:
+        q = db.query(RunHistory, PaTask).join(PaTask, RunHistory.task_id == PaTask.id)
+        if task_id:
+            q = q.filter(RunHistory.task_id == task_id)
+        if type:
+            q = q.filter(PaTask.type == type)
+        if status:
+            q = q.filter(RunHistory.status == status)
+        if keyword.strip():
+            like = f"%{keyword.strip()}%"
+            q = q.filter(or_(PaTask.name.like(like), RunHistory.message.like(like)))
+        total = q.count()
+        rows = q.order_by(RunHistory.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
+        items = [
+            {
+                "id": r.id,
+                "task_id": r.task_id,
+                "task_name": t.name,
+                "task_type": t.type,
+                "started": r.started,
+                "finished": r.finished,
+                "status": r.status,
+                "add": r.add,
+                "skip": r.skip,
+                "skip_md5": r.skip_md5,
+                "fail": r.fail,
+                "excl": r.excl,
+                "total_share": r.total_share,
+                "regex_miss": r.regex_miss,
+                "duration": r.duration,
+                "message": r.message or "",
+                "save_dir": t.save_dir or "",
+            }
+            for r, t in rows
+        ]
+    return {"total": total, "items": items}
+
+
 @router.get("/tasks/{task_id}/runs")
 def task_runs(task_id: int, _user=CurrentUser):
     """转存日志列表：该任务的 RunHistory 卡片（新→旧）。"""
