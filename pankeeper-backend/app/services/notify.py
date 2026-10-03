@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+import time
 
 import httpx
 
@@ -22,7 +23,9 @@ def push(title: str, content: str, kind: str = "info", short: str | None = None)
     - auto_done   / auto_fail   → on_auto（自动转存）
     - cred                      → on_cred（凭据过期告警）
     - info                      → 不受时机开关限制（仅受总开关）
-    short：Server酱³ 列表简介（Turbo 不支持该参数，会忽略）。"""
+    short：Server酱³ 列表简介（Turbo 不支持该参数，会忽略）。
+
+    每次真正发出（未被开关拦掉）都落一行 push_logs：标题/时间/成败/失败原因，推送历史页的数据源。"""
     cfg = get_group("settings")["notify"]
     if not cfg.get("enabled"):
         return
@@ -34,10 +37,30 @@ def push(title: str, content: str, kind: str = "info", short: str | None = None)
     flag = gate.get(kind)
     if flag and not cfg.get(flag, True):
         return
+
+    errors: list[str] = []
     if cfg.get("sendkey"):
-        _serverchan(cfg["sendkey"], f"{title}", content, short)
+        ok, err = _serverchan(cfg["sendkey"], f"{title}", content, short)
+        if not ok:
+            errors.append(f"Server酱：{err}")
     if cfg.get("webhook"):
-        _webhook(cfg["webhook"], title, content)
+        ok, err = _webhook(cfg["webhook"], title, content)
+        if not ok:
+            errors.append(f"Webhook：{err}")
+    _log_push(title, kind, "fail" if errors else "success", "；".join(errors))
+
+
+def _log_push(title: str, kind: str, status: str, error: str) -> None:
+    """推送结果落库。日志失败绝不影响主流程（推送本身就是旁路）。"""
+    try:
+        from ..db import SessionLocal
+        from ..models import PushLog
+
+        with SessionLocal() as db:
+            db.add(PushLog(ts=time.strftime("%Y-%m-%d %H:%M:%S"), title=title, kind=kind, status=status, error=error))
+            db.commit()
+    except Exception:
+        pass
 
 
 def drive_enabled(drive: str) -> bool:
@@ -67,21 +90,35 @@ def _sc_request(sendkey: str, data: dict) -> httpx.Response:
     return httpx.post(url, data=data, timeout=10)
 
 
-def _serverchan(sendkey: str, title: str, content: str, short: str | None = None) -> None:
+def _serverchan(sendkey: str, title: str, content: str, short: str | None = None) -> tuple[bool, str]:
+    """返回 (是否成功, 失败原因)。判活口径与 test_sendkey 一致：HTTP 200 且 body code∈(0, None)。"""
     try:
         data = {"title": title, "desp": content}
         if short:
             data["short"] = short
-        _sc_request(sendkey, data)
-    except httpx.HTTPError:
-        pass  # 推送失败不阻塞主流程
-
-
-def _webhook(url: str, title: str, content: str) -> None:
+        resp = _sc_request(sendkey, data)
+    except httpx.HTTPError as e:
+        return False, str(e)
+    if resp.status_code != 200:
+        return False, f"HTTP {resp.status_code}"
     try:
-        httpx.post(url, json={"title": title, "content": content}, timeout=10)
-    except httpx.HTTPError:
-        pass
+        body = resp.json()
+    except ValueError:
+        return True, ""
+    code = body.get("code")
+    if code in (0, None):
+        return True, ""
+    return False, str(body.get("message") or f"code={code}")
+
+
+def _webhook(url: str, title: str, content: str) -> tuple[bool, str]:
+    try:
+        resp = httpx.post(url, json={"title": title, "content": content}, timeout=10)
+    except httpx.HTTPError as e:
+        return False, str(e)
+    if resp.status_code < 200 or resp.status_code >= 300:
+        return False, f"HTTP {resp.status_code}"
+    return True, ""
 
 
 def test_sendkey(sendkey: str) -> tuple[bool, str]:

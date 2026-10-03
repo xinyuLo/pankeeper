@@ -246,3 +246,18 @@ class ShareListCacheRow(Base):
     key: Mapped[str] = mapped_column(Text, primary_key=True)
     items_json: Mapped[str] = mapped_column(Text, default="[]")
     cached_at: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class PushLog(Base):
+    """推送历史（Server 酱/Webhook 每次投递一行快照）。
+
+    只记真正发出的推送（被时机开关拦掉的不记）；推送失败不阻塞主流程，这里补账。"""
+
+    __tablename__ = "push_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[str] = mapped_column(Text)  # "YYYY-MM-DD HH:MM:SS"
+    title: Mapped[str] = mapped_column(Text, default="")  # 推送标题（即推送内容摘要）
+    kind: Mapped[str] = mapped_column(Text, default="info")  # notify.push 的 kind
+    status: Mapped[str] = mapped_column(Text, default="success")  # success|fail
+    error: Mapped[str] = mapped_column(Text, default="")  # 失败原因（多渠道用「；」拼接）

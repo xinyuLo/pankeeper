@@ -80,10 +80,20 @@ export function getQmsHealth(): Promise<{ ok: boolean; message?: string }> {
   return get<{ ok: boolean; message?: string }>('/qms/health')
 }
 
-/** 查看推送历史（最近 50 条的投递结果） */
-export function pushHistory(): Promise<{ delivered: number; failed: number }> {
-  if (USE_MOCK) return mockDelay({ delivered: 128, failed: 2 })
-  return get<{ delivered: number; failed: number }>('/notify/history', { params: { limit: 50 } })
+/** 推送历史行（push_logs 快照，一次投递一行） */
+export interface PushLogRow {
+  id: number
+  ts: string
+  title: string
+  kind: string
+  status: 'success' | 'fail'
+  error: string
+}
+
+/** 推送历史（推送历史页数据源）：items 按时间倒序 + 窗口内成败计数 */
+export function getPushLogs(limit = 100): Promise<{ items: PushLogRow[]; delivered: number; failed: number }> {
+  if (USE_MOCK) return mockDelay({ items: [], delivered: 0, failed: 0 })
+  return get<{ items: PushLogRow[]; delivered: number; failed: number }>('/notify/history', { params: { limit } })
 }
 
 /** 修改用户名 + 密码 + 会话有效期。后端同一端点：new_password 为空则只更新用户名/会话 */

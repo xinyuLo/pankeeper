@@ -461,7 +461,6 @@ onMounted(async () => {
     <div ref="tasksCard" class="db-tasks">
       <div class="db-tasks-hd">
         <h3>定时任务</h3>
-        <div class="db-tasks-desc">每个网盘只展示<b>最近一条要触发</b>的任务，看一眼就知道下一个跑什么；完整列表与新增/编辑去「自动转存」页。</div>
       </div>
       <div class="db-tabsbar">
         <div class="tabs">
@@ -796,10 +795,6 @@ html[data-theme='dark'] .db-mini b.m-bad { color: #ff7875; }
   padding: 15px 22px 0; flex: none;
 }
 .db-tasks-hd h3 { font-size: 15.5px; font-weight: 600; margin: 0; flex: none; }
-.db-tasks-desc {
-  font-size: 12.5px; color: var(--text3); line-height: 1.5; min-width: 0;
-  flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
 /* 卡内分段 tab 栏（接表头底色，跟默认目录页同一做法） */
 .db-tabsbar { padding: 10px 14px 0; border-bottom: 1px solid var(--split); background: var(--surface-2); flex: none; }
 .db-tabsbar .tabs { margin-bottom: 0; }
@@ -959,9 +954,7 @@ html[data-theme='dark'] .db-tasks-ft b.bad { color: #ff7875; }
   .db-pan-body { padding: 0 14px 12px; }
   .db-pan-ft { padding: 9px 14px; }
 
-  /* 任务卡头部：说明文字放开折行 */
   .db-tasks-hd { padding: 13px 14px 0; }
-  .db-tasks-desc { white-space: normal; }
   .db-tabsbar { padding: 8px 10px 0; }
   .db-tasks-ft { padding: 10px 14px; gap: 8px 14px; }
 

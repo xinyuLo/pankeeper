@@ -19,7 +19,6 @@ import {
   saveQms,
   saveSearchSrc,
   saveSecurity,
-  pushHistory,
   testPansou,
   testQms,
   testSendkey,
@@ -163,16 +162,6 @@ async function onTestSendkey() {
   } catch (e: unknown) {
     const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
     message.error(detail || '发送失败，请检查 SendKey', 5)
-  }
-}
-async function onPushHistory() {
-  try {
-    const h = await pushHistory()
-    // 有失败条目，按原型用警示色提示而不是成功色
-    message.warning(`最近 50 条推送：已投递 ${h.delivered} 条 / 失败 ${h.failed} 条`)
-  } catch (e: unknown) {
-    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-    message.error(detail || '拉取推送历史失败')
   }
 }
 
@@ -401,12 +390,6 @@ async function onRemoveAvatar() {
             <a-checkbox v-model:checked="notify.on_auto">自动转存</a-checkbox>
             <a-checkbox v-model:checked="notify.on_search">搜索转存</a-checkbox>
             <a-checkbox v-model:checked="notify.on_cred">凭据过期告警</a-checkbox>
-          </div>
-        </div>
-        <div class="formrow">
-          <label>推送历史</label>
-          <div class="ctl">
-            <a-button size="small" @click="onPushHistory">查看最近 50 条</a-button>
           </div>
         </div>
       </div>
