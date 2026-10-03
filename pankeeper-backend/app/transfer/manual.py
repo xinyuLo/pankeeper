@@ -229,6 +229,7 @@ def _finish(eng, t: dict, status: str, message: str = "", qms_snap: dict | None 
                 strm_json=json.dumps(strm_snap or {"st": "未执行", "cls": "t-off"}, ensure_ascii=False),
                 share_url=t.get("shareUrl", ""),
                 share_code=t.get("shareCode", ""),
+                source="search",  # 手动查询转存：记录页唯一来源
                 logs_json=json.dumps(t["logs"], ensure_ascii=False),
                 files_json=json.dumps(files_snap or [], ensure_ascii=False),
             )
