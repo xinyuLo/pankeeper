@@ -29,6 +29,11 @@ export interface PaTask {
   exclude_count: number
   /** 排除文件下标（真实系统应为文件路径/md5 列表） */
   exclIdx: number[]
+  /** 文件过滤正则（转存链路先行过滤；空=不过滤） */
+  regex_pattern?: string
+  /** 已保存排除清单（文件名 + MD5，任一命中即排除） */
+  exclude_names?: string[]
+  exclude_md5s?: string[]
   last_run: string
   last_status: 'success' | 'fail' | 'running' | 'never'
   last_result: string
