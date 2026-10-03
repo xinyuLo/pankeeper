@@ -8,14 +8,6 @@
 百度定时转存（正则过滤 + 排除清单 + 统计 + 转存日志）功能补齐；分享清单缓存、转存记录详情、cron 选择器、移动端适配全面翻新。
 **⚠️ 勘误（2026-10-03 凌晨）**：本节早先写的"正则实跑验证"不实——引擎漏存 `regex_pattern`，正则当时从未真正生效（PNG 全量入库实锤）。已修（见 §2.6/§2.7），本地与 NAS 代码统一在 **`9b5ae17`**，今晚 20:00 cron 是首次真正带正则的定时执行。
 
-## 2.7 本批增量二（2026-10-03 凌晨，提交 9b5ae17）
-
-- **引擎漏存 regex_pattern（PNG 全量入库的根因）**：调度器一直传 `regex_pattern`，`engine.enqueue` 从没落到任务状态，`run_auto` 读空 → 正则形同虚设。修：enqueue 补 `regexPattern`/`enabled`；`queue_tasks` 加 `regex_pattern` 列（迁移自动加列），`_persist`/`restore` 三处对齐；回归测试 2 条（39 passed）。
-- **排除候选按任务正则过滤**：`share-files` 加 `filtered` 参数，缓存出全量、出仓后现筛（零额外网盘请求）；ExclModal 提示文案同步。实测兰香如故 113 → 1。
-- **uvicorn 事件循环勘误**：uvicorn 0.36+ win32 用 loop_factory 直接造 Proactor，`set_event_loop_policy` 无效——`run.py` 改 `loop="none"` 才真吃上 Selector（手机端浏览弹窗"失败重试"的真凶，见 §2.3 勘误）。
-- **手机端任务卡片改版**：链接行补上缺失的网盘链接（点击即跳转）+ 提取码 + 复制；操作分级：主按钮 执行/转存日志/编辑，次操作小字链 查看文件/排除/详情/删除。
-
-
 ## 1. 环境与部署拓扑（不变项速查）
 
 | 项 | 值 |
@@ -78,7 +70,29 @@
 - **`share/list` 相邻调用强制 2 秒间隔**（BaiduClient._pace_share_list，实例级时间戳）：覆盖转存 walk 全部列目录请求，防 -7 风控。
 - **下钻功能（转存文件夹多选）短期不实现**（2026-10-03 定）：`drill_on`/`drill_json` 字段保留、已有任务配置不丢，界面/链路/端点均不做。将来重启开发时的既定方案：浏览端点优先命中分享清单缓存（零请求），未命中走全量 list_share 回填缓存；bdsavePro 参照 AddTaskDialog.vue（逐层进入+多选勾选）+ storage.py transfer_folders 语义（keep_folder 控制是否连文件夹本身一起存）。
 
+## 2.7 本批增量二（2026-10-03 凌晨，提交 9b5ae17）
+
+- **引擎漏存 regex_pattern（PNG 全量入库的根因）**：调度器一直传 `regex_pattern`，`engine.enqueue` 从没落到任务状态，`run_auto` 读空 → 正则形同虚设。修：enqueue 补 `regexPattern`/`enabled`；`queue_tasks` 加 `regex_pattern` 列（迁移自动加列），`_persist`/`restore` 三处对齐；回归测试 2 条（39 passed）。
+- **排除候选按任务正则过滤**：`share-files` 加 `filtered` 参数，缓存出全量、出仓后现筛（零额外网盘请求）；ExclModal 提示文案同步。实测兰香如故 113 → 1。
+- **uvicorn 事件循环勘误**：uvicorn 0.36+ win32 用 loop_factory 直接造 Proactor，`set_event_loop_policy` 无效——`run.py` 改 `loop="none"` 才真吃上 Selector（手机端浏览弹窗"失败重试"的真凶，见 §2.3 勘误）。
+- **手机端任务卡片改版**：链接行补上缺失的网盘链接（点击即跳转）+ 提取码 + 复制；操作分级：主按钮 执行/转存日志/编辑，次操作小字链 查看文件/排除/详情/删除。
+
+
+## 2.8 本批增量三（2026-10-03 下午）
+
+- **记录来源拆分**：`records` 新增 `source` 列（`search`=手动查询转存 / `auto`=自动转存），迁移时幂等回填（share_url 命中任一 PaTask 的旧记录判 auto）；`/records` 默认只回 `search`；manual/auto 两个流程各自写标记。**记录页从此只展示手动转存，自动的走「转存历史」页 + 任务内「转存日志」。**
+- **新增「转存历史」页**（侧边栏 自动转存 → 转存历史，路由 `/auto/history`，手机端在「更多」面板）：
+  - 新接口 `GET /pa/runs`：全任务聚合历史（join PaTask 带 task_name/task_type/save_dir），支持 task_id / type / status / keyword 筛选 + 分页；
+  - 页面：筛选条 + PC 表格 + 手机卡片 + PkPager，行上「详情」；
+  - 详情抽成共用组件 `views/auto/RunDetailModal.vue`——单任务「转存日志」弹窗与本页共用同一份详情，改一处两边都对。
+- **详情三段恒常显示**：正则过滤后的文件 / 排除文件 / 本次实际转存，没数据时给空态说明（区分「未配置正则」「旧运行未记录该字段」「本次没命中排除」）；清单限高 210px + 滚动（flex 子项要 `flex: none`，否则长列表被压缩而不是滚动）。
+- **表格样式统一（重要约定）**：本项目自定义表格一律继承 `styles/pk.css` 的全局 `th/td`（th 13px/600/text2，td 13.5px，行 hover），页面**只覆盖横向内边距**（记录页与自动转存页都取 12px）。本条踩了三次坑（历史页、自动转存列宽、表头），别再在页面里另起一套字号字重。
+- **自动转存列表细节**：分享链接展示截断到 18 字符（全量在 title 与「复制」）；新增 `compactResult()` 把后端「新增 N / 跳过 N / 失败 N」压成「新增 N」（失败非 0 才补 `/ 失败 N`），保证最近结果一行放下；启用列宽 64px（装得下 40px 开关 + 左右 12px 内边距）。
+- **QMS 连接修复**：本地 PanKeeper 存的 `qms.apikey` 是早期测试残留的占位假值 `qms-key-abc` → 健康检查 401「API Key 无效」。真 Key 从 NAS 的 pankeeper 容器配置里取出（前缀 `qms_AUqrw`，与 QMS postgres `api_keys` 表 id=4「pankeeper」对应）写入本地。排查路径：QMS 配置在 `/vol1/1001/tools/qmediasync/config/config.yml`（生效那份，postgres@15432），API Key 只存哈希（不可逆）在 `api_keys` 表，丢了只能在 QMS 后台重建。
+- **免密截图验收手段**（以后自查 UI 用）：页面需登录且用户改过密码 → `from app.security import make_token; make_token('admin', 30)` 本地签测试 token，再 `agent-browser eval "localStorage.setItem('pk-auth','<token>')"` 注入即可免密渲染截图（token 与截图用完即删）。
+
 ## 3. 关键定论（别忘，别再改回去）
+
 
 
 ### 3.1 风控与缓存纪律
@@ -105,11 +119,17 @@
 
 | 项 | 状态 |
 | --- | --- |
-| 本地 | 后端 :8000（loop="none" → Selector 循环）✅、前端 :5173 ✅、测试 39 passed |
-| Gitea | `9b5ae17`（正则透传修复 + 排除候选过滤 + 手机端卡片改版） |
-| NAS | pankeeper 容器 = `9b5ae17`（2026-10-03 凌晨重建核验）；兰香如故 cron 0 20 * * * |
-| 分享清单缓存 | `share_list_cache` 表，兰香如故 106 文件已缓存（30h 内有效语义见 §2.2） |
-| 已知待办 | ~~正则过滤后文件清单未单独落库~~ ✅ 已做（§2.6）；~~排除粒度按文件名~~ ✅ 已加 MD5（§2.6）；下钻功能**短期不实现**（方案已定，见 §2.6） |
+| 本地 | 后端 :8000（loop="none" → Selector 循环）✅、前端 :5173 ✅、测试 39 passed、typecheck 通过 |
+| Gitea | 见 §4.1（本批提交哈希随文档同批推送） |
+| NAS | pankeeper 容器随本批重建（2026-10-03 下午核验：HTTP 200 + 新页面在新构建里）；兰香如故 cron 0 20 * * * |
+| 分享清单缓存 | `share_list_cache` 表，兰香如故 113 项已缓存（转存驱动刷新，见 §2.2） |
+| 已知待办 | ~~正则过滤后文件清单未单独落库~~ ✅（§2.6）；~~排除粒度按文件名~~ ✅ 加 MD5（§2.6）；~~记录/自动历史混在一起~~ ✅ 已拆分（§2.8）；~~QMS 连不上~~ ✅ 假 Key 已换真 Key（§2.8）；下钻功能**短期不实现**（方案见 §2.6）；自动转存误存的 PNG 待用户自行清理（清单在「转存历史 → 详情 → 本次实际转存」） |
+
+### 4.1 本批提交
+
+- `9b5ae17` 正则透传修复 + 排除候选按正则过滤 + 手机卡片改版（凌晨）
+- 本批（下午）：记录来源拆分 + 转存历史页 + 详情三段空态/限高 + 表格样式统一 + 列表细节 + 交接文档定稿
+
 
 ## 5. 快速自检 / 部署命令
 

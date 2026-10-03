@@ -250,6 +250,40 @@ export function getPaRuns(taskId: number): Promise<PaRunRow[]> {
   return get<PaRunRow[]>(`/pa/tasks/${taskId}/runs`)
 }
 
+/** 转存历史页行：全任务聚合（比单任务行多带任务名/网盘/耗时/路径） */
+export interface PaRunListItem extends PaRunRow {
+  task_id: number
+  task_name: string
+  task_type: MainDriveType
+  fail: number
+  duration: number
+  save_dir: string
+}
+
+export interface PaRunsQuery {
+  task_id?: number | null
+  type?: string
+  status?: string
+  keyword?: string
+  page?: number
+  page_size?: number
+}
+
+/** 转存历史：所有自动任务的历史执行记录（分页 + 筛选），「转存历史」页数据源 */
+export function listPaRuns(q: PaRunsQuery = {}): Promise<{ total: number; items: PaRunListItem[] }> {
+  if (USE_MOCK) return mockDelay({ total: 0, items: [] })
+  return get<{ total: number; items: PaRunListItem[] }>('/pa/runs', {
+    params: {
+      task_id: q.task_id || undefined,
+      type: q.type || undefined,
+      status: q.status || undefined,
+      keyword: q.keyword || undefined,
+      page: q.page || 1,
+      page_size: q.page_size || 20,
+    },
+  })
+}
+
 /** 转存日志详情：执行信息 + 文件清单 + 完整日志 */
 export function getPaRunDetail(runId: number): Promise<PaRunDetail> {
   if (USE_MOCK) return mockDelay({} as PaRunDetail)

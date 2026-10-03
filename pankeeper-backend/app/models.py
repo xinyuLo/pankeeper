@@ -166,6 +166,8 @@ class Record(Base):
     strm_json: Mapped[str] = mapped_column(Text, default='{"st":"未执行","cls":"t-off"}')
     share_url: Mapped[str] = mapped_column(Text, default="")
     share_code: Mapped[str] = mapped_column(Text, default="")
+    # 记录来源：search=手动查询转存（记录页展示）/ auto=自动转存（转存历史页 + 任务内转存日志）
+    source: Mapped[str] = mapped_column(Text, default="search")
     cron: Mapped[str] = mapped_column(Text, default="")  # 空 = 手动转存（不接推送）
     include_subdirs: Mapped[bool] = mapped_column(Boolean, default=True)
     exclude_count: Mapped[int] = mapped_column(Integer, default=0)

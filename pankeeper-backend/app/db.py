@@ -83,6 +83,7 @@ def _migrate_columns() -> None:
         ],
         "records": [
             ("files_json", "TEXT DEFAULT '[]'"),
+            ("source", "TEXT DEFAULT 'search'"),
         ],
         "run_history": [
             ("skip_md5", "INTEGER DEFAULT 0"),
@@ -111,6 +112,15 @@ def _migrate_columns() -> None:
             for name, ddl in columns:
                 if name not in existing:
                     conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+        # 记录来源回填（幂等）：老库没有 source 字段时，与任一自动任务分享链接相同的记录
+        # 判为 auto——记录页从此只展示手动转存，自动的走「转存历史」页
+        try:
+            conn.exec_driver_sql(
+                "UPDATE records SET source='auto' WHERE source<>'auto' AND share_url<>''"
+                " AND share_url IN (SELECT share_url FROM pa_tasks WHERE share_url<>'')"
+            )
+        except Exception as e:  # noqa: BLE001 —— pa_tasks 还没建/字段缺失时跳过
+            print(f"[migrate] 记录来源回填跳过：{e}")
         conn.commit()
 
 

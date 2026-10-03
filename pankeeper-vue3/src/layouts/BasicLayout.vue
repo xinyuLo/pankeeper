@@ -11,6 +11,7 @@ import {
   FileTextOutlined,
   FolderOutlined,
   ClockCircleOutlined,
+  HistoryOutlined,
   CloudOutlined,
   DatabaseOutlined,
   FolderOpenOutlined,
@@ -61,6 +62,7 @@ const groups: { key: string; label: string; icon: any; children: MenuItem[] }[] 
       { key: 'auto-baidu', label: '百度网盘', icon: CloudOutlined, color: '#1677ff' },
       { key: 'auto-quark', label: '夸克网盘', icon: CloudOutlined, color: '#13c2c2' },
       { key: 'auto-115', label: '115 网盘', icon: CloudOutlined, color: '#722ed1' },
+      { key: 'auto-history', label: '转存历史', icon: HistoryOutlined },
     ],
   },
   {
@@ -173,6 +175,7 @@ const moreMenu: { key: string; label: string; items: MenuItem[] }[] = [
       { key: 'auto-baidu', label: '百度网盘', icon: CloudOutlined, color: '#1677ff' },
       { key: 'auto-quark', label: '夸克网盘', icon: CloudOutlined, color: '#13c2c2' },
       { key: 'auto-115', label: '115 网盘', icon: CloudOutlined, color: '#722ed1' },
+      { key: 'auto-history', label: '转存历史', icon: HistoryOutlined },
     ],
   },
   {
