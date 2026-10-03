@@ -5,12 +5,14 @@
  * 单选目录，选中即发出完整路径；错误就地提示不炸整棵树。 */
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import { RightOutlined, LoadingOutlined, FolderOutlined } from '@ant-design/icons-vue'
-import { getFilesListMeta, type DirItem } from '@/api/modules/files'
+import { RightOutlined, LoadingOutlined, FolderOutlined, PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons-vue'
+import { getFilesListMeta, createDir, renameDir, deleteDir, type DirItem } from '@/api/modules/files'
 import type { MainDriveType } from '@/types/model'
 
 interface DirNode extends DirItem {
   path: string
+  /** 本节点所在层的目录缓存 key（新建/重命名/删除后后端就地更新那一层用） */
+  parentKey: string
   loaded: boolean
   open: boolean
   loading: boolean
@@ -41,7 +43,9 @@ const emit = defineEmits<{ (e: 'select', path: string, fid: string): void }>()
  */
 defineExpose({
   reload: () => {
-    if (props.rootPath && props.rootPath !== '/') return init() // 锁定根：整树重走（含锁定目录）
+    // 刷新必须绕后端缓存（force=true）：曾走 init() 不带 force，锁定根模式吃了缓存——
+    // 网盘上删掉的目录点刷新还在（2026-10-03 套娃目录删了还在案）。
+    if (props.rootPath && props.rootPath !== '/') return init(true)
     return refreshLayer('0', '/', root.items, (items) => (root.items = items))
   },
 })
@@ -55,7 +59,7 @@ async function refreshLayer(
 ) {
   const items = (await fetchDir(parent, parentPath === '/' ? '/' : '', true)).items
   const oldByFid = new Map(oldNodes.map((n) => [n.fid, n]))
-  const nodes = items.map((it) => toNode(it, parentPath))
+  const nodes = items.map((it) => toNode(it, parentPath, parent))
   for (const n of nodes) {
     const o = oldByFid.get(n.fid)
     if (o && o.open && o.loaded && n.is_dir) {
@@ -69,10 +73,11 @@ async function refreshLayer(
   return nodes
 }
 
-function toNode(it: DirItem, parentPath: string): DirNode {
+function toNode(it: DirItem, parentPath: string, parentKey: string): DirNode {
   return {
     ...it,
     path: (parentPath === '/' ? '' : parentPath) + '/' + it.name,
+    parentKey,
     loaded: !it.is_dir,
     open: false,
     loading: false,
@@ -138,7 +143,7 @@ async function loadRoot(force = false) {
   try {
     const meta = await fetchDir('0', '/', force, (t) => (root.retry = t))
     // 目录选择器只关心文件夹：文件一律过滤
-    root.items = meta.items.filter((it) => it.is_dir).map((it) => toNode(it, '/'))
+    root.items = meta.items.filter((it) => it.is_dir).map((it) => toNode(it, '/', '/'))
   } catch (e: unknown) {
     root.error = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail || '目录加载失败'
   } finally {
@@ -152,7 +157,7 @@ async function loadKids(n: DirNode) {
   n.loading = true
   try {
     const meta = await fetchDir(n.fid)
-    n.kids = meta.items.filter((it) => it.is_dir).map((it) => toNode(it, n.path))
+    n.kids = meta.items.filter((it) => it.is_dir).map((it) => toNode(it, n.path, n.fid))
     n.loaded = true
   } catch (e: unknown) {
     message.error((e as { response?: { data?: { detail?: string } } })?.response?.data?.detail || '子目录加载失败')
@@ -186,16 +191,16 @@ function onChildSelect(p: string, f: string) {
   emit('select', p, f)
 }
 
-async function init() {
+async function init(force = false) {
   if (props.rootPath && props.rootPath !== '/') {
-    // 配了默认目录：一个请求让后台按路径解析并回传它的第一层（吃目录缓存），
-    // 树只展示默认目录的子目录；选中默认为锁定根本身。
+    // 配了默认目录：一个请求让后台按路径解析并回传它的第一层（默认吃目录缓存，
+    // reload 传 force=true 绕缓存），树只展示默认目录的子目录；选中默认为锁定根本身。
     // 刻意不自动下钻到 initialPath——逐层连打容易撞百度风控（-7/-9 实测），
     // 已填路径在底部「已选目录」回显，用户点哪层懒加载哪层（命中缓存不打百度）。
     root.loading = true
     try {
-      const meta = await fetchDir('0', props.rootPath, false, (t) => (root.retry = t))
-      root.items = meta.items.filter((it) => it.is_dir).map((it) => toNode(it, props.rootPath!))
+      const meta = await fetchDir('0', props.rootPath, force, (t) => (root.retry = t))
+      root.items = meta.items.filter((it) => it.is_dir).map((it) => toNode(it, props.rootPath!, props.rootPath!))
       root.loading = false
       sel.value = props.rootPath
       return
@@ -206,6 +211,127 @@ async function init() {
     }
   }
   await loadRoot()
+}
+
+/* ===== 目录管理（新建/重命名/删除，2026-10-03） =====
+ * 操作打后端接口，后端改完网盘**就地更新对应层的目录缓存**（dir_cache.update），
+ * 这里再同步改本地树节点——全程不重打列目录接口。操作对象是当前选中目录；
+ * 没选中时「新建」落在锁定根（或真根）下，重命名/删除禁用。 */
+const editOpen = ref(false)
+const editMode = ref<'create' | 'rename'>('create')
+const editName = ref('')
+const editBusy = ref(false)
+
+const rootKey = computed(() => (props.rootPath && props.rootPath !== '/' ? props.rootPath : '/'))
+
+function findNode(items: DirNode[], path: string): DirNode | null {
+  for (const n of items) {
+    if (n.path === path) return n
+    const hit = findNode(n.kids, path)
+    if (hit) return hit
+  }
+  return null
+}
+const selNode = computed(() => (props.nodes ? null : findNode(root.items, currentSel.value)))
+
+function removeFromTree(items: DirNode[], path: string): boolean {
+  const i = items.findIndex((n) => n.path === path)
+  if (i >= 0) {
+    items.splice(i, 1)
+    return true
+  }
+  return items.some((n) => removeFromTree(n.kids, path))
+}
+
+function startCreate() {
+  editMode.value = 'create'
+  editName.value = ''
+  editOpen.value = true
+}
+
+function startRename() {
+  if (!selNode.value) return
+  editMode.value = 'rename'
+  editName.value = selNode.value.name
+  editOpen.value = true
+}
+
+async function submitEdit() {
+  const name = editName.value.trim()
+  if (!name) {
+    message.warning('请输入文件夹名称')
+    return
+  }
+  editBusy.value = true
+  try {
+    if (editMode.value === 'create') {
+      const target = selNode.value
+      const parentPath = target ? target.path : (props.rootPath || '/')
+      const r = await createDir({
+        type: props.type,
+        accId: props.accId ?? null,
+        parentPath,
+        parentFid: target?.fid ?? '',
+        cacheKey: target ? target.fid : rootKey.value,
+        name,
+      })
+      const node = toNode({ fid: r.fid, name, is_dir: true, size: 0 }, parentPath, target ? target.fid : rootKey.value)
+      if (target) {
+        target.kids.push(node)
+        target.loaded = true
+        target.open = true
+      } else {
+        root.items.push(node)
+      }
+      message.success(`已创建「${name}」`)
+    } else {
+      const n = selNode.value
+      if (!n) return
+      const r = await renameDir({
+        type: props.type,
+        accId: props.accId ?? null,
+        path: n.path,
+        fid: n.fid,
+        cacheKey: n.parentKey,
+        newName: name,
+      })
+      const oldPath = n.path
+      n.name = name
+      n.fid = r.fid
+      n.path = r.path
+      n.kids = [] // 子树路径全变：收起，展开时按新路径重取（后端映射已同步清理）
+      n.loaded = false
+      n.open = false
+      if (sel.value === oldPath) {
+        sel.value = r.path
+        emit('select', r.path, r.fid)
+      }
+      message.success(`已重命名为「${name}」`)
+    }
+    editOpen.value = false
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '操作失败')
+  } finally {
+    editBusy.value = false
+  }
+}
+
+async function doDelete() {
+  const n = selNode.value
+  if (!n) return
+  try {
+    await deleteDir({ type: props.type, accId: props.accId ?? null, path: n.path, fid: n.fid, cacheKey: n.parentKey })
+    removeFromTree(root.items, n.path)
+    if (sel.value === n.path || sel.value.startsWith(n.path + '/')) {
+      sel.value = props.rootPath || '/'
+      emit('select', sel.value, '')
+    }
+    message.success(`已删除「${n.name}」`)
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '删除失败')
+  }
 }
 
 onMounted(() => {
@@ -249,6 +375,14 @@ watch(
 
   <!-- 根模式：自己拉根一层；限高滚动，防止目录太长把弹窗底部按钮顶出屏幕 -->
   <template v-else>
+    <div class="ldt-toolbar">
+      <a-button size="small" type="primary" @click="startCreate"><PlusOutlined />新建</a-button>
+      <a-button size="small" type="primary" ghost :disabled="!selNode" @click="startRename"><EditOutlined />重命名</a-button>
+      <a-popconfirm title="删除该文件夹及其全部内容？" ok-text="删除" cancel-text="取消" :disabled="!selNode" @confirm="doDelete">
+        <a-button size="small" type="primary" danger ghost :disabled="!selNode"><DeleteOutlined />删除</a-button>
+      </a-popconfirm>
+      <span class="ldt-toolbar-tip">针对选中的目录</span>
+    </div>
     <div v-if="root.loading" class="ldt-tip">
       <LoadingOutlined /> {{ root.retry || '正在加载目录…' }}
     </div>
@@ -279,11 +413,23 @@ watch(
         </div>
       </template>
     </div>
+
+    <a-modal
+      v-model:open="editOpen"
+      :title="editMode === 'create' ? '新建文件夹' : '重命名文件夹'"
+      :confirm-loading="editBusy"
+      :width="380"
+      @ok="submitEdit"
+    >
+      <a-input v-model:value="editName" placeholder="文件夹名称" maxlength="100" @press-enter="submitEdit" />
+    </a-modal>
   </template>
 </template>
 
 <style scoped>
 .ldt { font-size: 13px; }
+.ldt-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.ldt-toolbar-tip { font-size: 12px; color: var(--text3); }
 /* 限高滚动：目录树过长时内部滚动，弹窗标题/底部按钮始终可见 */
 .ldt-scroll { max-height: min(55vh, 480px); overflow-y: auto; overscroll-behavior: contain; }
 .ldt-tip { padding: 18px 0; text-align: center; color: var(--text3); }

@@ -46,6 +46,8 @@ class TransferResult:
     fail: int = 0
     transferred: list[dict] = field(default_factory=list)  # [{name, fid}]
     renamed: int = 0
+    # MD5 命中被跳过的文件（[{name, md5}]）——自动任务把它回写进任务排除清单（双保险 + 排除弹窗可见）
+    md5_skipped: list[dict] = field(default_factory=list)
 
 
 @dataclass

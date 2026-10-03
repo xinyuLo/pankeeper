@@ -20,6 +20,8 @@ import {
   AppstoreOutlined,
   BarChartOutlined,
   LogoutOutlined,
+  ProfileOutlined,
+  NotificationOutlined,
 } from '@ant-design/icons-vue'
 import { useAuthStore } from '@/store/auth'
 import { useThemeStore } from '@/store/theme'
@@ -50,7 +52,6 @@ const groups: { key: string; label: string; icon: any; children: MenuItem[] }[] 
     icon: SwapOutlined,
     children: [
       { key: 'search', label: '搜索转存', icon: SearchOutlined },
-      { key: 'records', label: '转存记录', icon: FileTextOutlined },
       { key: 'default-dir', label: '转存配置', icon: FolderOutlined },
     ],
   },
@@ -62,7 +63,17 @@ const groups: { key: string; label: string; icon: any; children: MenuItem[] }[] 
       { key: 'auto-baidu', label: '百度网盘', icon: CloudOutlined, color: '#1677ff' },
       { key: 'auto-quark', label: '夸克网盘', icon: CloudOutlined, color: '#13c2c2' },
       { key: 'auto-115', label: '115 网盘', icon: CloudOutlined, color: '#722ed1' },
+    ],
+  },
+  {
+    key: 'logs',
+    label: '日志管理',
+    icon: ProfileOutlined,
+    children: [
+      { key: 'records', label: '搜索历史', icon: FileTextOutlined },
       { key: 'auto-history', label: '转存历史', icon: HistoryOutlined },
+      { key: 'push-logs', label: '推送历史', icon: NotificationOutlined },
+      { key: 'drive-logs', label: '请求日志', icon: BarChartOutlined },
     ],
   },
   {
@@ -71,7 +82,6 @@ const groups: { key: string; label: string; icon: any; children: MenuItem[] }[] 
     icon: SettingOutlined,
     children: [
       { key: 'accounts', label: '网盘连接', icon: DatabaseOutlined },
-      { key: 'drive-logs', label: '网盘日志', icon: BarChartOutlined },
       { key: 'cache-config', label: '缓存配置', icon: FolderOpenOutlined },
       { key: 'queue-config', label: '队列配置', icon: FieldTimeOutlined },
       { key: 'settings', label: '系统设置', icon: SettingOutlined },
@@ -85,7 +95,7 @@ const activeKey = computed(() => {
 })
 
 // 分组折叠：从 localStorage 恢复，默认全展开
-const openGroups = ref<Set<string>>(new Set(['transfer', 'auto', 'sys']))
+const openGroups = ref<Set<string>>(new Set(['transfer', 'auto', 'logs', 'sys']))
 try {
   const saved = JSON.parse(localStorage.getItem('pk-nav') || 'null')
   if (saved && saved.length) openGroups.value = new Set(saved as string[])
@@ -175,7 +185,16 @@ const moreMenu: { key: string; label: string; items: MenuItem[] }[] = [
       { key: 'auto-baidu', label: '百度网盘', icon: CloudOutlined, color: '#1677ff' },
       { key: 'auto-quark', label: '夸克网盘', icon: CloudOutlined, color: '#13c2c2' },
       { key: 'auto-115', label: '115 网盘', icon: CloudOutlined, color: '#722ed1' },
+    ],
+  },
+  {
+    key: 'logs',
+    label: '日志管理',
+    items: [
+      { key: 'records', label: '搜索历史', icon: FileTextOutlined },
       { key: 'auto-history', label: '转存历史', icon: HistoryOutlined },
+      { key: 'push-logs', label: '推送历史', icon: NotificationOutlined },
+      { key: 'drive-logs', label: '请求日志', icon: BarChartOutlined },
     ],
   },
   {
@@ -183,7 +202,6 @@ const moreMenu: { key: string; label: string; items: MenuItem[] }[] = [
     label: '系统管理',
     items: [
       { key: 'accounts', label: '网盘连接', icon: DatabaseOutlined },
-      { key: 'drive-logs', label: '网盘日志', icon: BarChartOutlined },
       { key: 'cache-config', label: '缓存配置', icon: FolderOpenOutlined },
       { key: 'queue-config', label: '队列配置', icon: FieldTimeOutlined },
       { key: 'settings', label: '系统设置', icon: SettingOutlined },

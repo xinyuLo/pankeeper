@@ -338,6 +338,25 @@ def _sync_pa_task(t: dict, status: str, result) -> None:
         pa.last_result = f"新增 {add} / 跳过 {skip} / 失败 {fail}" if status == "done" else t["logs"][-1]["txt"] if t["logs"] else "失败"
         if status == "done":
             pa.ban_reason = ""
+        # MD5 去重跳过的文件回写任务排除清单（名字 + MD5 都记）：库里已有的就显式排除，
+        # 之后哪怕 QMS 转码改了库内 MD5、分享改了文件名，也靠这份清单挡住重复转存；
+        # 同时这些文件在「排除文件清单」弹窗里呈已勾选态，可见可取消（2026-10-03 用户要求）
+        if result and result.md5_skipped:
+            try:
+                ex_names = json.loads(pa.exclude_json or "[]")
+                ex_md5s = json.loads(pa.exclude_md5_json or "[]")
+            except ValueError:
+                ex_names, ex_md5s = [], []
+            nset = {n for n in ex_names if n}
+            mset = {m for m in ex_md5s if m}
+            for e in result.md5_skipped:
+                if e.get("name"):
+                    nset.add(e["name"])
+                if e.get("md5"):
+                    mset.add(e["md5"])
+            pa.exclude_json = json.dumps(sorted(nset), ensure_ascii=False)
+            pa.exclude_md5_json = json.dumps(sorted(mset), ensure_ascii=False)
+            pa.exclude_count = len(nset)
         s.add(
             RunHistory(
                 task_id=task_id,

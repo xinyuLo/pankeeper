@@ -39,7 +39,7 @@ const routes: RouteRecordRaw[] = [
         path: 'records',
         name: 'records',
         component: () => import('@/views/records/Records.vue'),
-        meta: { title: '转存记录' },
+        meta: { title: '搜索历史' },
       },
       {
         path: 'default-dir',
@@ -71,7 +71,13 @@ const routes: RouteRecordRaw[] = [
         path: 'drive-logs',
         name: 'drive-logs',
         component: () => import('@/views/logs/DriveLogs.vue'),
-        meta: { title: '网盘日志' },
+        meta: { title: '请求日志' },
+      },
+      {
+        path: 'push-logs',
+        name: 'push-logs',
+        component: () => import('@/views/logs/PushLogs.vue'),
+        meta: { title: '推送历史' },
       },
       {
         path: 'cache-config',

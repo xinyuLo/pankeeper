@@ -296,8 +296,7 @@ async function confirmEditor() {
         <table class="dd-table">
           <thead>
             <tr>
-              <th class="dd-th" style="width: 48px">排序</th>
-              <th class="dd-th" style="width: 50%">名称 / 网盘路径</th>
+              <th class="dd-th" style="width: 60%">名称 / 网盘路径</th>
               <th class="dd-th" style="width: 16%">所属账号</th>
               <th class="dd-th" style="width: 12%">默认</th>
               <th class="dd-th" style="width: 12%; text-align: right">操作</th>
@@ -305,10 +304,14 @@ async function confirmEditor() {
           </thead>
           <tbody>
             <tr v-for="it in pagedRows" :key="it.id" class="dd-row">
-              <td class="dd-td"><span class="dd-sort">{{ it.sort }}</span></td>
               <td class="dd-td">
-                <span class="dd-name">{{ it.name }}</span>
-                <span class="dd-path" :title="it.path">{{ it.path }}</span>
+                <div class="dd-namecell">
+                  <span class="dd-sort">{{ it.sort }}</span>
+                  <span class="dd-namewrap">
+                    <span class="dd-name">{{ it.name }}</span>
+                    <span class="dd-path" :title="it.path">{{ it.path }}</span>
+                  </span>
+                </div>
               </td>
               <td class="dd-td"><span class="dd-acc">{{ accLabel(it.account) }}</span></td>
               <td class="dd-td">
@@ -426,10 +429,10 @@ async function confirmEditor() {
           class="dd-sel"
           :placeholder="qmsOptions.length ? '请选择 QMS 整理目录' : 'QMS 暂无刮削目录，请先到 qmediasync 添加'"
         />
-        <div class="dd-tip">自动转存完成后 15 秒触发 QMS 整理。</div>
+        <div class="dd-tip">自动转存完成后触发 QMS 整理。</div>
         <label class="dd-label dd-mt12">STRM 生成（可选）</label>
         <a-select v-model:value="fStrmId" :options="strmOptions" class="dd-sel" />
-        <div class="dd-tip">QMS 整理完成后 15 秒触发 STRM 生成，不需要就选「不生成」。</div>
+        <div class="dd-tip">QMS 整理完成后触发 STRM 生成，不需要就选「不生成」。</div>
       </div>
     </div>
 
@@ -534,42 +537,26 @@ async function confirmEditor() {
   color: var(--primary);
 }
 
-.dd-table {
-  width: 100%;
-  border-collapse: collapse;
-  table-layout: fixed;
-}
-.dd-th {
-  text-align: left;
-  font-size: 12.5px;
-  font-weight: 500;
-  color: var(--text3);
-  background: var(--surface-2);
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--split);
-  white-space: nowrap;
-}
-.dd-td {
-  padding: 13px 14px;
-  border-bottom: 1px solid var(--split);
-  font-size: 13.5px;
-  color: var(--text);
-  vertical-align: middle;
-  overflow: hidden;
-}
-.dd-row:hover {
-  background: var(--surface-3);
-}
-.dd-row:last-child .dd-td {
-  border-bottom: none;
-}
+/* 表格走全局基础样式（th 13px/600/text2、td padding 14/20），这里只收窄横向内边距 + 固定布局
+   —— 与转存历史/记录页的表头口径一致，别再自己压字号/字重/颜色（转存配置页曾漏改被用户点名） */
+.dd-table { table-layout: fixed; }
+.dd-table th,
+.dd-table td { padding-left: 12px; padding-right: 12px; }
+.dd-th { white-space: nowrap; }
+.dd-td { overflow: hidden; }
 
-/* 排序：安静的数字（药丸给单位数太小题大做） */
+/* 排序：安静的数字（药丸给单位数太小题大做）。并入名称格与移动端卡片同形态——
+   独立排序列会被 fixed 布局按比例撑宽（48px 实测撑到 101px），数字和名称隔一大截空白 */
 .dd-sort {
+  flex: 0 0 auto;
+  min-width: 16px;
+  text-align: right;
   font-size: 12.5px;
   color: var(--text3);
   font-variant-numeric: tabular-nums;
 }
+.dd-namecell { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.dd-namewrap { flex: 1 1 auto; min-width: 0; }
 
 /* 名称与路径合并成一格：名称当主体（大字），路径当次级信息（小字 + 省略号） */
 .dd-name {

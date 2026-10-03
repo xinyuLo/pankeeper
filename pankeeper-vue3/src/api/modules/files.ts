@@ -1,4 +1,4 @@
-import { get } from '../http'
+import { get, post } from '../http'
 import { USE_MOCK } from '../http'
 
 export interface DirItem {
@@ -35,4 +35,60 @@ export async function getFilesListMeta(
     params: { type, parent, path, force_refresh: force, acc_id: accId || undefined },
   })
   return { cached: !!r?.cached, items: r?.items || [] }
+}
+
+/* ===== 目录管理（浏览弹窗工具条：新建/重命名/删除，2026-10-03） =====
+ * 后端做完网盘操作会**就地更新对应层的目录缓存**（dir_cache.update），
+ * 前端也同步改本地树节点——全程不重打列目录接口。115 暂未实现（后端 400）。 */
+
+export function createDir(payload: {
+  type: string
+  accId: number | null
+  parentPath: string
+  parentFid?: string
+  cacheKey: string
+  name: string
+}): Promise<{ fid: string; path: string }> {
+  return post<{ fid: string; path: string }>('/files/dir', {
+    type: payload.type,
+    acc_id: payload.accId || undefined,
+    parent_path: payload.parentPath,
+    parent_fid: payload.parentFid || '',
+    cache_key: payload.cacheKey,
+    name: payload.name,
+  })
+}
+
+export function renameDir(payload: {
+  type: string
+  accId: number | null
+  path: string
+  fid?: string
+  cacheKey: string
+  newName: string
+}): Promise<{ fid: string; path: string }> {
+  return post<{ fid: string; path: string }>('/files/dir/rename', {
+    type: payload.type,
+    acc_id: payload.accId || undefined,
+    path: payload.path,
+    fid: payload.fid || '',
+    cache_key: payload.cacheKey,
+    new_name: payload.newName,
+  })
+}
+
+export function deleteDir(payload: {
+  type: string
+  accId: number | null
+  path: string
+  fid?: string
+  cacheKey: string
+}): Promise<{ ok: boolean }> {
+  return post<{ ok: boolean }>('/files/dir/delete', {
+    type: payload.type,
+    acc_id: payload.accId || undefined,
+    path: payload.path,
+    fid: payload.fid || '',
+    cache_key: payload.cacheKey,
+  })
 }

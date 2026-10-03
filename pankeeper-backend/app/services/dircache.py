@@ -132,13 +132,27 @@ class DirTreeCache:
     # ---------- 读写 ----------
 
     def get_or_load(self, key: tuple, loader: Callable[[], Any], force: bool = False, flag: dict | None = None) -> Any:
-        """命中返回缓存；未命中单飞加载。force=True 跳过缓存直连（不回写）。
-        flag 传 dict 时回写命中标记（cached=True/False），供接口层区分直连与缓存。"""
+        """命中返回缓存；未命中单飞加载。force=True 跳过缓存直连并**把新数据回写缓存**。
+        flag 传 dict 时回写命中标记（cached=True/False），供接口层区分直连与缓存。
+
+        回写是对齐 share_cache 的 refresh 语义（2026-10-03）：曾只直连不回写，
+        刷新给人看新的、缓存里旧的还在，重开弹窗又回到旧数据——刷新白点。"""
         ttl = self._ttl_seconds()
         if ttl <= 0 or force:
             if flag is not None:
                 flag["cached"] = False
-            return loader()
+            data = loader()
+            if ttl > 0:
+                now = time.time()
+                persist = self._persist_enabled()
+                with self._lock:
+                    self._store.pop(key, None)
+                    self._store[key] = (data, now + ttl, now)
+                    self._store.move_to_end(key)
+                    self._bytes += self._est_size(data)
+                    self._evict_if_needed(persist)
+                self._db_upsert(key, data, now + ttl, now, persist)
+            return data
         with self._lock:
             self._ensure_restored()
             hit = self._store.get(key)
