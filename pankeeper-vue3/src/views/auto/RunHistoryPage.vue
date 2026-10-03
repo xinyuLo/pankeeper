@@ -5,6 +5,7 @@
  * 与「转存记录」页刻意分开：那边只展示手动查询转存。 */
 import { computed, onMounted, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
+import { ReloadOutlined } from '@ant-design/icons-vue'
 import PkPager from '@/components/PkPager.vue'
 import RunDetailModal from './RunDetailModal.vue'
 import { DRIVE_META } from '@/api/mock/meta'
@@ -107,7 +108,10 @@ function durTxt(s: number): string {
         <a-select v-model:value="fStatus" :options="STATUS_OPTS" style="width: 110px" />
         <a-input v-model:value="kw" placeholder="任务名 / 消息关键词" style="width: 200px" allow-clear />
         <span class="hr-flex1"></span>
-        <a-button :loading="loading" @click="load">刷新</a-button>
+        <a-button :loading="loading" type="primary" ghost @click="load">
+          <template #icon><ReloadOutlined /></template>
+          刷新
+        </a-button>
       </div>
 
       <table v-if="!isMobile" class="hr-table">
@@ -117,7 +121,7 @@ function durTxt(s: number): string {
             <th style="width: 64px">网盘</th>
             <th style="width: 168px">执行时间</th>
             <th style="width: 84px">结果</th>
-            <th style="width: 26%">统计（新增 / 跳过 / 失败）</th>
+            <th style="width: 26%">统计</th>
             <th style="width: 150px">说明</th>
             <th style="width: 80px">耗时</th>
             <th style="width: 74px">操作</th>
@@ -137,9 +141,11 @@ function durTxt(s: number): string {
             </td>
             <td><span class="tag" :class="r.status === 'success' ? 't-ok' : 't-bad'">{{ r.status === 'success' ? '成功' : '失败' }}</span></td>
             <td>
-              <span class="hr-stat ok">{{ r.add }}</span>
-              <span class="hr-stat"> / {{ r.skip }} / </span>
-              <span class="hr-stat" :class="{ bad: r.fail }">{{ r.fail }}</span>
+              <div class="hr-statline">
+                <span class="hr-kv">新增：<b>{{ r.add }}</b></span>
+                <span class="hr-kv">跳过：<b>{{ r.skip }}</b></span>
+                <span class="hr-kv">失败：<b :class="{ 'is-bad': r.fail }">{{ r.fail }}</b></span>
+              </div>
               <span class="hr-substat">分享 {{ r.total_share }} · 正则未命中 {{ r.regex_miss }} · MD5 跳过 {{ r.skip_md5 }}</span>
             </td>
             <td class="small muted hr-msgclip" :title="r.message">{{ r.message || '—' }}</td>
@@ -200,9 +206,11 @@ function durTxt(s: number): string {
 .hr-table th,
 .hr-table td { padding-left: 12px; padding-right: 12px; vertical-align: middle; }
 .hr-nowrap { white-space: nowrap; }
-.hr-stat { font-family: var(--font-mono); font-size: 14px; }
-.hr-stat.ok { color: #52c41a; }
-.hr-stat.bad { color: #ff4d4f; }
+/* 统计列：带标签的三段（新增/跳过/失败），数字绿色等宽；有失败时失败数染红 */
+.hr-statline { display: flex; gap: 12px; align-items: baseline; white-space: nowrap; }
+.hr-kv { font-size: 12.5px; color: var(--text2); }
+.hr-kv b { font-family: var(--font-mono); font-size: 13.5px; font-weight: 600; color: var(--success); }
+.hr-kv b.is-bad { color: var(--error); }
 .hr-substat { display: block; margin-top: 2px; font-size: 12px; color: var(--text3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hr-msgclip { max-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 操作列文字链与记录页同款（link 按钮去掉内边距，密集排布才不飘） */

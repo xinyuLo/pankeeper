@@ -67,6 +67,7 @@ class BaiduClient(CloudAdapter):
 
     def __init__(self, cookies_enc: str, gate: RateGate | None = None):
         self.cookies = decrypt_credential(cookies_enc)
+        # 1s 间隔（2026-10-03 用户定稿：先试过 2s，回落到 research 区间下限）
         self.gate = gate or RateGate("baidu", min_interval=1.0, cooldown=30.0)
         self._http = _shared_client(self.cookies)
 
@@ -520,12 +521,17 @@ class BaiduClient(CloudAdapter):
             # ⚠️ share/list 的 dir 必须用**原始路径**（含 /sharelink<id>-<uk> 前缀，
             # 即 yunData file_list 返回的 path）——传剥了前缀的逻辑路径一律 -7。
             # 2026-10-02 逐字节对比 baidupcs_py 抓包实锤（此前 M3 起从未跑对过）。
+            # 单文件夹壳自动剥（quark 同款语义，即 NAS 工具 keep_folder=false）：
+            # 根层只有 1 个文件夹、没有散文件时，以它为根遍历、相对路径不含壳名，
+            # 否则 save_dir 下会白套一层「兰丨香如故/」。
+            strip_root = len(roots) == 1 and roots[0].is_dir
             for raw, node in zip(roots_raw, roots):
                 if not node.is_dir:
                     continue
                 abs_dir = raw.get("path") or f"/{node.name}"
+                base = "" if strip_root else node.name
                 for row in self._share_list_dir(ctx, abs_dir):
-                    f = self._share_row_to_file(row, node.name)
+                    f = self._share_row_to_file(row, base)
                     files.append(f)
                     if f.is_dir:
                         files.extend(self._walk_share_dir(ctx, row.get("path") or f"{abs_dir}/{f.name}", f.path))
@@ -596,6 +602,41 @@ class BaiduClient(CloudAdapter):
             raise AdapterError("网盘空间不足")
         raise AdapterError(f"建目录失败 {path}：errno={errno}")
 
+    # ---------- 目录管理（浏览弹窗的新建/重命名/删除，2026-10-03） ----------
+
+    def create_dir(self, parent_path: str, name: str) -> str:
+        """建目录，返回新目录完整路径（百度的 fid 就是路径）。已存在算成功（errno 12）。"""
+        full = parent_path.rstrip("/") + "/" + name
+        self._mkdir(full)
+        return full
+
+    def rename_dir(self, path: str, new_name: str) -> str:
+        """重命名目录（filemanager oper=rename，与转存后改名的 _apply_renames 同款接口）。
+
+        返回新完整路径。目录同样走这条通道，百度不区分文件/目录。"""
+        parent = path.rstrip("/").rsplit("/", 1)[0]
+        full = (parent + "/" + new_name) if parent else "/" + new_name
+        body = self._share_post(
+            "https://pan.baidu.com/rest/2.0/xpan/file",
+            params={"method": "filemanager", "web": 1},
+            data={"filelist": json.dumps([{"path": path, "newname": new_name}], ensure_ascii=False)},
+            referer="https://pan.baidu.com/disk/main",
+        )
+        if int(body.get("errno") or 0) != 0:
+            raise AdapterError(f"重命名失败：errno={body.get('errno')}")
+        return full
+
+    def delete_dir(self, path: str) -> None:
+        """删除目录（filemanager oper=delete，百度目录删除是递归的，含全部内容）。"""
+        body = self._share_post(
+            "https://pan.baidu.com/rest/2.0/xpan/file",
+            params={"method": "filemanager", "web": 1},
+            data={"oper": "delete", "filelist": json.dumps([{"path": path}], ensure_ascii=False)},
+            referer="https://pan.baidu.com/disk/main",
+        )
+        if int(body.get("errno") or 0) != 0:
+            raise AdapterError(f"删除失败：errno={body.get('errno')}")
+
     def _ensure_dirs(self, dirs: list[str]) -> None:
         # bdsavePro _ensure_dir_tree_exists 语义：整树能 list 通 = 目录已存在，
         # 一个 mkdir 都不用发（重复转存同目录时省掉整串 api/create）。
@@ -636,21 +677,30 @@ class BaiduClient(CloudAdapter):
             save_list = [f for f in save_list if _kept(f)]
             result.skip += before - len(save_list)
 
-        # 去重（MD5 优先 → 文件名）：对比目录优先 compare_path，空则用 save_dir
-        base = spec.compare_path or spec.save_dir
+        # 去重（MD5 优先 → 文件名）：基线 = compare_path ∪ save_dir 两边都扫。
+        # 只看 compare_path 有真空窗：刚转存的文件躺在 save_dir 等 QMS 搬进库，
+        # 窗口期基线里既没名字也没 MD5，cron 重跑会把同一集再存一遍（2026-10-03 40/41 重复案）。
+        bases: list[str] = []
+        if spec.compare_path:
+            bases.append(spec.compare_path)
+        if spec.save_dir and spec.save_dir not in bases:
+            bases.append(spec.save_dir)
         existing: set[str] = set()
         md5s: set[str] = set()
-        if base:
+        for base in bases:
             try:
                 # 名字与 MD5 同源：一次扫描拿全（原两遍 list_dir 是给风控送人头的写法）
-                existing, md5s = self._dir_baselines(base)
+                dir_names, dir_md5s = self._dir_baselines(base)
+                existing |= dir_names
+                md5s |= dir_md5s
             except (AdapterError, CredentialExpired) as e:
-                on_log(f"对比目录 {base} 读取失败（{e}），本次不做去重基线比对")
+                on_log(f"对比目录 {base} 读取失败（{e}），该目录不参与去重基线")
         need = []
         for f in save_list:
             if f.md5 and f.md5 in md5s:
                 result.skip += 1
                 result.skip_md5 += 1
+                result.md5_skipped.append({"name": f.name, "md5": f.md5})
             elif (f.target_name or f.name) in existing or f.name in existing:
                 result.skip += 1
             else:

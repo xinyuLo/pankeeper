@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from ..db import SessionLocal
 from ..deps import CurrentUser
-from ..models import Setting, now_str
+from ..models import PushLog, Setting, now_str
 from ..security import hash_password, verify_password
 from ..services import notify, qms
 from ..services.settings_svc import get_group, save_group
@@ -188,8 +188,21 @@ def test_qms(body: dict, _user=CurrentUser):
 
 
 @router.get("/notify/history")
-def push_history(_user=CurrentUser):
-    # M1：推送即时发送不落库；历史明细挂到 push_log 表后再补
-    return {"delivered": 0, "failed": 0}
+def push_history(limit: int = 50, _user=CurrentUser):
+    """推送历史明细（推送历史页数据源）：时间/标题/成败/失败原因，按时间倒序。
+
+    delivered/failed 是本页窗口内的计数（旧设置页按钮只回计数，字段保留兼容）。"""
+    limit = max(1, min(limit, 200))
+    with SessionLocal() as db:
+        rows = db.query(PushLog).order_by(PushLog.id.desc()).limit(limit).all()
+        items = [
+            {"id": r.id, "ts": r.ts, "title": r.title, "kind": r.kind, "status": r.status, "error": r.error or ""}
+            for r in rows
+        ]
+    return {
+        "items": items,
+        "delivered": sum(1 for i in items if i["status"] == "success"),
+        "failed": sum(1 for i in items if i["status"] == "fail"),
+    }
 
 

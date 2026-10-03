@@ -217,12 +217,15 @@ class QuarkAdapter(CloudAdapter):
     # ---------- 目标盘操作 ----------
 
     def ensure_dir(self, dir_path: str) -> str:
-        """逐级建目录，返回最末级 fid；已存在视为成功。"""
+        """逐级建目录，返回最末级 fid；已存在视为成功。
+
+        ⚠️ 逐层匹配必须用**当前层 fid** 列目录再按名字找。曾把绝对路径当 fid 传给
+        _list_dir（永远查空 → 每层都误走创建），而创建接口的 dir_path 是相对
+        pdir_fid 的——绝对路径塞进去就把 /1.影视/待整理-电影 建成了
+        /1.影视/1.影视/待整理-电影（2026-10-03 套娃目录案）。"""
         fid = "0"
-        walked = ""
         for part in [p for p in dir_path.strip("/").split("/") if p]:
-            walked += "/" + part
-            children = self._list_dir(walked)
+            children = self._list_dir(fid)
             hit = next((c for c in children if c["file_name"] == part and c.get("dir")), None)
             if hit:
                 fid = str(hit["fid"])
@@ -230,11 +233,11 @@ class QuarkAdapter(CloudAdapter):
             data = self._req(
                 "POST",
                 "https://drive-pc.quark.cn/1/clouddrive/file",
-                json_body={"pdir_fid": fid, "file_name": "", "dir_path": walked, "dir_init_lock": False},
+                json_body={"pdir_fid": fid, "file_name": part, "dir_path": "", "dir_init_lock": False},
             )
             new_fid = (data.get("data") or {}).get("fid")
             if not new_fid:
-                raise AdapterError(f"建目录失败：{walked}")
+                raise AdapterError(f"建目录失败：{part}")
             fid = str(new_fid)
         return fid
 
@@ -260,6 +263,35 @@ class QuarkAdapter(CloudAdapter):
     def _path_to_fid(self, dir_path: str) -> str:
         """路径 → fid（建好目录树后取末级）。"""
         return self.ensure_dir(dir_path)
+
+    # ---------- 目录管理（浏览弹窗的新建/重命名/删除，2026-10-03） ----------
+
+    def create_dir(self, parent_fid: str, name: str) -> str:
+        """在指定父目录下建文件夹，返回新 fid。与 ensure_dir 的逐层建同款接口。"""
+        data = self._req(
+            "POST",
+            "https://drive-pc.quark.cn/1/clouddrive/file",
+            json_body={"pdir_fid": parent_fid, "file_name": name, "dir_path": "", "dir_init_lock": False},
+        )
+        fid = (data.get("data") or {}).get("fid")
+        if not fid:
+            raise AdapterError(f"建目录失败：{name}")
+        return str(fid)
+
+    def rename_dir(self, fid: str, new_name: str) -> None:
+        self._req(
+            "POST",
+            "https://drive-pc.quark.cn/1/clouddrive/file/rename",
+            json_body={"fid": fid, "file_name": new_name},
+        )
+
+    def delete_dir(self, fid: str) -> None:
+        """删除目录（action_type=2 = 文件+文件夹通用；夸克目录删除是递归的）。"""
+        self._req(
+            "POST",
+            "https://drive-pc.quark.cn/1/clouddrive/file/delete",
+            json_body={"action_type": 2, "filelist": [fid], "exclude_fids": []},
+        )
 
     # ---------- 转存 ----------
 
