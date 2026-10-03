@@ -258,6 +258,8 @@ html[data-theme='dark'] .mt-switch-slider { background: var(--border); }
 }
 .mt-check-item { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-radius: 6px; cursor: pointer; user-select: none; }
 .mt-check-item:hover { background: var(--primary-bg); }
+.mt-check-item.mt-checked { background: var(--primary-bg); }
+.mt-check-item.mt-checked .mt-check-name { color: var(--primary); font-weight: 500; }
 .mt-check-item input { width: 15px; height: 15px; accent-color: var(--primary); cursor: pointer; }
 .mt-check-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mt-tag {
@@ -269,28 +271,36 @@ html[data-theme='dark'] .mt-switch-slider { background: var(--border); }
   white-space: nowrap;
 }
 html[data-theme='dark'] .mt-tag { background: rgba(250, 173, 20, 0.16); color: #ffc53d; }
+/* 正则外：紫标——不会转存、展示只为可取消勾选；与琥珀「无 MD5」区分开 */
+.mt-tag-dim { background: rgba(114, 46, 209, 0.08); color: #722ed1; }
+html[data-theme='dark'] .mt-tag-dim { background: rgba(114, 46, 209, 0.2); color: #b37feb; }
 .mt-list-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-size: 13px; color: var(--text2); }
+.mt-list-warn { font-size: 12px; color: var(--warning); text-align: right; }
 .mt-dt-size { font-size: 12px; color: var(--text3); flex: 0 0 auto; }
 
-/* ===== 清单缓存状态条：左状态 + 右「刷新」死守一行 =====
-   文字 flex:0 1 auto + min-width:0（可压缩打省略号），按钮 flex:none 不被挤走。 */
-.mt-listcache { display: flex; align-items: center; gap: 10px; margin: 8px 0 6px; flex-wrap: nowrap; }
+/* ===== 标题行动作钮组（排除清单：勾选 MD5 / 刷新并排上移） ===== */
+.mt-head-btns { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.mt-head-btns.busy .mt-btn { opacity: 0.6; pointer-events: none; }
+
+/* ===== 清单缓存状态条：纯状态展示（刷新钮已上移标题行），文字做成状态胶囊 =====
+   命中绿=吃缓存、刚拉取橙=刚出网盘；文字 flex:0 1 auto + min-width:0 可压缩打省略号。 */
+.mt-listcache { display: flex; align-items: center; margin: 8px 0 6px; }
 .mt-listcache-txt {
   flex: 0 1 auto;
   min-width: 0;
   font-size: 12.5px;
-  color: var(--text3);
   line-height: 1.5;
+  padding: 3px 10px;
+  border-radius: 20px;
+  color: var(--text3);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.mt-listcache > .mt-btn { flex: 0 0 auto; }
-.mt-listcache-txt.hit { color: #389e0d; }
-.mt-listcache-txt.cold { color: #fa8c16; }
-.mt-listcache.busy .mt-btn { opacity: 0.6; pointer-events: none; }
-html[data-theme='dark'] .mt-listcache-txt.hit { color: #95de64; }
-html[data-theme='dark'] .mt-listcache-txt.cold { color: #ffc069; }
+.mt-listcache-txt.hit { color: var(--success); background: rgba(82, 196, 26, 0.1); }
+.mt-listcache-txt.cold { color: #fa8c16; background: rgba(250, 140, 22, 0.12); }
+html[data-theme='dark'] .mt-listcache-txt.hit { color: #95de64; background: rgba(82, 196, 26, 0.16); }
+html[data-theme='dark'] .mt-listcache-txt.cold { color: #ffc069; background: rgba(250, 140, 22, 0.18); }
 .mt-spin {
   display: inline-block;
   width: 11px;
@@ -403,6 +413,7 @@ html[data-theme='dark'] .mt-dir-bar { color: #ffc069; }
   .mt-stat-card { padding: 10px; }
   .mt-runlog { height: 180px; }
 
-  /* 排除清单缓存状态条允许换行 */
+  /* 排除清单缓存状态条允许换行；标题行标题+双钮太宽时也换行 */
   .mt-listcache { flex-wrap: wrap; }
+  .mt-section-head { flex-wrap: wrap; row-gap: 8px; }
 }
