@@ -159,13 +159,20 @@ class QuarkAdapter(CloudAdapter):
     def list_share(self, spec: TaskSpec) -> list[ShareFile]:
         parsed = self.prepare(spec)
         stoken = self._stoken
-        files = self._walk_share(stoken, parsed["pwd_id"], parsed["pdir_fid"], spec.include_subdirs, depth=0)
-        # 根目录只有 1 个文件夹时自动下钻（对齐前端「转存文件夹下钻」的直觉）
-        if parsed["pdir_fid"] == "0" and len(files) == 1 and files[0].is_dir:
-            self._root_shell = files[0]  # 「带壳转存」用：壳条目（fid/fid_token 可整体转存）
-            files = self._walk_share(stoken, parsed["pwd_id"], files[0].fid, spec.include_subdirs, depth=1)
+        # ⚠️ 单壳判定必须只看**根层条目**（2026-10-04 用户套娃案根因）：先只列根层再判定。
+        # 原实现拿 `_walk_share(include_subdirs=True)` 的 len(files) 判定——那个列表含壳内
+        # 全部文件，壳里有文件就永远 >1 → 标准单壳被误判成"非单壳" → 建壳 + 原壳整转 → 双层同名。
+        top = self._walk_share(stoken, parsed["pwd_id"], parsed["pdir_fid"], False, depth=0)
+        if parsed["pdir_fid"] == "0" and len(top) == 1 and top[0].is_dir:
+            self._root_shell = top[0]  # 「带壳转存」用：壳条目（fid/fid_token 可整体转存）
+            # 剥壳：以壳为根遍历，相对路径不含壳名（base="/"）
+            files = self._walk_share(stoken, parsed["pwd_id"], top[0].fid, spec.include_subdirs, depth=1, base="/")
         else:
             self._root_shell = None
+            files = list(top)
+            if spec.include_subdirs:
+                for f in [x for x in top if x.is_dir]:
+                    files.extend(self._walk_share(stoken, parsed["pwd_id"], f.fid, True, depth=1, base=f.path))
         # 排除清单 + 改名映射
         for f in files:
             f.target_name = spec.rename_map.get(f.name)
