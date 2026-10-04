@@ -13,6 +13,7 @@ export function getSettings(): Promise<SettingsData> {
       notify: { ...settingsStore.notify },
       qms: { ...settingsStore.qms },
       security: { ...settingsStore.security },
+      media: { ...settingsStore.media },
     })
   }
   return get<SettingsData>('/settings')
