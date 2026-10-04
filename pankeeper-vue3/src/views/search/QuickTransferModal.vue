@@ -8,6 +8,7 @@ import { message } from 'ant-design-vue'
 import { pkQueue } from '@/queue/engine'
 import { DRIVE_META, DD_MEDIA } from '@/api/mock/meta'
 import { listDdItems, listQmsPaths } from '@/api/modules/dd'
+import { recognizeShare } from '@/api/modules/recognize'
 import { listAccounts } from '@/api/modules/accounts'
 import { ddStore } from '@/api/mock/dd'
 import type { DdItem, DdQmsPath, DriveType, MainDriveType } from '@/types/model'
@@ -105,6 +106,31 @@ function close() {
   emit('update:open', false)
 }
 
+/** 一键识别：分享名 → TMDB → 回填「文件夹更名」（识别器后端无关，QMS/LitePan 模式都可用） */
+const recognizing = ref(false)
+async function onRecognize() {
+  const src = (props.shareName || '').trim()
+  if (!src) {
+    message.warning('没有可识别的资源名')
+    return
+  }
+  if (recognizing.value) return
+  recognizing.value = true
+  try {
+    const r = await recognizeShare(src, src)
+    if (r.ok && r.media_name) {
+      rename.value = r.media_name
+      message.success(r.doubt ? `已识别（存疑，请确认）：${r.media_name}` : `已识别：${r.media_name}`)
+    } else {
+      message.warning(r.message || '未识别到 TMDB 条目')
+    }
+  } catch {
+    message.error('识别失败，请稍后重试')
+  } finally {
+    recognizing.value = false
+  }
+}
+
 /** 预览「转存后长什么样」+ 按所选位置的配置列出触发的 QMS / STRM */
 const pv = computed(() => {
   const it = currentItem.value
@@ -188,7 +214,7 @@ function onOk() {
           />
         </div>
 
-        <!-- 新文件夹名：label 和输入框同一行，留空 = 用资源名 -->
+        <!-- 新文件夹名：label 和输入框同一行，留空 = 用资源名；「识别」= TMDB 识别回填 -->
         <div class="dd-field dd-inline">
           <label class="dd-label" style="margin-bottom: 0">文件夹更名</label>
           <a-input
@@ -197,7 +223,13 @@ function onOk() {
             :maxlength="80"
             placeholder="留空则用资源名新建文件夹"
             @press-enter="onOk"
-          />
+          >
+            <template #suffix>
+              <a-button size="small" type="text" :loading="recognizing" style="margin-right: -7px" @click="onRecognize">
+                识别
+              </a-button>
+            </template>
+          </a-input>
         </div>
 
         <!-- 「转存后」预览：三段结构（标题/路径/触发行），防止被拍平回退 -->
