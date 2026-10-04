@@ -24,6 +24,7 @@ import LazyDirTree from '@/components/LazyDirTree.vue'
 import { USE_MOCK } from '@/api/http'
 import { getRootDirs } from '@/api/modules/accounts'
 import { listDdItems, listQmsPaths } from '@/api/modules/dd'
+import { recognizeShare } from '@/api/modules/recognize'
 import { ddStore } from '@/api/mock/dd'
 import ShareTree from './ShareTree.vue'
 import { pkQueue } from '@/queue/engine'
@@ -57,6 +58,31 @@ async function onRefreshTree() {
 const meta = computed(() => (props.target ? DRIVE_META[props.target.type] : null))
 /** 分享摘要行：资源名 + 「N 项 · X GB」跟着资源走（项数 mock 固定 12） */
 const sumMeta = computed(() => `12 项 · ${props.target?.size || '82.4 GB'}`)
+
+/** 一键识别：资源名 → TMDB → 回填「文件夹更名」（识别器后端无关，QMS/LitePan 模式都可用） */
+const recognizing = ref(false)
+async function onRecognize() {
+  const src = (props.target?.name || '').trim()
+  if (!src) {
+    message.warning('没有可识别的资源名')
+    return
+  }
+  if (recognizing.value) return
+  recognizing.value = true
+  try {
+    const r = await recognizeShare(src, src)
+    if (r.ok && r.media_name) {
+      renameInput.value = r.media_name
+      message.success(r.doubt ? `已识别（存疑，请确认）：${r.media_name}` : `已识别：${r.media_name}`)
+    } else {
+      message.warning(r.message || '未识别到 TMDB 条目')
+    }
+  } catch {
+    message.error('识别失败，请稍后重试')
+  } finally {
+    recognizing.value = false
+  }
+}
 
 /* ---- 分享树（勾选） ---- */
 const checked = ref(new Set<string>())
@@ -241,10 +267,16 @@ function start() {
         <ShareTree :nodes="shareData" base-key="" />
       </div>
 
-      <!-- 文件夹更名：分享摘要下方整行（留空 = 用默认名在目标位置新建文件夹） -->
+      <!-- 文件夹更名：分享摘要下方整行（留空 = 用默认名在目标位置新建文件夹）；「识别」= TMDB 回填 -->
       <div class="tm-rename">
         <label>文件夹更名</label>
-        <a-input v-model:value="renameInput" :maxlength="80" placeholder="留空则用资源名新建文件夹" allow-clear />
+        <a-input v-model:value="renameInput" :maxlength="80" placeholder="留空则用资源名新建文件夹" allow-clear>
+          <template #suffix>
+            <a-button size="small" type="text" :loading="recognizing" style="margin-right: -7px" @click="onRecognize">
+              识别
+            </a-button>
+          </template>
+        </a-input>
       </div>
 
       <!-- 包含子目录：独立一行（自绘勾选框，样式对齐任务弹窗） -->
