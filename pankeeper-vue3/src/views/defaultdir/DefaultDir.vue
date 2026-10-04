@@ -211,6 +211,7 @@ async function confirmEditor() {
   const qmsFields = {
     qms_on: fQmsOn.value,
     qms_id: fQmsOn.value && fQmsId.value != null ? fQmsId.value : null,
+    strm_id: null, // 此表单只管 QMS；STRM 目录在任务弹窗里配（DdItemDraft 要求字段存在）
   }
   // 目标账号下（排除自己）已有多少条 —— 新增时第一条自动成为该账号默认
   const beforeCount = ddStore.items.filter(
