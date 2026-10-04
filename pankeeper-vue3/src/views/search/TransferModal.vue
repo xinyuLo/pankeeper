@@ -13,8 +13,8 @@ export interface TransferTarget {
 <script setup lang="ts">
 /* 转存弹窗（原型 _shell.html 的 transferMask 移植）。
  * 分享内容收成一行摘要，「查看」展开分享树勾选可只转存部分；
- * 「保存到我的网盘」目录树选目标位置（默认国产剧）；选项条只有
- * 包含子目录 / 转存后触发 QMS —— 手动转存不接 Server 酱（只有自动转存有）。
+ * 「保存到我的网盘」目录树选目标位置；选项：包含子目录 / 文件夹更名 /
+ * QMS·STRM 显式下拉（默认按目标目录前缀自动带出，可改「不触发」）。
  * 「开始转存」= pkQueue.enqueue 入队即走，绝无内联进度条。 */
 import { computed, provide, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
@@ -23,11 +23,13 @@ import PkTree from '@/components/PkTree.vue'
 import LazyDirTree from '@/components/LazyDirTree.vue'
 import { USE_MOCK } from '@/api/http'
 import { getRootDirs } from '@/api/modules/accounts'
+import { listDdItems, listQmsPaths } from '@/api/modules/dd'
+import { ddStore } from '@/api/mock/dd'
 import ShareTree from './ShareTree.vue'
 import { pkQueue } from '@/queue/engine'
 import { DRIVE_META } from '@/api/mock/meta'
 import { SHARE_TREE, MINE_TREE } from '@/api/mock/tree'
-import type { MainDriveType, TreeNode } from '@/types/model'
+import type { DdItem, DdQmsPath, MainDriveType, TreeNode } from '@/types/model'
 
 const props = defineProps<{ open: boolean; target: TransferTarget | null }>()
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>()
@@ -118,7 +120,35 @@ function mkfolder() {
 
 /* ---- 选项（手动转存没有 Server 酱推送，别加回来） ---- */
 const includeSub = ref(true)
-const postQms = ref(true)
+/* 文件夹更名：非空 = 在目标目录下按此名新建文件夹、分享内容剥壳转入 */
+const renameInput = ref('')
+
+/* ---- QMS 联动（对齐任务弹窗样式：开关 + 全宽下拉）。
+ *  STRM 不再单独选（2026-10-04 用户定稿）：配了 QMS，刮削成功自动联动 STRM 生成、
+ *  失败不生成——STRM 目标 = 与该 QMS 配对的转存配置目录的 strm_id。
+ *  下拉默认按目标位置前缀自动带出；用户手动改过就不再自动覆盖。
+ *  开关关 = 明确不联动（media_off，连目录匹配都不做）。 ---- */
+const mediaOn = ref(true)
+const qmsSel = ref<number | null>(null)
+const qmsPaths = ref<DdQmsPath[]>([])
+const pathsLoading = ref(false)
+const mediaTouched = ref(false)
+
+const qmsOpts = computed(() => qmsPaths.value.map((p) => ({ value: p.id, label: `#${p.id} · ${p.source_path}` })))
+
+/** 按目标目录前缀自动带出联动目标（对齐后端 _match_dd_link 语义） */
+function autoMatchMedia() {
+  const t = props.target
+  if (!t) return
+  const dir = selectedDir.value
+  const hit = (ddStore.items as DdItem[]).find(
+    (d) => d.type === t.type && d.qms_on && d.qms_id && (dir === d.path || dir.startsWith((d.path || '').replace(/\/+$/, '') + '/')),
+  )
+  qmsSel.value = hit?.qms_id ?? null
+}
+watch(selectedDir, () => {
+  if (!mediaTouched.value) autoMatchMedia()
+})
 
 /** 每次打开重置：分享树收起、勾选清空、目标位置回默认国产剧 */
   watch(
@@ -127,12 +157,23 @@ const postQms = ref(true)
     if (!v) return
     checked.value = new Set()
     shareOpen.value = false
+    renameInput.value = ''
     // 打开即选中锁定根（默认根目录）；没配置就回退原来的默认
     if (!USE_MOCK) rootDirs.value = await getRootDirs().catch(() => ({}))
     rootDir.value = rootDirs.value[props.target?.type || ''] || ''
     selectedDir.value = rootDir.value || DEFAULT_DIR
     includeSub.value = true
-    postQms.value = true
+    mediaOn.value = true
+    mediaTouched.value = false
+    // QMS/STRM 目录清单后台拉（QMS 在 NAS 上，秒级）；到货后按目标目录带默认值
+    if (!USE_MOCK) {
+      listDdItems().catch(() => {})
+      pathsLoading.value = true
+      const qs = await listQmsPaths().catch(() => [])
+      pathsLoading.value = false
+      qmsPaths.value = qs
+    }
+    autoMatchMedia()
   },
 )
 
@@ -153,6 +194,13 @@ function start() {
     size: t.size,
     share_url: t.url,
     share_code: t.share_code,
+    /* 建壳转存：没勾选具体内容时按默认名/更名值新建文件夹、剥壳转入（勾选了就走原平铺逻辑） */
+    rename: renameInput.value.trim(),
+    with_shell: checkedFiles.value === 0,
+    /* 联动：开关关 = 明确不触发；开 = 用下拉选的 QMS（默认按目标位置自动带出）。
+       STRM 不传——后端与 QMS 自动配对，刮削成功才生成 */
+    media_off: !mediaOn.value,
+    qms_id: mediaOn.value ? qmsSel.value : null,
   })
   if (pos < 0) {
     message.warning('该分享已在转存队列中，勿重复添加')
@@ -193,8 +241,46 @@ function start() {
         <ShareTree :nodes="shareData" base-key="" />
       </div>
 
+      <!-- 文件夹更名：分享摘要下方整行（留空 = 用默认名在目标位置新建文件夹） -->
+      <div class="tm-rename">
+        <label>文件夹更名</label>
+        <a-input v-model:value="renameInput" :maxlength="80" placeholder="留空则用资源名新建文件夹" allow-clear />
+      </div>
+
+      <!-- 包含子目录：独立一行（自绘勾选框，样式对齐任务弹窗） -->
+      <div class="filterbar" style="margin-top: 12px">
+        <span class="muted">选项</span>
+        <div class="tm-opts">
+          <label class="tm-opt">
+            <input v-model="includeSub" type="checkbox" /><span class="tm-box"></span>分享内有子目录时一并转存
+          </label>
+        </div>
+      </div>
+
+      <!-- 联动（样式对齐任务弹窗）：开关 + QMS 全宽下拉；开关关 = 完全不触发 -->
+      <div class="tm-media">
+        <label class="tm-media-switch">
+          <a-switch v-model:checked="mediaOn" size="small" />
+          <span>转存完成后联动 QMS 整理</span>
+        </label>
+        <template v-if="mediaOn">
+          <a-select
+            v-model:value="qmsSel"
+            :options="qmsOpts"
+            style="width: 100%; margin-top: 10px"
+            :loading="pathsLoading"
+            :placeholder="pathsLoading ? '正在加载 QMS 目录…' : qmsPaths.length ? '选择 QMS 刮削目录' : 'QMS 未连接或没有刮削目录'"
+            allow-clear
+            @change="mediaTouched = true"
+          />
+          <div class="tm-hint">
+            默认按目标位置自动带出。QMS 整理成功后自动生成 STRM，失败不生成；不需要就清空。
+          </div>
+        </template>
+      </div>
+
       <!-- 我的网盘：唯一可操作区（选目标位置） -->
-      <div class="pane" style="margin-top: 14px">
+      <div class="pane" style="margin-top: 16px">
         <div class="pane-hd">
           <span>保存到我的网盘</span>
           <span style="display: flex; gap: 6px">
@@ -222,12 +308,6 @@ function start() {
         <span>{{ selectedDir }}</span>
       </div>
 
-      <div class="filterbar" style="margin-top: 16px">
-        <span class="muted">选项</span>
-        <a-checkbox v-model:checked="includeSub">包含子目录</a-checkbox>
-        <a-checkbox v-model:checked="postQms">转存后触发 QMS 整理</a-checkbox>
-        <!-- 手动转存不接 Server 酱：结果实时看日志就行，只有自动转存（任务弹窗）才有推送 -->
-      </div>
     </div>
 
     <div class="tm-foot">
@@ -254,6 +334,76 @@ function start() {
   border-top: 1px solid var(--split);
 }
 .tm-foot .small { flex: none; }
+
+/* 选项行内字段：label 小字在上、控件在下（下拉文案长，竖排不挤行） */
+.tm-field { display: inline-flex; flex-direction: column; gap: 4px; min-width: 0; }
+.tm-field label { font-size: 12px; color: var(--text3); }
+
+/* 选项勾选框（样式对齐任务弹窗 mt-opt）：带框容器 + 自绘 16px 勾选块 */
+.tm-opts {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  padding: 10px 14px;
+  border: 1px solid var(--split);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.tm-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13.5px;
+  color: var(--text);
+  line-height: 1.2;
+  position: relative;
+}
+.tm-opt input { position: absolute; opacity: 0; width: 0; height: 0; }
+.tm-opt .tm-box {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--card);
+  transition: background 0.15s, border-color 0.15s;
+}
+.tm-opt:hover .tm-box { border-color: var(--primary); }
+.tm-opt .tm-box::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 1.5px;
+  width: 4px;
+  height: 9px;
+  border: 2px solid #fff;
+  border-top: 0;
+  border-left: 0;
+  transform: rotate(45deg) scale(0.4);
+  opacity: 0;
+  transition: opacity 0.12s, transform 0.12s;
+}
+.tm-opt input:checked + .tm-box { background: var(--primary); border-color: var(--primary); }
+.tm-opt input:checked + .tm-box::after { opacity: 1; transform: rotate(45deg) scale(1); }
+
+/* 文件夹更名：分享摘要下方整行（label 小字在上，输入框全宽） */
+.tm-rename { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
+.tm-rename label { font-size: 12px; color: var(--text3); }
+
+/* 联动区（对齐任务弹窗观感）：一行开关，开后下拉全宽堆叠 */
+.tm-media {
+  margin-top: 12px;
+  padding: 11px 12px;
+  border: 1px solid var(--split);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.tm-media-switch { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text2); cursor: pointer; }
+.tm-hint { margin-top: 8px; font-size: 12px; color: var(--text3); line-height: 1.65; }
 
 /* 移动端（<768px）：底部操作区改两行（说明一行 + 按钮铺满） */
 @media (max-width: 767px) {

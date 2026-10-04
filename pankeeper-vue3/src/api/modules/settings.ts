@@ -45,6 +45,15 @@ export async function saveQms(cfg: SettingsData['qms']): Promise<void> {
   await put('/settings/qms', cfg)
 }
 
+/** 保存联动后端选择（qms/litepan） */
+export async function saveMediaBackend(backend: 'qms' | 'litepan'): Promise<void> {
+  if (USE_MOCK) {
+    settingsStore.media.backend = backend
+    return mockDelay(undefined)
+  }
+  await put('/settings/media', { backend })
+}
+
 /** 测试 PanSou 连通。返回响应耗时；失败时 ok=false + message（HTTP 仍是 200） */
 export async function testPansou(url: string): Promise<{ ok: boolean; ms: number; message?: string }> {
   if (USE_MOCK) {

@@ -23,6 +23,7 @@ import time
 
 from ..db import SessionLocal
 from ..models import PaTask, RunHistory
+from ..adapters.base import AdapterError
 from . import qms
 
 POLL_INTERVAL = 30        # 轮询间隔（秒）
@@ -99,6 +100,74 @@ def _is_fresh(latest: dict[str, dict], baseline: dict[str, list]) -> bool:
     return False
 
 
+def _scrape_dest_dirs(names: set[str]) -> list[str]:
+    """从 QMS 刮削记录推本次文件**整理后的目录**（openlist 命名空间，strm 定向同步的目标）。
+
+    QMS 刮削会把文件从待整理目录搬进正式目录：record.new_path 是相对整理目标根的
+    新路径，目标根 = 该记录所属刮削路径的 dest_path（按 record.path 前缀匹配
+    source_path 找归属）。按文件名精确匹配（同 run_watch 匹配纪律：不按 name= 筛）。"""
+    sps = qms.scrape_pathes() or []
+    dests: dict[str, None] = {}
+    for rec in qms.scrape_records(page_size=500) or []:
+        if rec.get("file_name") not in names:
+            continue
+        src = (rec.get("path") or "").strip()
+        new_path = (rec.get("new_path") or "").strip("/")
+        if not new_path:
+            continue
+        for sp in sps:
+            sp_src = (sp.get("source_path") or "").strip().rstrip("/")
+            if sp_src and (src + "/").startswith(sp_src + "/"):
+                root = (sp.get("dest_path") or "").strip().rstrip("/")
+                if root:
+                    dests.setdefault(root + "/" + new_path, None)
+                break
+    return list(dests)
+
+
+def _fire_strm(strm_id: int, names: set[str]) -> dict:
+    """STRM 触发的统一入口：**定向优先，失败回退**。
+
+    - 定向（QMS /api/sync/manual 临时任务）：只扫本次文件整理后的目录（dest_path），
+      不再整路径扫库（用户 2026-10-04：一次转存就一个文件夹，没理由全库探测）。
+      仅 openlist 类型的同步路径可用（用户现配就是；网盘直连类型需要真 path_id，
+      PanKeeper 拿不到，直接回退）；
+    - 定向落盘 = 同步路径 local_path + openlist 完整路径，与常规同步布局一致；
+    - 任何失败 → 回退整路径同步（QMS 自己刷新 Emby）；定向是临时任务（跳过刷新），
+      由 PanKeeper 延迟 90s 补一次 Emby 刷新（借 QMS 配的 Emby 地址/ApiKey，尊重其开关）。"""
+    try:
+        sp = qms.get_sync_path(strm_id)
+        if not sp:
+            raise AdapterError("拿不到 QMS 同步路径详情")
+        if (sp.get("source_type") or "") != "openlist":
+            raise AdapterError(f"同步路径类型 {sp.get('source_type')} 不支持定向（仅 openlist）")
+        remote = (sp.get("remote_path") or "").strip("/")
+        local = sp.get("local_path") or ""
+        account_id = int(sp.get("account_id") or 0)
+        if not local or not account_id or not remote:
+            raise AdapterError("同步路径缺 local_path/remote_path/account_id")
+        dests = [d for d in _scrape_dest_dirs(names) if (d.strip("/") + "/").startswith(remote + "/")]
+        if not dests:
+            raise AdapterError("刮削记录里没有落在该同步路径下的目录")
+        for d in dests:
+            ok, msg = qms.manual_sync("0", d, local, account_id)
+            if not ok:
+                raise AdapterError(f"QMS 拒绝定向同步 {d}：{msg}")
+            print(f"[run-watch] STRM 定向同步：{d}（只扫本次目录）", flush=True)
+
+        def _emby_later() -> None:
+            time.sleep(90)  # 等 QMS 临时任务跑完（单目录同步通常几十秒内）
+            ok2, msg2 = qms.refresh_emby_library()
+            print(f"[run-watch] Emby 媒体库刷新（定向同步补）：{'成功' if ok2 else msg2}", flush=True)
+
+        threading.Thread(target=_emby_later, daemon=True).start()
+        return {"st": "已触发（定向）", "cls": "t-ok"}
+    except Exception as e:  # noqa: BLE001 —— 回退口：定向失败绝不把 STRM 弄丢
+        print(f"[run-watch] STRM 定向同步失败（{e}），回退整路径同步", flush=True)
+        ok, msg = qms.trigger_strm(strm_id)
+        return {"st": "已触发" if ok else f"失败 · {msg}", "cls": "t-ok" if ok else "t-bad"}
+
+
 def trigger_strm_after_scrape(
     run_id: int | None,
     qms_id: int,
@@ -151,6 +220,7 @@ def trigger_strm_after_scrape(
                 _STRM_RESULTS[f"{table.__name__}:{run_id}"] = snap
             print(f"[run-watch] QMS 刮削 #{qms_id} 等待超时（{timeout}s），不触发 STRM", flush=True)
             return
+        names: list[str] = []
         if degraded:
             print(f"[run-watch] 取不到 QMS 刮削状态，退化为等 {delay}s 后直接触发 STRM", flush=True)
         else:
@@ -174,14 +244,18 @@ def trigger_strm_after_scrape(
                     return
 
         time.sleep(max(0, int(delay)))
-        ok, msg = qms.trigger_strm(strm_id)
-        # 「已触发」用绿色（t-ok）：STRM 没有结果查询接口，触发成功就是这条链路的最好结局
-        # （2026-10-04 用户要求改绿；QMS 的"已触发"保持灰——它随后会被真实结果回填替换）
-        snap = {"st": "已触发" if ok else f"失败 · {msg}", "cls": "t-ok" if ok else "t-bad"}
+        # 定向同步（只扫本次文件整理后的目录）需要本次文件名集合；拿不到就整路径
+        names_set = set(names) if names else set(_record_names(run_id, table))
+        if names_set:            snap = _fire_strm(strm_id, names_set)
+        else:
+            ok, msg = qms.trigger_strm(strm_id)
+            # 「已触发」用绿色（t-ok）：STRM 没有结果查询接口，触发成功就是这条链路的最好结局
+            # （2026-10-04 用户要求改绿；QMS 的"已触发"保持灰——它随后会被真实结果回填替换）
+            snap = {"st": "已触发" if ok else f"失败 · {msg}", "cls": "t-ok" if ok else "t-bad"}
         if run_id:
             _write_strm(run_id, snap, table)
             _STRM_RESULTS[f"{table.__name__}:{run_id}"] = snap  # 推送线程（media_push._wait_strm）来取
-        print(f"[run-watch] STRM #{strm_id} 触发：{'成功' if ok else f'失败 {msg}'}", flush=True)
+        print(f"[run-watch] STRM #{strm_id} 触发：{snap['st']}", flush=True)
 
     threading.Thread(target=_job, daemon=True).start()
 

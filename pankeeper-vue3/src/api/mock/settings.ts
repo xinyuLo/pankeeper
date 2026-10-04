@@ -60,6 +60,8 @@ export interface SettingsData {
   notify: NotifyCfg
   qms: QmsCfg
   security: SecurityCfg
+  /** 联动后端：qms = QMS 全流程 / litepan = 推送消息给 LitePan（预留） */
+  media: { backend: 'qms' | 'litepan' }
 }
 
 export const settingsStore = reactive<SettingsData>({
@@ -90,4 +92,5 @@ export const settingsStore = reactive<SettingsData>({
     username: 'admin',
     session_days: 7,
   },
+  media: { backend: 'qms' as 'qms' | 'litepan' },
 })

@@ -45,6 +45,10 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         },
         "security": {"username": "admin", "session_days": 7},
     },
+    # 联动后端选择：qms = 现行 QMS 全流程（刮削/STRM/PanKeeper 管理）；
+    # litepan = 转存完成后推送消息给 LitePan，后续整理由 LitePan 自理（预留，WS 对接待定稿）
+    "media": {"backend": "qms"},
+    "litepan": {"ws_url": ""},
     "queue_cfg": {"threads": 1, "gap": 5, "qms": 10, "strm": 10},
     # 网盘凭据每日探活（M3）：默认每天 10:00 跑一次。
     # 时间特意放在上午而不是凌晨——半夜探出失效也没人看，通知等于白发；
@@ -73,7 +77,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "memHigh": 85,
         "act": "ladder",
         # 缓存大小上限（MB）：水位条 = 已用字节 / 该上限，超出按 LRU 淘汰
-        "maxSizeMb": 200,
+        "maxSizeMb": 100,
     },
 }
 

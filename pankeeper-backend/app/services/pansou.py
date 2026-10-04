@@ -66,6 +66,8 @@ def search(kw: str, cloud_types: list[str] | None = None, refresh: bool = False)
 
 def _map_merged(merged: dict) -> list[dict]:
     """merged_by_type → 前端结果行。大小 pansou 不提供，展示 —；时间取日期部分。"""
+    from .names import sanitize_name
+
     out: list[dict] = []
     for pan_type, links in merged.items():
         t = TYPE_MAP.get(pan_type)
@@ -73,9 +75,12 @@ def _map_merged(merged: dict) -> list[dict]:
             continue
         for link in links or []:
             dt = (link.get("datetime") or "")[:10]
+            # 频道 note 常带 emoji/装饰符：当文件夹名会撞网盘非法字符（errno=2 实锤），
+            # 源头洗掉；洗空了回落链接本身（总得有个可认的名字）
+            name = sanitize_name(link.get("note") or "") or link.get("url", "")
             out.append(
                 {
-                    "n": link.get("note") or link.get("url", ""),
+                    "n": name,
                     "t": t,
                     "s": "—",
                     "d": dt,

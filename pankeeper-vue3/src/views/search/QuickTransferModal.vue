@@ -7,16 +7,16 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { pkQueue } from '@/queue/engine'
 import { DRIVE_META, DD_MEDIA } from '@/api/mock/meta'
-import { listDdItems, listQmsPaths, listStrmPaths } from '@/api/modules/dd'
+import { listDdItems, listQmsPaths } from '@/api/modules/dd'
 import { listAccounts } from '@/api/modules/accounts'
 import { ddStore } from '@/api/mock/dd'
-import type { DdItem, DdQmsPath, DdStrmPath, DriveType, MainDriveType } from '@/types/model'
+import type { DdItem, DdQmsPath, DriveType, MainDriveType } from '@/types/model'
 
 const props = defineProps<{
   open: boolean
   /** 目标网盘类型（只有配过转存配置的网盘才进得来） */
   type: DriveType | null
-  /** 分享顶层目录名（用于预览与入队命名） */
+  /** 默认任务名/新建文件夹名（搜索页给：搜索词+年份，见 SearchTransfer.defaultName） */
   shareName: string
  shareUrl?: string
     shareCode?: string
@@ -28,7 +28,6 @@ const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>()
  *  所以打开弹窗的瞬间就有数据，不必等网络，也就不会先闪一下「还没配置转存目录」的空态。 */
 const items = computed<DdItem[]>(() => ddStore.items)
 const qmsPaths = ref<DdQmsPath[]>([])
-const strmPaths = ref<DdStrmPath[]>([])
 /** 账号 id → 显示名（别名优先，空则昵称）：保存位置下拉里标出「这条配置属于哪个账号」 */
 const accNames = ref<Record<string, string>>({})
 const selId = ref<number | null>(null)
@@ -91,7 +90,6 @@ watch(
       .catch(() => {})
     // QMS / STRM 最慢，各自到货各自填，绝不挡主表单渲染
     listQmsPaths().then((qs) => (qmsPaths.value = qs)).catch(() => {})
-    listStrmPaths().then((ss) => (strmPaths.value = ss)).catch(() => {})
     void nextTick().then(() => {
       setTimeout(() => renameRef.value?.focus?.(), 60)
     })
@@ -125,8 +123,8 @@ const pv = computed(() => {
   } else {
     xrows.push({ k: '触发 QMS', v: '不联动（该目录未开启）', on: false })
   }
-  const sp = strmPaths.value.find((x) => x.id === it.strm_id) || null
-  xrows.push({ k: '触发 STRM', v: sp ? `#${sp.id} · ${sp.remote_path}` : '不生成 STRM', on: !!sp })
+  // STRM 跟随 QMS 自动联动（整理成功才生成），不再单独配置
+  xrows.push({ k: '触发 STRM', v: it.qms_on ? 'QMS 整理成功后自动生成' : '不生成', on: false })
   return { base: it.path, raw, origin, xrows }
 })
 
@@ -145,7 +143,8 @@ function onOk() {
     size: '—',
     share_url: props.shareUrl,
     share_code: props.shareCode,
-    /* 带壳转存：分享根文件夹整体转过来（记录页显示的就是它）；填了更名就改根文件夹名 */
+    /* 建壳转存：在保存位置下按资源名（或更名值）新建文件夹，分享内容剥壳转入——
+       记录页显示的名字和盘里的文件夹名天然一致 */
     rename: raw,
     with_shell: true,
     // 转存配置条目属于哪个账号就用哪个转（account 是账号 id 字符串）；
@@ -189,14 +188,14 @@ function onOk() {
           />
         </div>
 
-        <!-- 文件夹更名：label 和输入框同一行，留空 = 沿用分享目录名 -->
+        <!-- 新文件夹名：label 和输入框同一行，留空 = 用资源名 -->
         <div class="dd-field dd-inline">
           <label class="dd-label" style="margin-bottom: 0">文件夹更名</label>
           <a-input
             ref="renameRef"
             v-model:value="rename"
             :maxlength="80"
-            placeholder="留空则沿用分享自带的目录名"
+            placeholder="留空则用资源名新建文件夹"
             @press-enter="onOk"
           />
         </div>
@@ -212,10 +211,10 @@ function onOk() {
                 <span class="qs-pv-new">{{ pv.raw || pv.origin }}</span>
               </div>
               <div v-if="pv.raw" class="qs-pv-note">
-                顶层目录由 <span class="qs-pv-old">{{ pv.origin }}</span> 改名为 <b>{{ pv.raw }}</b>
+                新建文件夹 <b>{{ pv.raw }}</b> 承接分享内容（剥壳转入）
               </div>
               <div v-else class="qs-pv-note">
-                保持分享自带的目录名不变 · 在上面填「文件夹更名」可改掉它
+                以「{{ pv.origin }}」新建文件夹承接分享内容 · 填「文件夹更名」可换成别的名字
               </div>
               <div class="qs-pv-xrows">
                 <div v-for="x in pv.xrows" :key="x.k" class="qs-pv-xrow">
@@ -286,8 +285,6 @@ function onOk() {
   padding: 1px 7px; font-weight: 600;
   box-decoration-break: clone; -webkit-box-decoration-break: clone;
 }
-/* 原目录名划线 + 变淡：一眼看出被替换掉了 */
-.qs-pv-old { color: var(--text3); text-decoration: line-through; text-decoration-color: var(--text4); }
 .qs-pv-note { margin-top: 9px; padding-top: 8px; border-top: 1px dashed var(--split); font-size: 12px; color: var(--text3); line-height: 1.65; }
 .qs-pv-note b { color: var(--text2); font-weight: 500; }
 /* 触发行：明说会联动什么，没配的明说「不联动/不生成」 */
