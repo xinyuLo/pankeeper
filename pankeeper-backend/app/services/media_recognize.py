@@ -109,10 +109,15 @@ def recognize_batch(names: list[str], hint: str = "") -> list[dict]:
             if hit is None and ep:
                 hit = _match(title, year, "tv")
             if hit:
+                date_key = "release_date" if media_type == "movie" else "first_air_date"
+                real_year = int(str(hit.get(date_key) or "")[:4] or 0) or None
                 it.update(
                     tmdb_id=hit.get("id"),
                     media_name=hit.get("title") or hit.get("name"),
                     doubt=bool(hit.get("doubt")),
+                    # 年份以 TMDB 为准：±1 容错命中时输入年份可能是错的（如文件夹写成
+                    # 2025 的飞驰人生2），回填文件夹名必须带真实年份，否则 QMS 照样翻车
+                    year=real_year or year,
                 )
         out.append(it)
     return out
