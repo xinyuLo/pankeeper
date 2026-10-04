@@ -189,6 +189,14 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
             "share_url": t.get("shareUrl", ""), "share_code": t.get("shareCode", ""),
         })
         _push_log(t, "INFO", "联动后端为 LitePan：转存完成消息已推送，后续整理由 LitePan 处理")
+        # LitePan 模式的**独立推送流程**（与 QMS 流程隔离）：PanKeeper 自识别 TMDB 直接推送，
+        # 不等不查 LitePan 的刮削状态——它的状态对外不可见
+        media_push.watch_and_spawn({
+            "drive": t["type"], "task": name_head,
+            "names": [e.get("name") for e in result.transferred],
+            "backend": "litepan",
+            "source": t.get("source", "auto"),
+        })
         return {"st": "未执行", "cls": "t-off"}, {"st": "未执行", "cls": "t-off"}
     link = resolve_media_link(t["path"], t.get("paTaskId"))
     qms_snap = {"st": "未配置", "cls": "t-off"}
