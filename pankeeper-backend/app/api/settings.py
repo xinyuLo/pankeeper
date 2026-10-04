@@ -15,7 +15,7 @@ from ..services.settings_svc import get_group, save_group
 
 router = APIRouter(prefix="/api", tags=["settings"])
 
-GROUPS = ("search", "notify", "qms", "security")
+GROUPS = ("search", "notify", "qms", "media")
 
 
 @router.get("/settings")
@@ -28,6 +28,7 @@ def get_settings(_user=CurrentUser):
         data["qms"]["apikey"] = "****" + data["qms"]["apikey"][-4:]
     if data["qms"].get("tmdb_api_key"):
         data["qms"]["tmdb_api_key"] = "****" + data["qms"]["tmdb_api_key"][-4:]
+    data["media"] = get_group("media")  # 联动后端选择（qms/litepan）
     return data
 
 
@@ -125,6 +126,16 @@ def put_avatar(body: dict, _user=CurrentUser):
 def delete_avatar(_user=CurrentUser):
     """移除头像，前端回落到用户名首字。"""
     save_group("avatar_cfg", {"data": "", "updated": ""})
+    return {"ok": True}
+
+
+@router.put("/settings/media")
+def put_media_backend(body: dict, _user=CurrentUser):
+    """联动后端选择（qms/litepan）：独立顶层配置组，别并进 settings 子组。"""
+    backend = (body or {}).get("backend")
+    if backend not in ("qms", "litepan"):
+        raise HTTPException(status_code=400, detail="未知联动后端")
+    save_group("media", {"backend": backend})
     return {"ok": True}
 
 

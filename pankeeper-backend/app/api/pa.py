@@ -297,6 +297,9 @@ def retrigger_task_qms(task_id: int, _user=CurrentUser):
     from ..services.settings_svc import get_group
     from ..transfer.auto import resolve_media_link
 
+    if get_group("media").get("backend", "qms") != "qms":
+        return {"ok": False, "message": "当前联动后端是 LitePan，没有 QMS 刮削可重刷"}
+
     with SessionLocal() as db:
         t = db.get(PaTask, task_id)
         if t is None:

@@ -270,9 +270,14 @@ export const pkQueue = {
     include_subdirs?: boolean
     acc_id?: number | null
     file_paths?: string[]
-    /* 「带壳转存」（快速转存弹窗）：整壳转过来 + 根文件夹更名 */
+    /* 「建壳转存」（快速转存弹窗）：按资源名/更名值新建文件夹，分享内容剥壳转入 */
     rename?: string
     with_shell?: boolean
+    /* 显式 QMS 联动目标（普通转存弹窗下拉）：空 = 按目标目录前缀匹配转存配置。
+       STRM 不再单独指定——后端与 QMS 自动配对（同一条转存配置的 strm_id） */
+    qms_id?: number | null
+    /* 明确关闭联动（开关关掉）：连目录前缀匹配都不做 */
+    media_off?: boolean
   }): number {
     if (USE_MOCK) {
       const s = stateMock()

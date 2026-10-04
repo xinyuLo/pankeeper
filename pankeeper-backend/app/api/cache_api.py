@@ -20,7 +20,7 @@ def get_cache_config(_user=CurrentUser):
     cfg = get_group("cache_cfg")
     stats = dir_cache.stats()
     # 水位条语义：已用缓存字节 / 设置的缓存大小上限（MB）
-    total_mb = max(1, int(cfg.get("maxSizeMb") or 800))
+    total_mb = max(1, int(cfg.get("maxSizeMb") or 100))
     used_mb = round(stats.get("bytes", 0) / 1024 / 1024, 1)
     pct = min(100, round(used_mb / total_mb * 100))
     mem = {"pct": pct, "usedMb": used_mb, "totalMb": total_mb}
@@ -59,9 +59,12 @@ def list_cache_trees(_user=CurrentUser):
     return entries
 
 
-@router.post("/cache/trees/{key}/refresh")
+@router.post("/cache/trees/{key:path}/refresh")
 def refresh_tree(key: str, _user=CurrentUser):
-    """key 形如 "quark/main/0"（type/account/cid）。"""
+    """key 形如 "quark/main/0"（type/account/cid）。
+
+    ⚠️ 必须用 :path 转换器——key 本身含斜杠，默认 {key} 只匹配单段，
+    "baidu/main/0" 一律 404（行内刷新/清除点了没反应的根因，2026-10-04）。"""
     parts = key.split("/", 2)
     if len(parts) != 3:
         raise HTTPException(status_code=400, detail="key 格式应为 type/account/cid")
@@ -69,7 +72,7 @@ def refresh_tree(key: str, _user=CurrentUser):
     return {"ok": True}
 
 
-@router.delete("/cache/trees/{key}")
+@router.delete("/cache/trees/{key:path}")
 def clear_tree(key: str, _user=CurrentUser):
     return refresh_tree(key, _user)
 
@@ -110,6 +113,21 @@ def _load_dir_payload(type: str, acc_id: int | None, parent: str, path: str):
     """拉取并映射一层目录（/files/list 与全树预热共用）。调用方负责包进 dir_cache.get_or_load。"""
     with SessionLocal() as db:
         adapter = make_adapter_for(db, type, acc_id)
+    if type == "115":
+        # 115 与 quark 同款用 cid 当目录标识：根层按路径解析（根=0），子层 parent 就是 cid
+        cid = adapter.path_to_cid(path) if (path and parent in ("0", "")) else parent
+        rows = adapter._list_own_dir(cid)
+        out = [
+            {
+                "fid": str(r.get("fid") or r.get("cid") or ""),
+                "name": str(r.get("n") or r.get("fn") or ""),
+                "is_dir": not (r.get("sha") or r.get("sha1")),  # 文件条目带哈希字段，目录没有
+                "size": int(r.get("s") or 0),
+            }
+            for r in rows
+        ]
+        _remember_paths("115", parent, path, out)
+        return out
     if type == "quark":
         if parent == "0" and path:
             # 按路径浏览：逐级解析到 fid（懒加载契约：前端只传父层）
@@ -314,8 +332,6 @@ def _acc_key(acc_id: int | None) -> str:
 def _dir_op_guard(type: str, name: str = "") -> None:
     if type not in ("baidu", "quark", "115"):
         raise HTTPException(status_code=400, detail=f"未知网盘 {type}")
-    if type == "115":
-        raise HTTPException(status_code=400, detail="115 的目录管理尚未实现，敬请期待")
     if name and ("/" in name or "\\" in name or name in (".", "..")):
         raise HTTPException(status_code=400, detail="名称不能包含路径分隔符")
 
@@ -360,8 +376,23 @@ def create_dir(body: DirCreateBody, _user=CurrentUser):
             db.commit()
     elif body.type == "baidu":
         fid = adapter.create_dir(parent_path, body.name)
+    elif body.type == "115":
+        pfid = body.parent_fid or adapter.path_to_cid(parent_path)
+        fid = adapter.create_dir(pfid, body.name)
+        # 映射表：新目录 cid → 父路径/新名（同 quark）
+        with SessionLocal() as db:
+            db.add(
+                DirPathCache(
+                    account_type="115",
+                    dir_id=fid,
+                    dir_path=(parent_path.rstrip("/") or "") + "/" + body.name,
+                    parent_id=pfid,
+                    last_seen_at=int(time.time()),
+                )
+            )
+            db.commit()
     else:
-        raise HTTPException(status_code=400, detail="115 的目录管理尚未实现，敬请期待")
+        raise HTTPException(status_code=400, detail=f"网盘 {body.type} 的建目录尚未实现")
     full = (parent_path.rstrip("/") or "") + "/" + body.name
     dir_cache.update(
         (body.type, acc_key, body.cache_key),
@@ -394,12 +425,30 @@ def rename_dir(body: DirRenameBody, _user=CurrentUser):
                 )
             )
             db.commit()
+    elif body.type == "115":
+        fid = body.fid or adapter.path_to_cid(body.path)
+        adapter.rename_dir(fid, body.new_name)
+        _purge_path_cache("115", fid, body.path)
+        # 改名后的新映射行（同 quark）
+        new_full = body.path.rstrip("/").rsplit("/", 1)[0]
+        new_full = (new_full + "/" + body.new_name) if new_full else "/" + body.new_name
+        with SessionLocal() as db:
+            db.add(
+                DirPathCache(
+                    account_type="115",
+                    dir_id=fid,
+                    dir_path=new_full,
+                    parent_id="",
+                    last_seen_at=int(time.time()),
+                )
+            )
+            db.commit()
     elif body.type == "baidu":
         full = adapter.rename_dir(body.path, body.new_name)
     else:
-        raise HTTPException(status_code=400, detail="115 的目录管理尚未实现，敬请期待")
+        raise HTTPException(status_code=400, detail=f"网盘 {body.type} 的重命名尚未实现")
     old_fid = body.fid or (body.path if body.type == "baidu" else "")
-    new_fid = full if body.type == "baidu" else (body.fid or _resolve_path(adapter, body.path))
+    new_fid = full if body.type == "baidu" else (body.fid or new_full)
     dir_cache.update(
         (body.type, acc_key, body.cache_key),
         lambda items: [it for it in (items or []) if it.get("fid") != old_fid]
@@ -418,11 +467,15 @@ def delete_dir(body: DirDeleteBody, _user=CurrentUser):
         fid = body.fid or _resolve_path(adapter, body.path)
         adapter.delete_dir(fid)
         _purge_path_cache("quark", fid, body.path)
+    elif body.type == "115":
+        fid = body.fid or adapter.path_to_cid(body.path)
+        adapter.delete_dir(fid)
+        _purge_path_cache("115", fid, body.path)
     elif body.type == "baidu":
         adapter.delete_dir(body.path)
         fid = body.path
     else:
-        raise HTTPException(status_code=400, detail="115 的目录管理尚未实现，敬请期待")
+        raise HTTPException(status_code=400, detail=f"网盘 {body.type} 的删除尚未实现")
     dir_cache.update(
         (body.type, acc_key, body.cache_key),
         lambda items: [it for it in (items or []) if it.get("fid") != fid],

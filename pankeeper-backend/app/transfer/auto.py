@@ -111,7 +111,8 @@ def run_auto(eng, t: dict, cfg: dict) -> None:
     try:
         _push_log(t, "INFO", f"解析分享链接：{t['shareUrl'][:60]}")
         files = adapter.list_share(spec)
-        t["files"] = len(files)
+        # 项数只数文件（目录条目不计）——「完成 N/M」分母口径，壳目录也算会把 1 个文件算成 1/2
+        t["files"] = sum(1 for f in files if not f.is_dir)
         # 分享清单缓存（独立于目录缓存）：转存每跑一次就刷新一次，查看/排除弹窗在两次运行之间命中缓存
         try:
             share_list_cache.put(share_key(t["type"], t["shareUrl"], t["shareCode"]), build_payload(files))
@@ -141,7 +142,7 @@ def run_auto(eng, t: dict, cfg: dict) -> None:
             t["_runStats"]["excluded_names"] = excluded_names
             _push_log(t, "INFO", f"排除清单：跳过 {len(excluded_names)} 个文件")
 
-        total_size = sum(f.size for f in files)
+        total_size = sum(f.size for f in files if not f.is_dir)  # 目录行自带整目录合计，计入会双重计算
         _push_log(t, "INFO", f"获取分享内文件清单，共 {len(files)} 项（{total_size / 1024**3:.1f} GB）")
         _push_log(t, "STEP", f"开始转存：{name_head} …")
 
@@ -178,6 +179,17 @@ def run_auto(eng, t: dict, cfg: dict) -> None:
 
 def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict, dict]:
     """触发 QMS / STRM。链接来源：转存配置里 qms_on 的目录（按目标路径前缀匹配）。"""
+    from ..services.settings_svc import get_group
+    if get_group("media").get("backend", "qms") != "qms":
+        # 联动后端切到 LitePan：推送转存完成消息即收工
+        from ..services import litepan
+        litepan.notify_transfer_done({
+            "drive": t["type"], "task": name_head, "path": t["path"],
+            "files": [{"name": e.get("name")} for e in result.transferred],
+            "share_url": t.get("shareUrl", ""), "share_code": t.get("shareCode", ""),
+        })
+        _push_log(t, "INFO", "联动后端为 LitePan：转存完成消息已推送，后续整理由 LitePan 处理")
+        return {"st": "未执行", "cls": "t-off"}, {"st": "未执行", "cls": "t-off"}
     link = resolve_media_link(t["path"], t.get("paTaskId"))
     qms_snap = {"st": "未配置", "cls": "t-off"}
     strm_snap = {"st": "未配置", "cls": "t-off"}
@@ -272,6 +284,10 @@ def resolve_media_link(path: str, task_id: int | None = None) -> dict | None:
     if not rq:
         return None
     rs = strm_id if strm_id is not None else ds
+    if rs is None:
+        # STRM 跟随 QMS 自动配对（2026-10-04 定稿：转存配置里不再单独选 STRM）
+        from .qms import strm_id_for_qms
+        rs = strm_id_for_qms(rq)
     return {"qms_id": rq, "strm_id": rs}
 
 
@@ -439,12 +455,7 @@ def _sync_pa_task(t: dict, status: str, result, qms_snap: dict | None = None, st
         if link and link.get("strm_id"):
             delay = int(get_group("queue_cfg").get("strm", 10))
             strm_plan = {"strm_id": int(link["strm_id"]), "delay": delay}
-            run_watch.trigger_strm_after_scrape(
-                run_id_new,
-                int(link["qms_id"]),
-                int(link["strm_id"]),
-                delay,
-            )
+            run_watch.trigger_strm_after_scrape(run_id_new, int(link["qms_id"]), int(link["strm_id"]), delay)
         # ③ 推送：ctx 带 run_id + STRM 计划，推送线程会等 STRM 触发结果再发，
         #    信息条才能如实显示「STRM 已生成」（之前 strm_ok 恒 None，永远不显示）
         media_push.watch_and_spawn({

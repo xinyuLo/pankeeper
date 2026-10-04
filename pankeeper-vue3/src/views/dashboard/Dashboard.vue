@@ -284,8 +284,12 @@ const heroSummary = computed(() => {
 })
 
 /* ---------- 容量显示助手 ---------- */
-function gb(bytes: number): string {
-  return (bytes / 1024 ** 3).toFixed(0)
+function gb(bytes: number, unit: 'GB' | 'TB' = 'GB'): string {
+  // 容量 ≥1024G 换算成 TB（两位小数）
+  return unit === 'TB' ? (bytes / 1024 ** 4).toFixed(2) : (bytes / 1024 ** 3).toFixed(0)
+}
+function capUnit(cap: { total: number; used: number } | null): 'GB' | 'TB' {
+  return cap && cap.total >= 1024 * 1024 ** 3 ? 'TB' : 'GB'
 }
 function usedPct(cap: { total: number; used: number } | null): number {
   if (!cap || !cap.total) return 0
@@ -400,7 +404,7 @@ onMounted(async () => {
             <!-- 容量 + 会员：复用「网盘连接」页缓存下来的摘要，有数据才显示 -->
             <div v-if="p.cap || p.vip" class="db-pan-meta">
               <span v-if="p.vip" class="db-vip">{{ p.vip.name }}<i v-if="p.vip.expires"> · {{ p.vip.expires }}</i></span>
-              <span v-if="p.cap" class="db-cap-txt">{{ gb(p.cap.used) }} / {{ gb(p.cap.total) }} GB</span>
+              <span v-if="p.cap" class="db-cap-txt">{{ gb(p.cap.used, capUnit(p.cap)) }} / {{ gb(p.cap.total, capUnit(p.cap)) }} {{ capUnit(p.cap) }}</span>
             </div>
             <!-- 无数据：空占位行（只保行高，无任何视觉元素） -->
             <div v-else class="db-pan-meta db-pan-meta-ph"></div>

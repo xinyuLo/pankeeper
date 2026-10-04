@@ -1,17 +1,23 @@
-# PanKeeper 工作交接（2026-10-03 晚重写）
+# PanKeeper 工作交接（2026-10-04 晚更新）
 
-> 交接范围：本地开发（Windows，`D:\workspace\fnWork\pankeeper-merge`）+ NAS 部署（192.168.2.77 / 外网 100.66.1.1）。  
+> 交接范围：本地开发（Windows，`D:\zcodeWork\pankeeper\pankeeper`）+ NAS 部署（192.168.2.77 / 外网 100.66.1.1）。  
 > 本文档上一版为 2026-10-03 凌晨版（f4818f4），本次全天内容重写，历史版本在 git 里。
 
 ## 0. 一句话状态
 
-10-03 深夜~10-04 凌晨大批次已收口（工作日志见 `工作日志/2026-10-04-*.md`）：自动转存六连修（立即执行真执行/结果落库/染色/拆列）；**QMS 真实结果回填全链**（`run_watch`，"触发成功"改口"已触发"+回填，整单结果 `overall_of`，部分失败语义）；「重新触发 QMS」按钮（门禁+清失败记录+重刮+STRM 等刮完+回填）；联动目标解析（任务级优先+目录总闸）；搜索转存**带壳转存+文件夹更名**；vite 代理 keep-alive 修复（前端间歇 500 真凶）；`start-dev.bat`/`stop-dev.bat`。⚠️ 常驻自愈复查已按用户要求**删除**，别加回来。**NAS 部署待更新**（本批推送后按 §1 姿势重建容器）。
+10-04 全天大批次已收口（工作日志见 `工作日志/2026-10-04-PanKeeper-建壳重构-115适配-联动后端切换.md`）：
+**建壳转存重构**（按资源名/更名值新建文件夹+剥壳转入，删除事后改名链）；**115 适配器补全**
+（建壳/整目录接收/batch_rename 三字段改名/目录管理/summary，Cookie 路线全实测）；**STRM 跟随
+QMS 自动配对**（刮削 dest_path ↔ 同步 remote_path，转存配置不再选 STRM）+ **定向同步**（manual
+临时任务只扫整理出的一个目录）；**推送死代码修复**（media_push._watch 尾巴永不执行，推送全丢）；**
+联动后端切换预留**（media.backend qms/litepan，UI 已隐藏默认 qms）。⚠️ 115 风控 302 案：限速已放宽
+到 2s+302 识别，账号封禁等自愈。⚠️ NAS 部署待更新（本批推送后按 §1 姿势重建容器）。
 
 ## 1. 环境与部署拓扑（本次实测更新）
 
 | 项 | 值 |
 | --- | --- |
-| 本地仓库 | `D:\workspace\fnWork\pankeeper-merge`（remote = `git@100.66.1.1:xinyu/pankeeper.git`，SSH 5566 已配 ~/.ssh/config） |
+| 本地仓库 | `D:\zcodeWork\pankeeper\pankeeper`（remote = `http://192.168.2.77:8029/xinyu/pankeeper.git`） |
 | 本地服务 | 后端 `pankeeper-backend/.venv/Scripts/python.exe run.py --port 8000`；前端 `pankeeper-vue3` `npm run dev` :5173；日志 `*-dev.log`（已 gitignore） |
 | 本地登录 | `xinyu / LxY252235!`（admin/admin#123 已失效）；NAS 部署站同此账号 |
 | Gitea | 内网 `http://192.168.2.77:8029` / 外网 `http://100.66.1.1:8029`（外网 Gitea 只剩合并仓库 pankeeper，独立仓库已删） |
@@ -20,7 +26,7 @@
 | **权威 compose** | **fnOS 的 `/vol1/1001/compose/pankeeper/docker-compose.yml`**（build 上下文指向 pankeeper-deploy，镜像 `pankeeper-backend-pankeeper`，容器 `pankeeper`，8031→8000） |
 | **数据真身** | bind mount `/vol1/1001/tools/pankeeper/data -> /app/data`（SQLite+密钥）。09-30 文档说的 named volume `pankeeper-data` 是空壳——**别在 pankeeper-deploy/pankeeper-backend 下 compose up（会撞容器名+挂空卷）** |
 | **更新部署姿势** | pankeeper-deploy 里 `git pull` → **在 `/vol1/1001/compose/pankeeper` 下** `docker compose up -d`（重建容器挂新镜像，数据 bind 不动） |
-| 限速门 | 百度 1.0s / 夸克 0.8s / 115 1.0s（每账号一闸，串行+退避+连败熔断） |
+| 限速门 | 百度 1.0s / 夸克 0.8s / **115 2.0s**（每账号一闸，串行+退避+连败熔断；115 有 302 风控识别） |
 
 ## 2. 本次完成（2026-10-03 全天）
 
@@ -108,4 +114,8 @@
 - 115 adapter 目录浏览/管理补齐（接口口子已留，后端统一 400 提示）。
 - 下钻勾选（drill_json）功能实现（字段保留、短期不实现的约定 2026-10-03 定）。
 - 分享清单预热与转存配置联动细化、Server酱推送时机完善。
-- 观察几天 1s 百度限速的风控表现，必要时回 2s。
+- **LitePan 对接**（联动后端已预留）：设置组 `media.backend` 切 litepan 后转存完成只推消息；
+  WS 协议定稿后在 `services/litepan.py::notify_transfer_done` 补实现，设置页下拉模板恢复见
+  Settings.vue 注释标记（UI 当前隐藏、恒 qms）。
+- 115：观察 2s 限速下的风控表现；容量接口 get_storage_info 仅 web Cookie 版可用。
+- 观察几天百度限速的风控表现。

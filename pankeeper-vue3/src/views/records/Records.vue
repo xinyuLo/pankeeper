@@ -4,8 +4,10 @@
  * （内存过滤 + 切片）；记录是快照，抽屉展示转存当时的配置与结果。 */
 import { computed, onMounted, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
+import { CopyOutlined, FolderOpenOutlined } from '@ant-design/icons-vue'
 import PkPager from '@/components/PkPager.vue'
 import LogBox from '@/components/LogBox.vue'
+import ShareFilesModal from '@/views/auto/ShareFilesModal.vue'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { DD_MEDIA, DRIVE_META, MAIN_ORDER } from '@/api/mock/meta'
 import { recordsStore } from '@/api/mock/records'
@@ -15,6 +17,7 @@ import {
   clearRecords3MonthsAgo,
   deleteRecord,
   getRecordLog,
+  getRecordShareFiles,
   listRecords,
   retrigQms,
   retryFailedItems,
@@ -81,6 +84,32 @@ watch(
 
 function metaOf(r: RecordRow) {
   return DRIVE_META[r.t]
+}
+
+/* ===== 行内「查看文件 / 复制链接」（对齐自动转存行操作） ===== */
+const sfOpen = ref(false)
+const sfRec = ref<RecordRow | null>(null)
+function onViewFiles(r: RecordRow) {
+  sfRec.value = r
+  sfOpen.value = true
+}
+async function onCopy(r: RecordRow) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(r.share_url)
+    } else {
+      // 非安全上下文（http 部署）兜底：临时 textarea + execCommand
+      const ta = document.createElement('textarea')
+      ta.value = r.share_url
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    message.success('已复制分享链接')
+  } catch {
+    message.error('复制失败')
+  }
 }
 
 /* ===== 清空三月前记录 ===== */
@@ -253,7 +282,7 @@ async function confirmTrig() {
               <!-- 列宽配比：名称/结果双主力列，长报错在结果列内截断（title 看全文），
                    右侧 QMS/STRM/时间/操作收窄，别让宽屏下中间断崖、右边全空 -->
               <th style="width: 28%">资源名称</th>
-              <th style="width: 64px">来源</th>
+              <th style="width: 118px">来源</th>
               <th style="width: 200px">目标位置</th>
               <th style="width: 30%">结果</th>
               <th style="width: 96px">QMS 整理</th>
@@ -270,7 +299,15 @@ async function confirmTrig() {
                   <span class="resname" :title="r.n">{{ r.n }}</span>
                 </div>
               </td>
-              <td><span class="tag" :class="metaOf(r).tag">{{ metaOf(r).name }}</span></td>
+              <td>
+                <span class="rk-srccell">
+                  <span class="tag" :class="metaOf(r).tag">{{ metaOf(r).name }}</span>
+                  <template v-if="r.share_url">
+                    <a-tooltip title="查看文件"><button class="pa-ico pa-ico-view" @click.stop="onViewFiles(r)"><FolderOpenOutlined /></button></a-tooltip>
+                    <a-tooltip title="复制链接"><button class="pa-ico pa-ico-copy" @click.stop="onCopy(r)"><CopyOutlined /></button></a-tooltip>
+                  </template>
+                </span>
+              </td>
               <td class="small muted rk-path" :title="r.p">{{ r.p }}</td>
               <td><span class="tag rk-tagclip" :class="r.cls" :title="r.st">{{ r.st }}</span></td>
               <td><span class="tag rk-tagclip" :class="r.qms.cls" :title="r.qms.st">{{ r.qms.st }}</span></td>
@@ -311,6 +348,10 @@ async function confirmTrig() {
             </div>
             <div class="rk-card-meta">
               <span class="tag" :class="metaOf(r).tag">{{ metaOf(r).name }}</span>
+              <template v-if="r.share_url">
+                <a-tooltip title="查看文件"><button class="pa-ico pa-ico-view" @click.stop="onViewFiles(r)"><FolderOpenOutlined /></button></a-tooltip>
+                <a-tooltip title="复制链接"><button class="pa-ico pa-ico-copy" @click.stop="onCopy(r)"><CopyOutlined /></button></a-tooltip>
+              </template>
               <span class="small muted rk-card-path">{{ r.p }}</span>
             </div>
             <div class="rk-card-foot">
@@ -385,6 +426,14 @@ async function confirmTrig() {
         <div v-if="!cur?.files?.length" class="pq-empty">这条记录没有文件清单快照</div>
       </div>
     </a-modal>
+
+    <!-- 分享内容文件树弹窗：与自动转存「查看」同款（fetcher 走记录的分享链接） -->
+    <ShareFilesModal
+      v-model:open="sfOpen"
+      :task-id="null"
+      :task-name="sfRec?.n || ''"
+      :fetcher="(refresh: boolean) => getRecordShareFiles(sfRec!.id, refresh)"
+    />
 
     <!-- 手动触发弹窗：QMS / STRM 都可空，选哪个触发哪个；都选时隔 10 秒触发第二个 -->
     <a-modal v-model:open="trigOpen" title="手动触发" :width="480" ok-text="立即触发" cancel-text="取消" @ok="confirmTrig">
@@ -468,6 +517,40 @@ async function confirmTrig() {
 .rk-detail {
   padding: 0;
 }
+
+/* 来源格：网盘 tag + 「查看文件/复制链接」图标钮（同自动转存 .pa-ico 的五色钮语义：
+   查看=蓝 / 复制=紫；本页只这两个，样式就近自带一份——scoped 不跨页） */
+.rk-srccell {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.pa-ico {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text2);
+  transition: background 0.15s, color 0.15s;
+  font-family: inherit;
+}
+.pa-ico:hover { background: var(--surface-3); }
+.pa-ico.pa-ico-view { color: #1677ff; }
+.pa-ico.pa-ico-view:hover { background: #f0f8ff; }
+.pa-ico.pa-ico-copy { color: #722ed1; }
+.pa-ico.pa-ico-copy:hover { background: #f9f0ff; }
+html[data-theme='dark'] .pa-ico.pa-ico-view { color: #69b1ff; }
+html[data-theme='dark'] .pa-ico.pa-ico-view:hover { background: #111a2c; }
+html[data-theme='dark'] .pa-ico.pa-ico-copy { color: #b37feb; }
+html[data-theme='dark'] .pa-ico.pa-ico-copy:hover { background: #1a1425; }
 /* 详情丨删除 之间的竖线分隔 */
 .rk-opdiv {
   color: var(--text4);

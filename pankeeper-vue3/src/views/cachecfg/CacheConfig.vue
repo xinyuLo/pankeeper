@@ -8,6 +8,7 @@
  * ===================================================================== */
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
+import { LoadingOutlined } from '@ant-design/icons-vue'
 import { DRIVE_META } from '@/api/mock/meta'
 import {
   clearAllCacheTrees,
@@ -182,11 +183,27 @@ async function reload() {
   trees.value = await listCacheTrees()
 }
 
-/* 刷新一个账号 = 该账号全部缓存键失效，下次浏览直连重拉 */
+/* 刷新一个账号 = 该账号全部缓存键失效，下次浏览直连重拉。
+ * 状态 tag 给三态反馈：刷新中（转圈）→ 刚刷完带条数闪 4 秒 → 回常规状态。 */
+const refreshing = reactive<Record<string, boolean>>({})
+const flash = reactive<Record<string, string>>({})
+const flashTimers: Record<string, number> = {}
 async function onRefreshRow(row: AccRow) {
-  for (const id of row.ids) await refreshCacheTree(id)
-  message.success(`已刷新「${row.accName}」的缓存`)
-  await reload()
+  if (refreshing[row.key]) return
+  refreshing[row.key] = true
+  window.clearTimeout(flashTimers[row.key])
+  delete flash[row.key]
+  try {
+    for (const id of row.ids) await refreshCacheTree(id)
+    await reload()
+    const done = accRows.value.find((r) => r.key === row.key)
+    flash[row.key] = `已刷新 · ${done?.entries ?? 0} 条`
+    window.clearTimeout(flashTimers[row.key])
+    flashTimers[row.key] = window.setTimeout(() => delete flash[row.key], 4000)
+    message.success(`已刷新「${row.accName}」的缓存`)
+  } finally {
+    refreshing[row.key] = false
+  }
 }
 async function onClearRow(row: AccRow) {
   for (const id of row.ids) await clearCacheTree(id)
@@ -319,8 +336,12 @@ async function onClearAll() {
               </td>
               <td class="cc-td cc-num">{{ row.entries }}</td>
               <td class="cc-td cc-num">{{ row.sizeKb }} KB</td>
-              <td class="cc-td cc-ttl" :class="row.stale ? 'stale' : 'fresh'">
-                {{ row.stale ? `${row.stale} 条已过期` : '全部有效' }}
+              <td class="cc-td">
+                <span v-if="refreshing[row.key]" class="tag t-off cc-status"><LoadingOutlined spin class="cc-spin" /> 刷新中…</span>
+                <span v-else-if="flash[row.key]" class="tag t-ok cc-status">{{ flash[row.key] }}</span>
+                <span v-else class="tag cc-status" :class="row.stale ? 't-warn' : 't-ok'">
+                  {{ row.stale ? `${row.stale} 条已过期` : '全部有效' }}
+                </span>
               </td>
               <td class="cc-td">
                 <span class="cc-ops">
@@ -411,8 +432,8 @@ async function onClearAll() {
   padding: 2px 22px 0;
 }
 .cc-membar {
-  flex: 0 0 40%;
-  max-width: 40%;
+  flex: 0 0 200px;
+  max-width: 200px;
   margin: 0;
 }
 .cc-membar.ok i {
@@ -495,6 +516,9 @@ async function onClearAll() {
 .cc-ttl {
   font-size: 12px;
 }
+/* 状态 tag：带框文字（全局 .tag + t-ok/t-warn 色系），转圈图标跟文字对齐 */
+.cc-status { display: inline-flex; align-items: center; gap: 5px; }
+.cc-spin { font-size: 11px; }
 /* 目录树缓存行：主开关 + 持久化小开关并排 */
 .cc-mastrow {
   display: flex;
@@ -537,15 +561,6 @@ html[data-theme='dark'] .cc-count.warn {
 }
 html[data-theme='dark'] .cc-count.expired {
   color: #ff7875;
-}
-.cc-ttl.fresh {
-  color: #389e0d;
-}
-.cc-ttl.stale {
-  color: var(--error);
-}
-html[data-theme='dark'] .cc-ttl.fresh {
-  color: #73d13d;
 }
 .cc-ops {
   display: flex;

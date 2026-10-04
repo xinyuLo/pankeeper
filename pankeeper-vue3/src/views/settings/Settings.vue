@@ -16,6 +16,7 @@ import {
   getQmsHealth,
   getSettings,
   saveNotify,
+  saveMediaBackend,
   saveQms,
   saveSearchSrc,
   saveSecurity,
@@ -32,7 +33,7 @@ const auth = useAuthStore()
 const TABS = [
   { k: 'tb1', label: '搜索源' },
   { k: 'tb2', label: '推送通知' },
-  { k: 'tb3', label: 'QMS 联动' },
+  { k: 'tb3', label: '联动后端' },
   { k: 'tb4', label: '账号安全' },
   { k: 'tb5', label: '头像管理' },
 ] as const
@@ -66,6 +67,7 @@ onMounted(async () => {
   Object.assign(notify, d.notify)
   Object.assign(qms, d.qms)
   Object.assign(security, d.security)
+  mediaBackend.value = d.media?.backend || 'qms'
   // QMS 引擎状态胶囊（语义同搜索页的 PanSou 在线/离线）
   getQmsHealth().then((h) => (qmsHealth.value = h)).catch(() => (qmsHealth.value = { ok: false, message: '检测失败' }))
   // watch 回调不是同步执行的（flush: 'pre' 排队等当前同步代码跑完），
@@ -171,6 +173,17 @@ const ONOFF_OPTS = [
   { value: 'off', label: '关闭' },
 ]
 /** QMS 引擎状态（进页拉一次；点「测试」成功/失败后同步） */
+/* ===== 联动后端选择（qms/litepan）：litepan 为预留模式，仅推送转存完成消息 ===== */
+const mediaBackend = ref<'qms' | 'litepan'>('qms')
+const MEDIA_OPTS = [
+  { value: 'qms', label: 'QMS 全流程（刮削 / STRM，由 PanKeeper 跟踪结果）' },
+  { value: 'litepan', label: 'LitePan（转存完推送消息，后续整理由 LitePan 自理）' },
+]
+function onMediaBackend(v: 'qms' | 'litepan') {
+  saveMediaBackend(v)
+  message.info(v === 'qms' ? '已切换到 QMS 全流程联动' : '已切换到 LitePan 模式：转存完成后仅推送消息，QMS/STRM 流程停用')
+}
+
 const qmsHealth = ref<{ ok: boolean; message?: string } | null>(null)
 async function onQmsEnabled(v: unknown) {
   // 开关有门槛：地址没填不让开；填了也要先实测连通，不通照样拒绝（显示值自动弹回）
@@ -395,6 +408,8 @@ async function onRemoveAvatar() {
 
       <!-- ===== tab3 QMS 联动（仅连接参数；目录关联在别处配） ===== -->
       <div v-show="tab === 'tb3'">
+        <!-- 联动后端切换（mediaBackend/onMediaBackend）暂隐藏：LitePan 对接遥遥无期，
+             默认恒为 qms。对接时恢复这段模板即可，脚本逻辑都在。 -->
         <div class="st-mig">
           目录关联已迁到<b>「转存配置」</b>（每条目录配）与<b>自动转存任务弹窗</b>（每个任务配）两处，
           这里只保留 QMS 连接参数。

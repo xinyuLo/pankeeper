@@ -6,6 +6,13 @@ import { del, get, mockDelay, post, USE_MOCK } from '../http'
 import { recordLogOf, recordsStore } from '../mock/records'
 import type { RecordRow } from '../mock/records'
 import type { QueueLogLine } from '@/types/model'
+import type { ShareFilesMeta } from './tasks'
+
+/** 记录行「查看文件」：按记录存的分享链接拉文件树（同走分享清单缓存，转存后自动刷新） */
+export function getRecordShareFiles(recordId: number, refresh = false): Promise<ShareFilesMeta> {
+  if (USE_MOCK) return Promise.resolve({ total: 0, tree: [], files: [], cached_at: 0, fresh: false })
+  return get<ShareFilesMeta>(`/records/${recordId}/share-files`, { params: { refresh } })
+}
 
 export function listRecords(): Promise<RecordRow[]> {
   if (USE_MOCK) return mockDelay(recordsStore.items)

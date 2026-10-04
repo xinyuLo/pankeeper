@@ -1,10 +1,13 @@
 <script setup lang="ts">
 /* 「查看」弹窗：分享内文件树。走后端分享清单缓存（转存跑完自动刷新），
- * 「刷新」按钮忽略缓存直连重拉；mock 模式用演示树（SHARE_TREE）。 */
+ * 「刷新」按钮忽略缓存直连重拉；mock 模式用演示树（SHARE_TREE）。
+ * 数据源二选一：taskId（自动转存任务，走 /pa/tasks/{id}/share-files）
+ * 或 fetcher（记录页等无任务 id 的场景，由调用方注入取数函数）。 */
 import { ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { LoadingOutlined, FolderOutlined, FileOutlined } from '@ant-design/icons-vue'
 import { getShareFiles } from '@/api/modules/tasks'
+import type { ShareFilesMeta } from '@/api/modules/tasks'
 import { USE_MOCK } from '@/api/http'
 import { SHARE_TREE } from '@/api/mock/tree'
 
@@ -15,7 +18,7 @@ interface TreeNode {
   kids: TreeNode[]
 }
 
-const props = defineProps<{ open: boolean; taskId: number | null; taskName: string }>()
+const props = defineProps<{ open: boolean; taskId: number | null; taskName: string; fetcher?: (refresh: boolean) => Promise<ShareFilesMeta> }>()
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>()
 
 const loading = ref(false)
@@ -47,12 +50,18 @@ function toggleOpen(key: string) {
 }
 
 async function load(refresh = false) {
-  if (!props.taskId) return
+  if (!props.taskId && !props.fetcher) return
   refresh ? (refreshing.value = true) : (loading.value = true)
   error.value = ''
   openSet.value = new Set()
   try {
-    const res = await getShareFiles(props.taskId, refresh)
+    const res = props.fetcher ? await props.fetcher(refresh) : await getShareFiles(props.taskId!, refresh)
+    if (!res.total && !res.tree.length) {
+      // 空清单 = 死链典型形态（页面正常但没文件）；兜底历史缓存里的空数据
+      error.value = '分享内容为空（0 个文件），链接可能已失效'
+      tree.value = []
+      return
+    }
     tree.value = res.tree
     total.value = res.total
     cachedAt.value = res.cached_at * 1000

@@ -52,9 +52,23 @@ def watch_and_spawn(ctx: dict) -> None:
 
 
 def _watch(ctx: dict) -> None:
-    records = _wait_records(ctx)
-    strm_res = _wait_strm(ctx)  # 自动转存：等后台线程触发完 STRM，信息条才能如实显示
-    header = _header(ctx, records, strm_res)
+    try:
+        records = _wait_records(ctx)
+        strm_res = _wait_strm(ctx)  # 自动转存：等后台线程触发完 STRM，信息条才能如实显示
+        header = _header(ctx, records, strm_res)
+        renamed = [r for r in records if r.get("status") == "renamed" and r.get("tmdb_id")]
+        if renamed:
+            body, title = _build(renamed)
+            if body:
+                notify.push(title, f"{header}\n\n{body}", kind=f"{ctx.get('source', 'search')}_done", short="简介")
+                return
+        _fallback(ctx, records, strm_res)
+    except Exception:
+        # 守护线程死了要留痕——2026-10-04 实锤：推送尾巴曾被错位成死代码，整个链路
+        # 无声无息不推送也不报错，靠 push_logs 缺行才定位到
+        import traceback
+
+        print("[push] 推送线程异常：\n" + traceback.format_exc(), flush=True)
 
 
 def _wait_strm(ctx: dict) -> dict | None:
@@ -77,13 +91,6 @@ def _wait_strm(ctx: dict) -> dict | None:
             return r
         time.sleep(3)
     return None
-    renamed = [r for r in records if r.get("status") == "renamed" and r.get("tmdb_id")]
-    if renamed:
-        body, title = _build(renamed)
-        if body:
-            notify.push(title, f"{header}\n\n{body}", kind=f"{ctx.get('source', 'search')}_done", short="简介")
-            return
-    _fallback(ctx, records, strm_res)
 
 
 def _wait_records(ctx: dict) -> list[dict]:

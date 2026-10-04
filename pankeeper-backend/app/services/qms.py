@@ -181,6 +181,127 @@ def trigger_strm(strm_id: int) -> tuple[bool, str]:
         client.close()
 
 
+def get_sync_path(strm_id: int) -> dict | None:
+    """GET /api/sync/path/{id} —— STRM 同步路径详情。
+
+    定向同步（/api/sync/manual）要用它的 remote_path/local_path/account_id：
+    local_path 是 STRM 落盘的根目录（云盘完整路径原样拼在后面），account_id 是
+    QMS 侧的账号。失败/未启用返回 None。"""
+    c = _client()
+    if c is None:
+        return None
+    client, _ = c
+    try:
+        resp = client.get(f"/api/sync/path/{strm_id}")
+        data = resp.json()
+        if resp.status_code == 200 and data.get("code") in (0, 200):
+            d = data.get("data")
+            return d if isinstance(d, dict) else None
+        return None
+    except (httpx.HTTPError, ValueError):
+        return None
+    finally:
+        client.close()
+
+
+def manual_sync(path_id: str, path: str, target_path: str, account_id: int, is_file: bool = False) -> tuple[bool, str]:
+    """POST /api/sync/manual —— **定向同步**：QMS 建一个临时任务只扫指定云盘目录。
+
+    QMS 源码（sync.go ManualSync）：ID=0 的临时任务（TmpSyncPath），只列这一个
+    目录、生成 strm，落盘位置 = target_path + 云盘完整路径——与常规同步的布局
+    天然一致。临时任务不更新 last_sync_at、不触发 Emby 刷新/关联刮削（后者
+    PanKeeper 自己补）。"""
+    c = _client()
+    if c is None:
+        return False, "QMS 未启用"
+    client, _ = c
+    try:
+        resp = client.post(
+            "/api/sync/manual",
+            json={"path_id": str(path_id), "path": path, "target_path": target_path,
+                  "is_file": is_file, "account_id": int(account_id)},
+        )
+        data = resp.json()
+        if resp.status_code == 200 and data.get("code") in (0, 200):
+            return True, str(data.get("message") or "")
+        return False, str(data.get("message") or f"HTTP {resp.status_code}")
+    except (httpx.HTTPError, ValueError) as e:
+        return False, f"QMS 连接失败：{e}"
+    finally:
+        client.close()
+
+
+def get_emby_config() -> dict | None:
+    """GET /api/setting/emby-config —— QMS 里配的 Emby 地址/ApiKey（借道用）。"""
+    c = _client()
+    if c is None:
+        return None
+    client, _ = c
+    try:
+        resp = client.get("/api/setting/emby-config")
+        data = resp.json()
+        if resp.status_code == 200 and data.get("code") in (0, 200):
+            d = data.get("data")
+            return d if isinstance(d, dict) else None
+        return None
+    except (httpx.HTTPError, ValueError):
+        return None
+    finally:
+        client.close()
+
+
+def refresh_emby_library() -> tuple[bool, str]:
+    """触发 Emby 刷新媒体库（POST {emby_url}/Library/Refresh）。
+
+    借 QMS 里配置的 Emby 地址/ApiKey（PanKeeper 不重复存一份），且尊重 QMS 的
+    「STRM 同步完成后刷新媒体库」开关——定向同步的临时任务跳过了这步，由 PanKeeper 补。"""
+    cfg = get_emby_config()
+    if not cfg:
+        return False, "拿不到 QMS 的 Emby 配置"
+    url = (cfg.get("emby_url") or "").rstrip("/")
+    key = cfg.get("emby_api_key") or ""
+    if not url or not key:
+        return False, "QMS 未配置 Emby 地址/ApiKey"
+    if int(cfg.get("enable_refresh_library") or 0) != 1:
+        return False, "QMS 未开启「同步完成后刷新媒体库」"
+    try:
+        resp = httpx.post(f"{url}/Library/Refresh", params={"api_key": key}, timeout=15)
+        if resp.status_code in (200, 204):
+            return True, ""
+        return False, f"Emby 返回 HTTP {resp.status_code}"
+    except httpx.HTTPError as e:
+        return False, f"Emby 连接失败：{e}"
+
+
+_STRM_PAIR_CACHE: dict[int, tuple[float, int | None]] = {}
+_STRM_PAIR_TTL = 300.0  # 配对结果缓存 5 分钟：QMS 侧路径配置不常变，别每次转存都打接口
+
+
+def strm_id_for_qms(qms_id: int) -> int | None:
+    """QMS 刮削目录 → **自动配对**的 STRM 同步路径 id（2026-10-04 用户定稿：
+    STRM 跟随 QMS，转存配置里不再单独选）。
+
+    配对规则：刮削路径的整理目标根（dest_path，如 /baidu/0.影视/电影）＝某个
+    STRM 同步路径的 remote_path——QMS 整理完的文件落在哪，就同步哪。拿不到返回
+    None（调用方按"没配 STRM"处理）。结果缓存 5 分钟。"""
+    import time as _time
+
+    qid = int(qms_id)
+    hit = _STRM_PAIR_CACHE.get(qid)
+    if hit and _time.time() - hit[0] < _STRM_PAIR_TTL:
+        return hit[1]
+    sp = next((x for x in scrape_pathes() or [] if x.get("id") == qid), None)
+    dest = (sp.get("dest_path") or "").strip().strip("/") if sp else ""
+    sid: int | None = None
+    if dest:
+        for p in sync_pathes() or []:
+            if (p.get("remote_path") or "").strip().strip("/") == dest:
+                sid = p.get("id")
+                break
+    _STRM_PAIR_CACHE[qid] = (_time.time(), sid)
+    return sid
+
+
 def health() -> dict:
     """QMS 引擎状态（设置页胶囊用，语义同 PanSou 的 /search/health）。
 

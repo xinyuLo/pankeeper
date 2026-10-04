@@ -6,6 +6,7 @@
 import { get, mockDelay, USE_MOCK } from '../http'
 import { searchStore, searchStoreChannels, PANSOU_ADDR, type SearchChannel } from '../mock/search'
 import type { SearchResultItem } from '@/types/model'
+import type { ShareFilesMeta } from './tasks'
 
 export type { SearchChannel }
 
@@ -65,4 +66,10 @@ export function getEngineHealthCached(): Promise<{ ok: boolean | null; checked_a
 export function getPanSouAddr(): Promise<string> {
   if (USE_MOCK) return mockDelay(PANSOU_ADDR)
   return get<string>('/search/pansou-addr')
+}
+
+/** 搜索结果行「查看文件」：按链接+提取码拉分享内文件树（同走分享清单缓存，转存后即新） */
+export function getSearchShareFiles(type: string, url: string, code = '', refresh = false): Promise<ShareFilesMeta> {
+  if (USE_MOCK) return Promise.resolve({ total: 0, tree: [], files: [], cached_at: 0, fresh: false })
+  return get<ShareFilesMeta>('/search/share-files', { params: { type, url, code, refresh } })
 }

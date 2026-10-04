@@ -73,6 +73,60 @@ def clear_old(before: str = "", _user=CurrentUser):
     return {"count": n}
 
 
+@router.get("/records/{record_id}/share-files")
+def record_share_files(record_id: int, refresh: bool = False, _user=CurrentUser):
+    """分享链接内文件树（记录行「查看文件」数据源，对齐 /pa/tasks/{id}/share-files）。
+
+    同走 share_list_cache：搜索转存跑完会刷新该 key，两次转存之间命中缓存秒开；
+    ?refresh=1 忽略缓存直连重拉。账号不落库（记录快照没存 acc_id），按网盘类型取
+    第一个账号——多账号同类型时以默认（id 最小）账号的凭据访问分享，分享内容
+    与账号无关，不影响结果。"""
+    from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, TaskSpec
+    from ..deps import make_adapter_for
+    from ..services.share_cache import build_payload, share_key, share_list_cache
+
+    db = SessionLocal()
+    try:
+        r = db.get(Record, record_id)
+        if r is None:
+            raise HTTPException(status_code=404, detail="记录不存在")
+        if not r.share_url:
+            raise HTTPException(status_code=400, detail="该记录没有分享链接")
+        try:
+            adapter = make_adapter_for(db, r.t, None)
+        except HTTPException:
+            db.close()
+            raise
+
+        key = share_key(r.t, r.share_url, r.share_code)
+
+        def _live() -> dict:
+            files = adapter.list_share(TaskSpec(share_url=r.share_url, share_code=r.share_code, include_subdirs=True))
+            if not files:
+                # 死链典型形态：页面正常但清单为空。抛错而不是缓存空结果——
+                # 空清单一旦进缓存，查看文件会一直显示"共 0 个文件"的空壳
+                raise ShareBanned("分享内容为空（0 个文件），链接可能已失效")
+            return build_payload(files)
+
+        try:
+            payload, cached_at, pulled = share_list_cache.get_or_load(key, _live, refresh=refresh)
+        except ShareBanned as e:
+            raise HTTPException(status_code=410, detail=f"分享已失效：{e}")
+        except CredentialExpired as e:
+            raise HTTPException(status_code=401, detail=str(e))
+        except AdapterError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+    finally:
+        db.close()
+    return {
+        "total": len(payload["files"]),
+        "files": payload["files"],
+        "tree": payload["tree"],
+        "cached_at": int(cached_at),
+        "fresh": pulled,
+    }
+
+
 class TriggerBody(BaseModel):
     id: int
 

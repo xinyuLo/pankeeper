@@ -14,8 +14,8 @@ import { ddStore, ddFind } from '@/api/mock/dd'
 import { DD_MEDIA, MAIN_ORDER, DRIVE_META } from '@/api/mock/meta'
 import { accountStore } from '@/api/mock/accounts'
 import { getRootDirs } from '@/api/modules/accounts'
-import { saveDdItem, deleteDdItem, setDefaultDir, listDdItems, listQmsPaths, listStrmPaths } from '@/api/modules/dd'
-import type { DdItem, DdQmsPath, DdStrmPath, MainDriveType } from '@/types/model'
+import { saveDdItem, deleteDdItem, setDefaultDir, listDdItems, listQmsPaths } from '@/api/modules/dd'
+import type { DdItem, DdQmsPath, MainDriveType } from '@/types/model'
 
 /* ===== 列表态 ===== */
 const active = ref<MainDriveType>('baidu')
@@ -73,7 +73,6 @@ const fPath = ref('')
 const fSort = ref(1)
 const fQmsOn = ref(false)
 const fQmsId = ref<number | undefined>(undefined)
-const fStrmId = ref(0) // 0 = 不生成 STRM（select 没法用 null 当选项值，用 0 哨兵）
 
 const typeOptions = MAIN_ORDER.map((k) => ({ value: k, label: DRIVE_META[k].full }))
 /** 所属账号：真实账号列表（网盘连接页配的），不是 mock 的假号 */
@@ -84,22 +83,14 @@ const accOptions = computed(() =>
 )
 /** QMS 刮削目录 / STRM 同步路径：打开弹窗时从 QMS 拉真实列表 */
 const qmsPaths = ref<DdQmsPath[]>([])
-const strmPaths = ref<DdStrmPath[]>([])
 // QMS 刮削目录下拉：#id · 类型 · 路径
 const qmsOptions = computed(() =>
   qmsPaths.value.map((p) => ({ value: p.id, label: `#${p.id} · ${DD_MEDIA[p.media_type as 'tv'] || p.media_type} · ${p.source_path}` })),
 )
-// STRM 下拉：首项「不生成」对应哨兵 0
-const strmOptions = computed(() => [
-  { value: 0, label: '不生成 STRM' },
-  ...strmPaths.value.map((p) => ({ value: p.id, label: `#${p.id} · ${p.remote_path}` })),
-])
-
-
 async function loadQmsStrmPaths() {
-  // QMS 未启用/连不上时静默置空：下拉显示"暂无可选"，不挡住表单其他项
+  // QMS 未启用/连不上时静默置空：下拉显示"暂无可选"，不挡住表单其他项。
+  // STRM 不再在此配置（2026-10-04 定稿：跟随 QMS 自动配对，整理目标根=同步路径）
   qmsPaths.value = await listQmsPaths().catch(() => [])
-  strmPaths.value = await listStrmPaths().catch(() => [])
 }
 
 /* ===== 目录选择弹窗（与网盘连接页/任务弹窗统一）：LazyDirTree 真实目录，只显示文件夹 ===== */
@@ -159,7 +150,6 @@ function openEditor(id: number | null) {
     : ddStore.items.filter((x) => x.type === fType.value).reduce((m, x) => Math.max(m, x.sort || 0), 0) + 1
   fQmsOn.value = it ? !!it.qms_on : false
   fQmsId.value = it?.qms_id ?? undefined
-  fStrmId.value = it?.strm_id ?? 0
   bdPath.value = fPath.value
   modalOpen.value = true
   loadQmsStrmPaths()
@@ -221,7 +211,6 @@ async function confirmEditor() {
   const qmsFields = {
     qms_on: fQmsOn.value,
     qms_id: fQmsOn.value && fQmsId.value != null ? fQmsId.value : null,
-    strm_id: fQmsOn.value && fStrmId.value ? fStrmId.value : null, // 0 哨兵 → 不生成
   }
   // 目标账号下（排除自己）已有多少条 —— 新增时第一条自动成为该账号默认
   const beforeCount = ddStore.items.filter(
@@ -430,9 +419,7 @@ async function confirmEditor() {
           :placeholder="qmsOptions.length ? '请选择 QMS 整理目录' : 'QMS 暂无刮削目录，请先到 qmediasync 添加'"
         />
         <div class="dd-tip">自动转存完成后触发 QMS 整理。</div>
-        <label class="dd-label dd-mt12">STRM 生成（可选）</label>
-        <a-select v-model:value="fStrmId" :options="strmOptions" class="dd-sel" />
-        <div class="dd-tip">QMS 整理完成后触发 STRM 生成，不需要就选「不生成」。</div>
+        <div class="dd-tip dd-mt12">QMS 整理成功后会自动按整理结果生成 STRM，失败不生成（无需配置）。</div>
       </div>
     </div>
 

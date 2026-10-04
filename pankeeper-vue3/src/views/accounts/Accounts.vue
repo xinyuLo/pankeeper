@@ -313,19 +313,22 @@ function capOf(accId: number) {
   const cap = summaryOf(accId)?.capacity
   if (!cap || !cap.total) return null
   const pct = Math.min(100, Math.round((cap.used / cap.total) * 100))
-  return {
-    pct,
-    used: (cap.used / 1024 ** 3).toFixed(cap.used > 10 * 1024 ** 3 ? 0 : 1),
-    total: (cap.total / 1024 ** 3).toFixed(cap.total > 10 * 1024 ** 3 ? 0 : 1),
-  }
+  // 容量 ≥1024G 换算成 TB（两位小数）；成对显示用同一单位，别一边 G 一边 T
+  const unit: 'GB' | 'TB' = cap.total >= 1024 * 1024 ** 3 ? 'TB' : 'GB'
+  const fmt = (v: number) => (unit === 'TB' ? (v / 1024 ** 4).toFixed(2) : (v / 1024 ** 3).toFixed(v > 10 * 1024 ** 3 ? 0 : 1))
+  return { pct, used: fmt(cap.used), total: fmt(cap.total), unit }
 }
 
 function capClass(pct: number): string {
   return pct >= 95 ? 'full' : pct >= 80 ? 'warn' : ''
 }
 
-function gb(v: number): string {
-  return (v / 1024 ** 3).toFixed(v > 10 * 1024 ** 3 ? 0 : 1)
+function gb(v: number, unit: 'GB' | 'TB' = 'GB'): string {
+  return unit === 'TB' ? (v / 1024 ** 4).toFixed(2) : (v / 1024 ** 3).toFixed(v > 10 * 1024 ** 3 ? 0 : 1)
+}
+function capUnit(accId: number): 'GB' | 'TB' {
+  const cap = summaryOf(accId)?.capacity
+  return cap && cap.total >= 1024 * 1024 ** 3 ? 'TB' : 'GB'
 }
 
 /* 凭据表单：从浏览器 F12 复制整串 Cookie 粘贴；后端保存即验证，永远不回填明文 */
@@ -406,6 +409,7 @@ async function onClear(a: AccountRow) {
              :title="summaryOf(a.id)!.vip!.expires ? `会员到期：${summaryOf(a.id)!.vip!.expires}` : ''">
             <span class="vip-tag">✦ {{ summaryOf(a.id)!.vip!.name }}<template v-if="summaryOf(a.id)!.vip!.expires"> · {{ summaryOf(a.id)!.vip!.expires }}</template></span>
           </b>
+          <b v-else-if="a.status === 'connected' && summaryOf(a.id)?.vip?.name === '普通用户'"><span class="normal-tag">普通用户</span></b>
           <b v-else style="color: var(--text3)">—</b>
         </div>
         <div class="kv"><span>上次检测</span><b>{{ a.last_check }}</b></div>
@@ -447,7 +451,7 @@ async function onClear(a: AccountRow) {
           <template v-if="capOf(a.id)">
             <div class="capbar"><i :class="capClass(capOf(a.id)!.pct)" :style="{ width: capOf(a.id)!.pct + '%' }"></i></div>
             <div class="capmeta">
-              <span>已用 {{ capOf(a.id)!.used }} GB / 共 {{ capOf(a.id)!.total }} GB</span>
+              <span>已用 {{ capOf(a.id)!.used }} {{ capOf(a.id)!.unit }} / 共 {{ capOf(a.id)!.total }} {{ capOf(a.id)!.unit }}</span>
               <span>{{ capOf(a.id)!.pct }}%</span>
             </div>
           </template>

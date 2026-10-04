@@ -7,11 +7,13 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
+import { CopyOutlined, FolderOpenOutlined } from '@ant-design/icons-vue'
 import PkPager from '@/components/PkPager.vue'
 import QuickTransferModal from './QuickTransferModal.vue'
 import TransferModal, { type TransferTarget } from './TransferModal.vue'
+import ShareFilesModal from '@/views/auto/ShareFilesModal.vue'
 import { useIsMobile } from '@/composables/useIsMobile'
-import { getInitialResults, getPanSouAddr, getSearchChannels, getSearchResults, type SearchChannel, getEngineHealth, getEngineHealthCached } from '@/api/modules/search'
+import { getInitialResults, getPanSouAddr, getSearchChannels, getSearchResults, getSearchShareFiles, type SearchChannel, getEngineHealth, getEngineHealthCached } from '@/api/modules/search'
 import { getSettings, saveSearchSrc } from '@/api/modules/settings'
 import { listDdItems } from '@/api/modules/dd'
 import { ddStore } from '@/api/mock/dd'
@@ -342,7 +344,7 @@ function openQuick(r: SearchResultItem) {
   if (!r.ok || !hasDD(r.t)) return
   tmOpen.value = false
   qsType.value = r.t
-  qsName.value = r.n
+  qsName.value = defaultName(r)
   qsUrl.value = r.url || ''
   qsCode.value = r.share_code || ''
   qsOpen.value = true
@@ -350,8 +352,21 @@ function openQuick(r: SearchResultItem) {
 function openTransfer(r: SearchResultItem) {
   if (!r.ok) return
   qsOpen.value = false
-  tmTarget.value = { type: r.t, name: r.n, size: r.s, url: r.url || '', share_code: r.share_code || '' }
+  tmTarget.value = { type: r.t, name: defaultName(r), size: r.s, url: r.url || '', share_code: r.share_code || '' }
   tmOpen.value = true
+}
+
+/* ===== 默认任务名（用户 2026-10-04 定稿）=====
+ * 不再用 pansou 给的 note 当默认名（太脏还带 emoji）：默认用搜索框关键词（去空格），
+ * 再从 pansou 名里提取 4 位年份贴到后面——「给阿嬷的情书」+ pansou 名带 (2026)
+ * → 「给阿嬷的情书 (2026)」；pansou 名没年份就不贴；关键词本身已带年份也不贴 */
+const YEAR_RE = /(19|20)\d{2}/
+function defaultName(r: SearchResultItem): string {
+  const base = kw.value.trim()
+  if (!base) return r.n
+  if (YEAR_RE.test(base)) return base
+  const m = YEAR_RE.exec(r.n || '')
+  return m ? `${base} (${m[0]})` : base
 }
 /** 跳转：真实系统新开分享链接；mock 没有链接，给个反馈（原型同款 toast） */
 function onJump(r: SearchResultItem) {
@@ -360,6 +375,40 @@ function onJump(r: SearchResultItem) {
     return
   }
   window.open(r.url, '_blank', 'noopener')
+}
+
+/* ===== 行内「查看文件 / 复制链接」（对齐自动转存行操作，放来源 tag 后面） ===== */
+const sfOpen = ref(false)
+const sfRec = ref<SearchResultItem | null>(null)
+function onViewFiles(r: SearchResultItem) {
+  if (!r.url) {
+    message.warning('该结果没有分享链接')
+    return
+  }
+  sfRec.value = r
+  sfOpen.value = true
+}
+async function onCopy(r: SearchResultItem) {
+  if (!r.url) {
+    message.warning('该结果没有分享链接')
+    return
+  }
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(r.url)
+    } else {
+      // 非安全上下文（http 部署）兜底：临时 textarea + execCommand
+      const ta = document.createElement('textarea')
+      ta.value = r.url
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    message.success('已复制分享链接')
+  } catch {
+    message.error('复制失败')
+  }
 }
 
 onUnmounted(() => {
@@ -508,7 +557,13 @@ onUnmounted(() => {
                 <span v-if="r.hot" class="tag t-123 st-hot">极速</span>
               </div>
             </td>
-            <td><span class="tag" :class="DRIVE_META[r.t].tag">{{ DRIVE_META[r.t].full }}</span></td>
+            <td>
+              <span class="st-srccell">
+                <span class="tag" :class="DRIVE_META[r.t].tag">{{ DRIVE_META[r.t].full }}</span>
+                <a-tooltip v-if="r.url" title="查看文件"><button class="pa-ico pa-ico-view" @click.stop="onViewFiles(r)"><FolderOpenOutlined /></button></a-tooltip>
+                <a-tooltip v-if="r.url" title="复制链接"><button class="pa-ico pa-ico-copy" @click.stop="onCopy(r)"><CopyOutlined /></button></a-tooltip>
+              </span>
+            </td>
             <td class="small muted">{{ r.s }}</td>
             <td class="small muted">{{ r.d }}</td>
             <td>
@@ -540,6 +595,8 @@ onUnmounted(() => {
             </div>
             <div class="st-card-meta">
               <span class="tag" :class="DRIVE_META[r.t].tag">{{ DRIVE_META[r.t].full }}</span>
+              <a-tooltip v-if="r.url" title="查看文件"><button class="pa-ico pa-ico-view" @click.stop="onViewFiles(r)"><FolderOpenOutlined /></button></a-tooltip>
+              <a-tooltip v-if="r.url" title="复制链接"><button class="pa-ico pa-ico-copy" @click.stop="onCopy(r)"><CopyOutlined /></button></a-tooltip>
               <span class="small muted">{{ r.s }}</span>
               <span class="small muted st-card-date">{{ r.d }}</span>
             </div>
@@ -559,6 +616,13 @@ onUnmounted(() => {
 
     <!-- 快速转存弹窗（qsMask）：凭转存配置直入队列 -->
     <QuickTransferModal v-model:open="qsOpen" :type="qsType" :share-name="qsName" :share-url="qsUrl" :share-code="qsCode" />
+    <!-- 分享内容文件树弹窗：与自动转存「查看」同款（fetcher 按搜索结果的链接直取） -->
+    <ShareFilesModal
+      v-model:open="sfOpen"
+      :task-id="null"
+      :task-name="sfRec?.n || ''"
+      :fetcher="(refresh: boolean) => getSearchShareFiles(sfRec!.t, sfRec!.url!, sfRec!.share_code || '', refresh)"
+    />
     <!-- 转存弹窗（transferMask）：分享树勾选 + 目标目录树 -->
     <TransferModal v-model:open="tmOpen" :target="tmTarget" />
   </div>
@@ -627,6 +691,35 @@ onUnmounted(() => {
   font-weight: 500;
 }
 .st-hot { flex: none; margin-right: 0; }
+
+/* 来源格：网盘 tag + 「查看文件/复制链接」图标钮（同自动转存 .pa-ico 五色钮语义：
+   查看=蓝 / 复制=紫；样式就近自带一份——scoped 不跨页） */
+.st-srccell { display: inline-flex; align-items: center; gap: 2px; min-width: 0; }
+.pa-ico {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text2);
+  transition: background 0.15s, color 0.15s;
+  font-family: inherit;
+}
+.pa-ico:hover { background: var(--surface-3); }
+.pa-ico.pa-ico-view { color: #1677ff; }
+.pa-ico.pa-ico-view:hover { background: #f0f8ff; }
+.pa-ico.pa-ico-copy { color: #722ed1; }
+.pa-ico.pa-ico-copy:hover { background: #f9f0ff; }
+html[data-theme='dark'] .pa-ico.pa-ico-view { color: #69b1ff; }
+html[data-theme='dark'] .pa-ico.pa-ico-view:hover { background: #111a2c; }
+html[data-theme='dark'] .pa-ico.pa-ico-copy { color: #b37feb; }
+html[data-theme='dark'] .pa-ico.pa-ico-copy:hover { background: #1a1425; }
 
 /* fixed 布局让「资源名称 50%」真正生效：超长名称在格子内省略（hover 有 title 全文），按钮列不再被挤没 */
 table.st-table { table-layout: fixed; }
@@ -790,8 +883,14 @@ table.st-table { table-layout: fixed; }
 }
 .st-card-item + .st-card-item { margin-top: 10px; }
 .st-card-item:hover { background: var(--surface-3); }
-.st-card-name { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.st-card-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.st-card-name { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; }
+/* 文件名放开换行看全（用户要求：截断了根本不知道文件是啥）；色条随行首对齐 */
+.st-card-title {
+  min-width: 0;
+  font-weight: 500;
+  line-height: 1.5;
+  word-break: break-all;
+}
 .st-card-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .st-card-date { margin-left: auto; }
 .st-card-ops { justify-content: flex-end; }

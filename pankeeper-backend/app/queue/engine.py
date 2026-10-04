@@ -134,6 +134,11 @@ class QueueEngine:
     def enqueue(self, item: dict) -> int:
         with self._lock:
             share_url = item.get("share_url") or item.get("shareUrl") or ""
+            # 资源名/更名值洗掉 emoji 与文件名非法字符（pansou note 带emoji、当文件夹名
+            # 会撞 errno=2）。搜索结果已在 pansou 源头洗过，这里兜其他入口（含手填更名）。
+            from ..services.names import sanitize_name
+            clean_name = sanitize_name(item.get("name") or "")
+            clean_rename = sanitize_name(item.get("rename") or "")
             # 同链接去重：wait/run 中已有同一 shareUrl 的任务就不再入队（手动快速
             # 转存连点两次 = 两个任务各打一遍百度全链，纯浪费请求喂风控）。
             # 返回 -1 由前端提示「已在队列中」。
@@ -144,7 +149,7 @@ class QueueEngine:
             self.state["seq"] += 1
             t = {
                 "id": self.state["seq"],
-                "name": item.get("name") or "未命名资源",
+                "name": clean_name or "未命名资源",
                 "type": item.get("type") or "quark",
                 "path": item.get("path") or "/",
                 "files": int(item.get("files") or 0),
@@ -175,10 +180,14 @@ class QueueEngine:
                 # 勾选清单（搜索页分享树勾选；空=全部）。注意：不持久化，
                 # 重启恢复的任务勾选丢失回全量——有 MD5/名字去重兜底，宁可多查不少删
                 "filePaths": list(item.get("file_paths") or []),
-                # 「带壳转存」（快速转存弹窗）：整壳转过来 + 根文件夹更名。
-                # 与 filePaths 同款不持久化——重启恢复的任务退回剥壳模式（快速转存生命周期短，可接受）
-                "rename": str(item.get("rename") or ""),
+                # 「建壳转存」（快速转存弹窗）：按资源名/更名值新建文件夹，剥壳转入。
+                # 与 filePaths 同款不持久化——重启恢复的任务退回普通模式（快速转存生命周期短，可接受）
+                "rename": clean_rename,
                 "withShell": bool(item.get("with_shell", False)),
+                # 显式联动目标（普通转存弹窗下拉）：不持久化（同 rename/withShell 生命周期）。
+                # STRM 不再透传——后端按 QMS 自动配对（2026-10-04 用户定稿）
+                "qmsId": item.get("qms_id"),
+                "mediaOff": bool(item.get("media_off", False)),
             }
             self.state["tasks"].append(t)
             pos = sum(1 for x in self.state["tasks"] if x["status"] in ("wait", "run"))

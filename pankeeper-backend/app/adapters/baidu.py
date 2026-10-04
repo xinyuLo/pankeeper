@@ -536,8 +536,8 @@ class BaiduClient(CloudAdapter):
         roots_raw = page.get("file_list") or []
         roots = [self._share_row_to_file(r, "") for r in roots_raw]
         files.extend(roots)
-        # 「带壳转存」用（搜索转存快速弹窗）：单壳时记下根文件夹条目——fsid 可直接进
-        # fsidlist 整体转存（目标自带文件夹名）；非单壳 / 未开子目录时置空（无壳可带或结构本就保留）
+        # 「建壳转存」用（搜索转存快速弹窗）：单壳时记下根文件夹条目——壳名可作壳名兜底；
+        # 非单壳 / 未开子目录时置空
         self._root_shell = roots[0] if (spec.include_subdirs and len(roots) == 1 and roots[0].is_dir) else None
         if spec.include_subdirs:
             # ⚠️ share/list 的 dir 必须用**原始路径**（含 /sharelink<id>-<uk> 前缀，
@@ -682,12 +682,10 @@ class BaiduClient(CloudAdapter):
         if not ctx:
             raise AdapterError("分享上下文缺失（save_files 必须跟在 list_share 之后）")
         result = TransferResult()
-        # 「带壳转存」（spec.with_shell，搜索转存快速弹窗）：单壳分享整壳转 + 可选根文件夹更名。
-        # 早期 return——跳过文件级 MD5/名字去重（整壳模式按"目标已有同名文件夹"去重）
+        # 「建壳转存」（spec.with_shell，搜索转存快速弹窗）：按资源名/更名值新建文件夹、
+        # 剥壳转入。早期 return——跳过文件级 MD5/名字去重（建壳模式按"目标已有同名文件夹"去重）
         if spec.with_shell and not spec.only_paths:
-            shell = getattr(self, "_root_shell", None)
-            if shell is None or shell.fid:
-                return self._save_with_shell(spec, shell, files, result, on_progress, on_log)
+            return self._save_with_shell(spec, getattr(self, "_root_shell", None), files, result, on_progress, on_log)
         save_list = [f for f in files if not f.is_dir and f.fid]
 
         # 勾选清单过滤（bdsavePro new_files 语义）：勾了文件=只转这些；
@@ -759,27 +757,31 @@ class BaiduClient(CloudAdapter):
         return result
 
     def _save_with_shell(self, spec: TaskSpec, shell: ShareFile | None, files: list[ShareFile], result: TransferResult, on_progress, on_log) -> TransferResult:
-        """带壳转存（搜索转存快速弹窗，spec.with_shell）：
+        """带壳转存（搜索转存快速弹窗，spec.with_shell）——**建壳承接**（2026-10-04 用户定稿）：
 
-        - 单壳（list_share 剥壳时记下的 `_root_shell`）：整壳转过来，`folder_rename` 非空时
-          转存完成后 rename_dir 更名；
-        - 非单壳（散文件/多文件夹，2026-10-04 用户："没壳的文件建个壳套进去，多文件也不用管了"）：
-          在 save_dir 下建一个壳文件夹（壳名 = 更名值或分享名），根层条目全部转进壳——
-          文件夹整转（自带名）、散文件直转，子树随文件夹整体过来不重复转。
-        去重口径（两种模式一致）：目标已有同名文件夹 → 整壳跳过（没法逐文件 MD5 比对）。
+        不整壳转、也不转完再改名：直接在 save_dir 下按「更名值或资源名」新建文件夹当壳，
+        分享内容剥壳转进去。搜索源给的名字是资源名而非分享真实目录名，整壳转过来名字
+        对不上；rename_dir 事后改名实测会被可见性延迟/风控拽失败（errno=2 案）；整壳转
+        的 transferred 只有壳一条，run_watch 回填拿壳名查 QMS 逐文件记录永远查不到。
+        建壳后三者的名字天然一致，QMS 回填匹配的也是真实文件名。
+
+        - 单壳（list_share 记下 `_root_shell`）：清单本就以壳内为根（相对路径不含壳名），
+          直接按相对路径转入新壳；
+        - 非单壳：根层 = 1 文件夹 + 散文件时剥原壳进新壳（防同名套娃，2026-10-04 用户实锤
+          「功夫女足」案）；其余连原目录结构一起进新壳。
+        去重口径：目标已有同名文件夹 → 整单跳过（没法逐文件 MD5 比对）。
         """
-        shell_name = (spec.folder_rename or "").strip()
-        if shell is not None:
-            target = spec.save_dir.rstrip("/") + "/" + shell.name
-            shown = shell.name
-        else:
-            shell_name = shell_name or (spec.share_name or "").strip() or "分享资源"
-            target = spec.save_dir.rstrip("/") + "/" + shell_name
-            shown = shell_name
+        shell_name = (
+            (spec.folder_rename or "").strip()
+            or (spec.share_name or "").strip()
+            or (shell.name if shell is not None else "")
+            or "分享资源"
+        )
+        target = spec.save_dir.rstrip("/") + "/" + shell_name
         try:
             self.list_dir(target)
             result.skip += 1
-            on_log(f"目标已存在同名文件夹「{shown}」，跳过整壳转存")
+            on_log(f"目标已存在同名文件夹「{shell_name}」，跳过转存")
             on_progress(100)
             return result
         except CredentialExpired:
@@ -787,59 +789,34 @@ class BaiduClient(CloudAdapter):
         except AdapterError:
             pass  # 目录不存在 = 没转过，继续
 
-        if shell is not None:
-            on_log(f"整壳转存分享根文件夹「{shell.name}」→ {spec.save_dir}/")
-            # ⚠️ 真实 _transfer_group 第一个参数是分享 ctx（save_files 开头已校验存在），别漏
-            self._transfer_group(self._share_ctx, [shell], spec.save_dir, spec, result, on_log)
-            new_name = (spec.folder_rename or "").strip()
-            if new_name and new_name != shell.name:
-                # ⚠️ 更名失败**绝不能让整单变 fail**（2026-10-04 用户实测：errno=2 把成功的
-                # 整壳转存拽成失败）——壳已经转过来了，改名失败降级为警告（保持原名）。
-                # errno=2 疑似转存落库可见性延迟/风控抖动：等 3s 重试一次再降级。
-                renamed = False
-                for attempt in range(2):
-                    time.sleep(1 if attempt == 0 else 3)
-                    try:
-                        self.rename_dir(target, new_name)
-                        renamed = True
-                        break
-                    except AdapterError as e:
-                        if attempt == 0:
-                            on_log(f"更名首次失败（{e}），3 秒后重试")
-                if renamed:
-                    result.renamed += 1
-                    if result.transferred:
-                        result.transferred[0]["name"] = new_name
-                    on_log(f"根文件夹已更名：{shell.name} → {new_name}")
-                else:
-                    on_log(f"⚠️ 根文件夹更名失败，保持原名「{shell.name}」——转存已完成，可稍后在网盘手动改名")
-        else:
+        if shell is None:
             roots_dirs = [f for f in files if f.is_dir and f.fid and "/" not in f.path]
-            self._ensure_dirs([target])
             if len(roots_dirs) == 1:
-                # 根层 = 1 个文件夹 + N 散文件：**剥原壳**——内容按相对路径直接进新壳。
-                # （2026-10-04 用户实锤套娃案：分享根层=「功夫女足（2026）/」+散文件，建壳后把
-                #   原壳文件夹又整转进新壳 → save_dir/新壳/原壳/ 双层同名。新壳名替代原壳名才对。）
+                # 根层 = 1 个文件夹 + N 散文件：**剥原壳**——内容按相对路径直接进新壳，
+                # 新壳名替代原壳名（原壳文件夹再整转进新壳 = 双层同名套娃）。
                 prefix = roots_dirs[0].path + "/"
                 for f in files:
                     if not f.is_dir and f.fid and f.path.startswith(prefix):
                         f.path = f.path[len(prefix):]
                 on_log(f"分享根层为「{roots_dirs[0].name}」+散文件：剥原壳，内容进新壳「{shell_name}」")
             else:
-                on_log(f"分享无根文件夹，已建壳「{shell_name}」承接全部内容")
-            # 全部按**文件条目**转（文件夹条目跳过，目录靠 _ensure_dirs 重建）——
-            # 文件夹整体转 + 其子文件再转 = 重复转存，别混两种方式
-            inner = [f for f in files if f.fid and not f.is_dir]
-            rel_dirs = sorted({f.path.rsplit("/", 1)[0] for f in inner if "/" in f.path})
-            if rel_dirs:
-                self._ensure_dirs([target.rstrip("/") + "/" + d for d in rel_dirs])
-            by_dir: dict[str, list[ShareFile]] = {}
-            for f in inner:
-                by_dir.setdefault(f.path.rsplit("/", 1)[0] if "/" in f.path else "", []).append(f)
-            for rel, group in by_dir.items():
-                tgt = target.rstrip("/") + "/" + rel if rel else target
-                for i in range(0, len(group), 500):
-                    self._transfer_group(self._share_ctx, group[i : i + 500], tgt, spec, result, on_log)
+                on_log(f"分享无根文件夹（或多文件夹混杂），已建壳「{shell_name}」承接全部内容")
+        on_log(f"在 {spec.save_dir.rstrip('/')} 下新建文件夹「{shell_name}」，剥壳转存分享内容")
+
+        self._ensure_dirs([target])
+        # 全部按**文件条目**转（文件夹条目跳过，目录靠 _ensure_dirs 重建）——
+        # 文件夹整体转 + 其子文件再转 = 重复转存，别混两种方式
+        inner = [f for f in files if f.fid and not f.is_dir]
+        rel_dirs = sorted({f.path.rsplit("/", 1)[0] for f in inner if "/" in f.path})
+        if rel_dirs:
+            self._ensure_dirs([target.rstrip("/") + "/" + d for d in rel_dirs])
+        by_dir: dict[str, list[ShareFile]] = {}
+        for f in inner:
+            by_dir.setdefault(f.path.rsplit("/", 1)[0] if "/" in f.path else "", []).append(f)
+        for rel, group in by_dir.items():
+            tgt = target.rstrip("/") + "/" + rel if rel else target
+            for i in range(0, len(group), 500):
+                self._transfer_group(self._share_ctx, group[i : i + 500], tgt, spec, result, on_log)
         on_progress(100)
         return result
 
