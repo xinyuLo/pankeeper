@@ -66,3 +66,14 @@ def tv_season(tmdb_id: int, season: int) -> list[dict] | None:
 def movie_detail(tmdb_id: int) -> dict | None:
     """电影详情：title / backdrop_path / overview。"""
     return _get(f"/movie/{tmdb_id}")
+
+
+def search(title: str, year: int | None = None, media_type: str = "movie") -> dict | None:
+    """TMDB 搜索：返回原始响应（results 列表），无结果/异常返回 None。
+
+    media_type: movie（year 参数）| tv（first_air_date_year 参数）。"""
+    path = "/search/movie" if media_type == "movie" else "/search/tv"
+    params: dict = {"query": title}
+    if year:
+        params["year" if media_type == "movie" else "first_air_date_year"] = year
+    return _get(path, params)
