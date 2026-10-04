@@ -30,10 +30,15 @@ FAILED_STATUS = {"scrape_failed", "rename_failed"}
 
 
 def watch_and_spawn(ctx: dict) -> None:
-    """QMS 刮削触发成功后调用。推送未启用时直接返回，否则后台守护。
+    """推送总入口：按联动后端分流成**两套互不掺杂的日志/推送流程**（用户 2026-10-04 要求）。
 
-    ctx: {drive, task, names, qms_ok: bool, source: str,
-          run_id?: int, strm_plan?: {strm_id, delay} | None, strm_ok?: bool}
+    - backend=qms（默认）：转存完成消息推送走 QMS 流程——等 QMS 刮削终态（_wait_records）→
+      拿记录里的 tmdb_id 拼 TMDB 富文本 → 等 STRM 结果（_wait_strm）→ 推送。
+    - backend=litepan：LitePan 状态对外不可见（只有 webhook 进、没有查询出），推送走
+      **自识别流程**（_watch_own）——PanKeeper 自己从文件名识别 TMDB 直接推送，不等不查。
+
+    ctx: {drive, task, names, source, backend?: 'qms'|'litepan',
+          run_id?/strm_plan?/strm_ok?}（后三者为 qms 流程专用，见 _wait_strm/_header）
     - names：转存的文件名（QMS 记录的 file_name 与之对应）
     - qms_ok：QMS 触发结果。strm_plan（自动转存）= STRM 后台触发计划，推送线程会等
       run_watch 登记的真实触发结果再发（信息条显示「STRM 已生成」）；
@@ -48,7 +53,58 @@ def watch_and_spawn(ctx: dict) -> None:
         return
     if not ctx.get("names"):
         return
-    threading.Thread(target=_watch, args=(ctx,), daemon=True).start()
+    backend = ctx.get("backend") or get_group("media").get("backend", "qms")
+    target = _watch_own if backend != "qms" else _watch
+    threading.Thread(target=target, args=(ctx,), daemon=True).start()
+
+
+def _watch_own(ctx: dict) -> None:
+    """LitePan 模式的**独立推送流程**：后端刮削状态不可见（只有 webhook 进、没有查询出），
+    PanKeeper 自己从转存文件名识别 TMDB 直接推送——不等、不查、不假装。
+
+    识别失败（tmdb_id=None）的文件进纯文字兜底清单；信息条显示自识别统计，
+    全程不出现 QMS 字样（用户要求：两套日志流程分开，别混乱）。"""
+    from . import media_recognize
+
+    names = list(ctx["names"])
+    recs = media_recognize.recognize_batch(names, hint=ctx.get("task", ""))
+    ok = [r for r in recs if r.get("tmdb_id")]
+    fail = [r for r in recs if not r.get("tmdb_id")]
+    print(f"[push] LitePan 模式自识别：{len(ok)}/{len(recs)} 项命中 TMDB" + (f"（{len(fail)} 项未识别）" if fail else ""), flush=True)
+
+    icon, drive_name = DRIVE_META.get(ctx.get("drive"), ("📁", ctx.get("drive", "")))
+    st_icon, st_text = ("✅", "成功") if not fail else ("🟡", f"识别 {len(ok)}/{len(recs)}")
+    lines = [f"{icon} **{drive_name} · {ctx.get('task', '')}** {st_icon} {st_text}", ""]
+    stats = [f"📦 转存 {len(names)} 项", f"🔍 自识别 {len(ok)}/{len(recs)}"]
+    for r in recs:
+        if r.get("doubt"):
+            stats.append(f"❓ {r.get('media_name') or r.get('title')}（识别存疑）")
+            break
+    lines.append(" · ".join(stats))
+    header = "\n".join(lines)
+
+    renamed = [
+        {"file_name": r["name"], "media_name": r.get("media_name") or r.get("title"),
+         "tmdb_id": r["tmdb_id"], "episode_number": r.get("episode"),
+         "type": "tvshow" if r.get("episode") else "movie"}
+        for r in ok
+    ]
+    if renamed:
+        body, title = _build(renamed)
+        if body:
+            notify.push(title, f"{header}\n\n{body}", kind=f"{ctx.get('source', 'search')}_done", short="简介")
+            return
+    # 识别不出/拿不到 TMDB → 纯文字兜底（通知不丢）
+    failed = {r["name"]: "未识别到 TMDB 条目" for r in fail}
+    body_lines = []
+    for n in names:
+        mark = f"（{failed[n]}）" if n in failed else ""
+        body_lines.append(f"- {n}{mark}")
+    notify.push(
+        f"{ctx.get('task', '转存')} · 转存完成",
+        f"{header}\n\n" + "\n".join(body_lines),
+        kind=f"{ctx.get('source', 'search')}_done",
+    )
 
 
 def _watch(ctx: dict) -> None:
