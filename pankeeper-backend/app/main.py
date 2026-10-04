@@ -9,7 +9,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .api import accounts, auth, cache_api, dd, drive_logs, pa, qms_api, queue_api, records, search, settings as settings_api
+from .api import accounts, auth, cache_api, dd, drive_logs, pa, qms_api, queue_api, recognize, records, search, settings as settings_api
 from .api.auth import ensure_admin
 from .db import init_db
 from .deps import is_local_request
@@ -73,6 +73,7 @@ def create_app() -> FastAPI:
     app.include_router(pa.router)
     app.include_router(cache_api.router)
     app.include_router(drive_logs.router)
+    app.include_router(recognize.router)
 
     if WEB_DIR.is_dir():
         # ---- 前端静态托管（单容器模式）：hash 路由只需 / 与静态资产 ----
