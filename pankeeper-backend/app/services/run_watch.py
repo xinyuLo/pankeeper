@@ -161,7 +161,9 @@ def _fire_strm(strm_id: int, names: set[str]) -> dict:
             print(f"[run-watch] Emby 媒体库刷新（定向同步补）：{'成功' if ok2 else msg2}", flush=True)
 
         threading.Thread(target=_emby_later, daemon=True).start()
-        return {"st": "已触发（定向）", "cls": "t-ok"}
+        # 定向同步是"直接生成"（QMS 日志里就是 [生成 STRM]），不是触发同步目录任务——
+        # 口径如实：QMS 任务列表里看到的是 ID=0 的临时任务（2026-10-04 用户纠正日志口径）
+        return {"st": "已触发（定向临时任务）", "cls": "t-ok"}
     except Exception as e:  # noqa: BLE001 —— 回退口：定向失败绝不把 STRM 弄丢
         print(f"[run-watch] STRM 定向同步失败（{e}），回退整路径同步", flush=True)
         ok, msg = qms.trigger_strm(strm_id)
@@ -251,11 +253,11 @@ def trigger_strm_after_scrape(
             ok, msg = qms.trigger_strm(strm_id)
             # 「已触发」用绿色（t-ok）：STRM 没有结果查询接口，触发成功就是这条链路的最好结局
             # （2026-10-04 用户要求改绿；QMS 的"已触发"保持灰——它随后会被真实结果回填替换）
-            snap = {"st": "已触发" if ok else f"失败 · {msg}", "cls": "t-ok" if ok else "t-bad"}
+            snap = {"st": "已触发（整路径同步）" if ok else f"失败 · {msg}", "cls": "t-ok" if ok else "t-bad"}
         if run_id:
             _write_strm(run_id, snap, table)
             _STRM_RESULTS[f"{table.__name__}:{run_id}"] = snap  # 推送线程（media_push._wait_strm）来取
-        print(f"[run-watch] STRM #{strm_id} 触发：{snap['st']}", flush=True)
+        print(f"[run-watch] STRM 联动（同步目录 #{strm_id}）：{snap['st']}", flush=True)
 
     threading.Thread(target=_job, daemon=True).start()
 

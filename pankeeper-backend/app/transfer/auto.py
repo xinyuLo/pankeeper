@@ -227,7 +227,7 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
     # 所以改为收尾落库后由 _sync_pa_task 挂后台线程（2026-10-04 用户要求对齐 bdsavepro 语义）。
     if link.get("strm_id"):
         strm_snap = {"st": "等待刮削完成…", "cls": "t-off"}
-        _push_log(t, "STEP", f"STRM 同步 #{link['strm_id']} 将在 QMS 刮削完成后触发（后台等待）")
+        _push_log(t, "STEP", f"STRM 联动已挂后台（同步目录 #{link['strm_id']}）：QMS 刮削成功后自动触发定向同步临时任务（成功才生成）")
 
     # 推送（watch_and_spawn）挪到 _sync_pa_task 落库后：那里才有 run_id，推送线程才能
     # 等 STRM 触发结果、信息条如实显示「STRM 已生成」（2026-10-04 用户要求）

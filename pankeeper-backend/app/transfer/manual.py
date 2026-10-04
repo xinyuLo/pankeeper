@@ -205,7 +205,7 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
     if strm_id is not None and ok:
         # STRM 真等刮完再触发（刮削有失败不生成）：_finish 落库后挂 trigger_strm_after_scrape 后台线程
         strm_snap = {"st": "等待刮削完成…", "cls": "t-off"}
-        _push_log(t, "STEP", f"STRM 同步 #{strm_id} 将在 QMS 刮削完成后自动触发（成功才生成）")
+        _push_log(t, "STEP", f"STRM 联动已挂后台（同步目录 #{strm_id}）：QMS 刮削成功后自动触发定向同步临时任务（成功才生成）")
 
     # 推送（watch_and_spawn）挪到 _finish 落库后：那里才有 record id，推送线程才能等 STRM 结果
     return qms_snap, strm_snap
