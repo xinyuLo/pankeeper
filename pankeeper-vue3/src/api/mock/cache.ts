@@ -67,7 +67,7 @@ export const cacheStore = reactive<{
     ttlUnit: '小时',
     memHigh: 85,
     act: 'ladder',
-    maxSizeMb: 800,
+    maxSizeMb: 100,
   },
   trees: [
     { id: 1, type: 'baidu', acc: '主账号 138****6688', path: '/影视', entries: 156, size: '42 KB', ttlMin: 96 },
@@ -77,7 +77,7 @@ export const cacheStore = reactive<{
     { id: 5, type: 'quark', acc: '主账号 185****2233', path: '/媒体/电影', entries: 41, size: '12 KB', ttlMin: -38 },
     { id: 6, type: '115', acc: '主账号 xinyu115', path: '/影视/电影', entries: 64, size: '18 KB', ttlMin: 12 },
   ],
-  mem: { pct: 62, usedMb: 490, totalMb: 800 },
+  mem: { pct: 62, usedMb: 62, totalMb: 100 },
   seq: 100,
 })
 

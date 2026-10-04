@@ -549,6 +549,20 @@ html[data-theme='dark'] .kids { border-left-color: #3a3f4b; }
 }
 html[data-theme='dark'] .vip-tag { color: #b39cf8; }
 
+/* 普通用户 tag：同规格胶囊（中性灰蓝），没会员也有面子 */
+.normal-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  color: var(--text2);
+  background: color-mix(in srgb, var(--text2) 8%, var(--card));
+  border: 1px solid color-mix(in srgb, var(--text2) 30%, var(--border));
+}
+html[data-theme='dark'] .normal-tag { color: #a8b3c5; }
+
 /* ===== 设计说明批注框 ===== */
 .note-box {
   background: var(--note-bg);

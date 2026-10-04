@@ -68,7 +68,9 @@ class Pan115Adapter(CloudAdapter):
 
     def __init__(self, cookies_enc: str, gate: RateGate | None = None):
         self.cookies = decrypt_credential(cookies_enc)
-        self.gate = gate or RateGate("115", min_interval=1.0, cooldown=30.0)
+        # 2s 间隔（2026-10-04 上调：1s+实测密集请求撞过一次风控——探活回 302 跳风控页，
+        # 只能等它自己解封；宁慢勿封）
+        self.gate = gate or RateGate("115", min_interval=2.0, cooldown=60.0)
         self._http = _shared_client(self.cookies)
         self._uid: str | None = None
 
@@ -81,6 +83,12 @@ class Pan115Adapter(CloudAdapter):
         except httpx.HTTPError as e:
             self.gate.on_failure()
             raise AdapterError(f"网络异常：{e}") from e
+        if resp.status_code in (301, 302, 307, 308):
+            # 302 = 115 把请求跳到风控/验证页（2026-10-04 实测：密集请求后探活即 302）。
+            # 这是账号级临时封禁，只有等——明确报人话，别让上层显示"响应非 JSON"这种废话，
+            # 同时让 RateGate 进退避，防止自动任务接着撞。
+            self.gate.on_failure()
+            raise AdapterError("115 触发风控（HTTP 302 跳转），请暂停 10-30 分钟再试，期间勿反复点检测/转存")
         if resp.status_code == 406:
             # 115 限频信号：让 RateGate 进退避，调用方按普通失败处理
             self.gate.on_failure()
@@ -100,6 +108,9 @@ class Pan115Adapter(CloudAdapter):
         except httpx.HTTPError as e:
             self.gate.on_failure()
             raise AdapterError(f"网络异常：{e}") from e
+        if resp.status_code in (301, 302, 307, 308):
+            self.gate.on_failure()
+            raise AdapterError("115 触发风控（HTTP 302 跳转），请暂停 10-30 分钟再试，期间勿反复点检测/转存")
         try:
             body = resp.json()
         except ValueError as e:
@@ -140,12 +151,17 @@ class Pan115Adapter(CloudAdapter):
 
     def list_share(self, spec: TaskSpec) -> list[ShareFile]:
         share_code, receive_code = parse_share_url(spec.share_url)
-        files = self._snap_page(share_code, receive_code, cid="")
-        roots = [self._row_to_file(r, "") for r in files]
+        # 单壳判定只看**根层条目**（2026-10-04 套娃案同款教训，baidu/quark 对齐）
+        roots_raw = self._snap_page(share_code, receive_code, cid="")
+        roots = [self._row_to_file(r, "") for r in roots_raw]
+        # 「建壳转存」用（搜索转存快速弹窗）：单壳时记下根文件夹条目；非单壳/未开子目录置空
+        self._root_shell = roots[0] if (spec.include_subdirs and len(roots) == 1 and roots[0].is_dir) else None
+        strip_root = len(roots) == 1 and roots[0].is_dir  # 单壳剥壳：相对路径不含壳名
         out = list(roots)
         if spec.include_subdirs:
             for node in [f for f in roots if f.is_dir]:
-                out.extend(self._walk_share_dir(share_code, receive_code, node.fid, node.name))
+                base = "" if strip_root else node.name
+                out.extend(self._walk_share_dir(share_code, receive_code, node.fid, base))
         if spec.exclude_names or spec.exclude_md5s:
             out = [
                 f
@@ -157,20 +173,28 @@ class Pan115Adapter(CloudAdapter):
         return out
 
     def _snap_page(self, share_code: str, receive_code: str, cid: str) -> list[dict]:
-        """share/snap 翻页到 count（别学 limit=20 不翻页的反面教材）。"""
+        """share/snap 翻页到 count（别学 limit=20 不翻页的反面教材）。
+
+        ⚠️ 实测响应两种形态（2026-10-04）：带 cid（子目录）时 list/count 在顶层；
+        不带 cid（根层）时嵌在 data.count/data.list 里。两种都接，别按一种写死。"""
         rows: list[dict] = []
         offset = 0
         for _ in range(100):  # 10 万项封顶
-            data = self._get(
-                "https://webapi.115.com/share/snap",
-                {"share_code": share_code, "receive_code": receive_code, "cid": cid, "offset": offset, "limit": PAGE},
-            )
+            params = {"share_code": share_code, "receive_code": receive_code, "offset": offset, "limit": PAGE}
+            if cid:
+                params["cid"] = cid
+            data = self._get("https://webapi.115.com/share/snap", params)
             self._check_state(data, "分享清单")
-            page = data.get("list") or []
+            d = data.get("data")
+            if isinstance(d, dict):
+                page = d.get("list") or []
+                count = int(d.get("count") or 0)
+            else:
+                page = data.get("list") or []
+                count = int(data.get("count") or 0)
             rows.extend(page)
-            count = int(data.get("count") or 0)
             offset += len(page)
-            if not page or offset >= count:
+            if not page or (count and offset >= count):
                 return rows
         return rows
 
@@ -194,9 +218,12 @@ class Pan115Adapter(CloudAdapter):
 
     @staticmethod
     def _row_to_file(row: dict, base: str) -> ShareFile:
-        """snap 行 → ShareFile。file_id 取法：文件夹优先 fid，文件取 cid（TgtoDrive 实测语义）。"""
+        """snap 行 → ShareFile。
+
+        ⚠️ 目录判定**不能依赖 fid**（实测有的分享目录行 fid=null，如 115cdn 单壳根），
+        统一按"文件带 sha/sha1"判；id 取 fid 或 cid（TgtoDrive 同款 fallback）。"""
         name = Pan115Adapter._row_name(row)
-        is_dir = bool(row.get("fid")) and not Pan115Adapter._is_file_row(row)
+        is_dir = not Pan115Adapter._is_file_row(row)
         fid = str(row.get("fid") or row.get("cid") or "")
         return ShareFile(fid=fid, name=name, is_dir=is_dir, size=int(row.get("s") or 0),
                          path=(base + "/" + name).lstrip("/") if name else base, md5="")
@@ -210,6 +237,12 @@ class Pan115Adapter(CloudAdapter):
         return {self._row_name(r) for r in self._list_own_dir(cid) if self._is_file_row(r)}
 
     def _list_own_dir(self, cid: str) -> list[dict]:
+        """列自己的目录一层（webapi /files）。
+
+        ⚠️ 实测响应（2026-10-04）：顶层数据是**扁平 list**——`data` 直接是条目数组、
+        `count` 在顶层，不是 quark 那种 data.list 嵌套；照嵌套写会 AttributeError。
+        ⚠️ 自己网盘的条目 id 在 **cid**（目录/文件都是），没有 fid——fid 是分享 snap
+        侧的字段，两套清单别混（目录浏览/ensure_dir 全在 own-dir 侧）。"""
         rows: list[dict] = []
         offset = 0
         for _ in range(50):
@@ -218,13 +251,24 @@ class Pan115Adapter(CloudAdapter):
                 {"aid": 1, "cid": cid, "o": "user_ptime", "asc": 1, "offset": offset, "show_dir": 1, "limit": PAGE, "format": "json"},
             )
             self._check_state(data, "列目录")
-            page = data.get("data", {}).get("list") or []
+            raw = data.get("data")
+            page = raw if isinstance(raw, list) else ((raw or {}).get("list") or [])
             rows.extend(page)
-            count = int(data.get("data", {}).get("count") or 0)
+            count = int(data.get("count") or 0)
             offset += len(page)
             if not page or offset >= count:
                 return rows
         return rows
+
+    @staticmethod
+    def _is_dir_row(row: dict) -> bool:
+        """own-dir 行是否目录：文件条目带哈希字段，目录没有；条目 id 一律在 cid。"""
+        return not (row.get("sha") or row.get("sha1"))
+
+    @staticmethod
+    def _row_id(row: dict) -> str:
+        """own-dir 条目 id（目录/文件都在 cid）。"""
+        return str(row.get("cid") or row.get("fid") or "")
 
     def path_to_cid(self, dir_path: str) -> str:
         """网盘路径 → cid（逐层下钻；根=0）。不存在抛 AdapterError。"""
@@ -232,24 +276,25 @@ class Pan115Adapter(CloudAdapter):
         for seg in [p for p in (dir_path or "").strip("/").split("/") if p]:
             rows = self._list_own_dir(cid)
             match = next(
-                (r for r in rows if self._row_name(r) == seg and r.get("fid") and not self._is_file_row(r)),
+                (r for r in rows if self._row_name(r) == seg and self._is_dir_row(r)),
                 None,
             )
             if match is None:
                 raise AdapterError(f"115 目录不存在：{dir_path}（缺 {seg}）")
-            cid = str(match.get("fid"))
+            cid = self._row_id(match)
         return cid
 
     def _mkdir(self, parent_cid: str, name: str) -> str:
         """webapi 建目录，返回新目录 cid；返回体缺 cid 时回落父目录查找（已存在场景）。"""
-        body = self._post("https://webapi.115.com/files/add", {"pid": parent_cid, "dirname": name})
+        # ⚠️ files/add 的目录名字段实测是 cname（dirname 会报"目录名称不能为空"，2026-10-04）
+        body = self._post("https://webapi.115.com/files/add", {"pid": parent_cid, "cname": name})
         self._check_state(body, "建目录")
         new_cid = str((body.get("data") or {}).get("file_id") or (body.get("data") or {}).get("cid") or "")
         if new_cid:
             return new_cid
         for r in self._list_own_dir(parent_cid):
-            if self._row_name(r) == name and r.get("fid") and not self._is_file_row(r):
-                return str(r.get("fid"))
+            if self._row_name(r) == name and self._is_dir_row(r):
+                return self._row_id(r)
         raise AdapterError(f"建目录后找不到 cid：{name}")
 
     def ensure_dir(self, dir_path: str) -> str:
@@ -258,30 +303,75 @@ class Pan115Adapter(CloudAdapter):
         for seg in [p for p in (dir_path or "").strip("/").split("/") if p]:
             rows = self._list_own_dir(cid)
             match = next(
-                (r for r in rows if self._row_name(r) == seg and r.get("fid") and not self._is_file_row(r)),
+                (r for r in rows if self._row_name(r) == seg and self._is_dir_row(r)),
                 None,
             )
             if match:
-                cid = str(match.get("fid"))
+                cid = self._row_id(match)
             else:
                 cid = self._mkdir(cid, seg)
         return cid
+
+    # ---------- 目录管理（浏览弹窗的新建/重命名/删除，2026-10-04） ----------
+
+    def create_dir(self, parent_cid: str, name: str) -> str:
+        """在指定父目录下建文件夹，返回新 cid。与 ensure_dir 的逐层建同款接口。"""
+        return self._mkdir(parent_cid, name)
+
+    def rename_dir(self, cid: str, new_name: str) -> None:
+        """重命名（目录/文件同一接口）。
+
+        ⚠️ 端点/表单是 115driver（alist 同款）实测语义：POST files/batch_rename，
+        **三个字段必须齐**：fid + file_name + files_new_name[<cid>]——只发 file_id/file_name
+        或走 files/rename 都回"服务器开小差了"（2026-10-04 实测连环踩）。"""
+        body = self._post(
+            "https://webapi.115.com/files/batch_rename",
+            {"fid": cid, "file_name": new_name, f"files_new_name[{cid}]": new_name},
+        )
+        self._check_state(body, "重命名")
+
+    def delete_dir(self, cid: str) -> None:
+        """删除目录（递归）——移入回收站（rb/delete），误删可从回收站捞回。"""
+        body = self._post("https://webapi.115.com/rb/delete", {"pid": 0, "fid[0]": cid, "ignore_warn": 1})
+        self._check_state(body, "删除")
 
     def save_files(self, files: list[ShareFile], spec: TaskSpec, on_progress, on_log) -> TransferResult:
         ctx = getattr(self, "_share_ctx", None)
         if not ctx:
             raise AdapterError("分享上下文缺失（save_files 必须跟在 list_share 之后）")
         result = TransferResult()
+        # 「建壳转存」（spec.with_shell，搜索/普通转存弹窗）：按资源名/更名值新建文件夹、
+        # 剥壳转入。早期 return——跳过文件级去重（建壳模式按"目标已有同名文件夹"去重）
+        if spec.with_shell and not spec.only_paths:
+            return self._save_with_shell(spec, getattr(self, "_root_shell", None), files, result, on_progress, on_log)
         save_list = [f for f in files if not f.is_dir and f.fid]
 
-        # 去重：目标目录（或 compare_path）现有文件名
-        base = spec.compare_path or spec.save_dir
+        # 勾选清单过滤（bdsavePro new_files 语义）：勾了文件=只转这些；勾了目录=整棵子树。
+        # ⚠️ 必须有——实测漏了会把全量清单都收进去（2026-10-04：只想转 1 集收了 82 集）
+        if spec.only_paths:
+            def _kept(f: ShareFile) -> bool:
+                for sel in spec.only_paths or set():
+                    sel = sel.strip("/")
+                    if sel and (f.path == sel or f.path.startswith(sel + "/")):
+                        return True
+                return False
+            before = len(save_list)
+            save_list = [f for f in save_list if _kept(f)]
+            result.skip += before - len(save_list)
+
+        # 去重（MD5 115 不提供，按名字）：基线 = compare_path ∪ save_dir 两边都扫。
+        # 只看单边有真空窗：刚转存的文件躺在 save_dir 等 QMS 搬进库，窗口期重跑会重复转（40/41 案）
+        bases: list[str] = []
+        if spec.compare_path:
+            bases.append(spec.compare_path)
+        if spec.save_dir and spec.save_dir not in bases:
+            bases.append(spec.save_dir)
         existing: set[str] = set()
-        if base:
+        for base in bases:
             try:
-                existing = self.list_dir_names(base)
+                existing |= self.list_dir_names(base)
             except (AdapterError, CredentialExpired) as e:
-                on_log(f"对比目录 {base} 读取失败（{e}），本次不做去重基线比对")
+                on_log(f"对比目录 {base} 读取失败（{e}），该目录不参与去重基线")
         need = [f for f in save_list if f.name not in existing and (f.target_name or f.name) not in existing]
         result.skip = len(save_list) - len(need)
         on_log(f"清单 {len(save_list)} 项：去重跳过 {result.skip} / 待转存 {len(need)}")
@@ -300,13 +390,105 @@ class Pan115Adapter(CloudAdapter):
             cid = target_cid
             if rel:
                 cid = self.ensure_dir(spec.save_dir.rstrip("/") + "/" + rel)
-            self._receive_group(ctx, group, cid, result, on_log)
+            self._receive_group(ctx, group, cid, spec, result, on_log)
             done += len(group)
             on_progress(min(99, int(done / total * 100)))
         on_progress(100)
         return result
 
-    def _receive_group(self, ctx: dict, files: list[ShareFile], cid: str, result: TransferResult, on_log) -> None:
+    def _save_with_shell(self, spec: TaskSpec, shell: ShareFile | None, files: list[ShareFile], result: TransferResult, on_progress, on_log) -> TransferResult:
+        """建壳承接（2026-10-04 用户定稿，baidu/quark 对齐）：在 save_dir 下按「更名值或
+        资源名」新建文件夹当壳，分享内容剥壳转进去。去重口径：目标已有同名文件夹 → 整单跳过。
+        115 特性：目录可整组接收——根层的**文件夹整目录接收**（一个 fid 带整棵子树，
+        请求越少越远离风控），散文件才逐组收。"""
+        ctx = getattr(self, "_share_ctx", None)
+        if not ctx:
+            raise AdapterError("分享上下文缺失")
+        shell_name = (
+            (spec.folder_rename or "").strip()
+            or (spec.share_name or "").strip()
+            or (shell.name if shell is not None else "")
+            or "分享资源"
+        )
+        parent_cid = self.ensure_dir(spec.save_dir)
+        existing_dirs = {self._row_name(r) for r in self._list_own_dir(parent_cid) if self._is_dir_row(r)}
+        if shell_name in existing_dirs:
+            result.skip += 1
+            on_log(f"目标已存在同名文件夹「{shell_name}」，跳过转存")
+            on_progress(100)
+            return result
+
+        if shell is None:
+            roots_dirs = [f for f in files if f.is_dir and f.fid and "/" not in f.path]
+            if len(roots_dirs) == 1:
+                # 根层 = 1 个文件夹 + N 散文件：剥原壳，内容进新壳（防同名套娃，新壳名替代原壳名）
+                prefix = roots_dirs[0].path + "/"
+                for f in files:
+                    if not f.is_dir and f.fid and f.path.startswith(prefix):
+                        f.path = f.path[len(prefix):]
+                on_log(f"分享根层为「{roots_dirs[0].name}」+散文件：剥原壳，内容进新壳「{shell_name}」")
+            else:
+                on_log(f"分享无根文件夹（或多文件夹混杂），已建壳「{shell_name}」承接全部内容")
+        on_log(f"在 {spec.save_dir.rstrip('/')} 下新建文件夹「{shell_name}」，剥壳转存分享内容")
+
+        target_cid = self.ensure_dir(spec.save_dir.rstrip("/") + "/" + shell_name)
+
+        def _ensure_under(base_cid: str, rel: str) -> str:
+            # 逐层确保 rel 目录存在——从 base_cid 出发，不重复列上层（省请求）
+            cid = base_cid
+            for seg in [p for p in rel.split("/") if p]:
+                rows = self._list_own_dir(cid)
+                match = next(
+                    (r for r in rows if self._row_name(r) == seg and self._is_dir_row(r)),
+                    None,
+                )
+                cid = self._row_id(match) if match else self._mkdir(cid, seg)
+            return cid
+
+        # 115 特性：**文件夹可整目录接收**（一个 fid 带整棵子树）——根层文件夹整个收，
+        # 子树文件绝不再单独收（重复转存）。两个例外按文件接收：
+        # ① 根层散文件；② "剥原壳"场景（原壳名被新壳替代，原壳 fid 不能收）；
+        # ③ 配了 rename_map（自动任务正则改名）——整目录收无法改名，退回逐文件。
+        # 壳条目本身（fid=S）绝不能整收——它的名字是新壳替代掉的，收进来就是套娃。
+        use_whole_dir = not spec.rename_map
+        top_dirs = [
+            f for f in files if f.is_dir and f.fid and "/" not in f.path and f is not shell
+        ] if use_whole_dir else []
+        loose = [f for f in files if not f.is_dir and f.fid and "/" not in f.path]
+        deeper = [f for f in files if not f.is_dir and f.fid and "/" in f.path]
+        if shell is not None:
+            deeper = deeper if not use_whole_dir else []  # 单壳：整目录接收已覆盖子树
+        else:
+            roots_dirs = [f for f in files if f.is_dir and f.fid and "/" not in f.path]
+            if len(roots_dirs) == 1 and (loose or deeper):
+                # 根层 = 1 个文件夹 + N 散文件：剥原壳——原壳名被新壳替代，原壳 fid 不能整收；
+                # 原壳直接文件已被剥成顶层散文件，其子目录文件仍带路径，按目录 ensure 后接收
+                top_dirs = []
+                on_log(f"分享根层为「{roots_dirs[0].name}」+散文件：剥原壳，内容进新壳「{shell_name}」")
+            else:
+                deeper = deeper if not use_whole_dir else []  # 多文件夹混杂：整目录接收已覆盖子树
+                if use_whole_dir:
+                    on_log(f"已建壳「{shell_name}」承接全部内容（文件夹整目录接收）")
+        on_log(f"在 {spec.save_dir.rstrip('/')} 下新建文件夹「{shell_name}」，剥壳转存分享内容")
+
+        for d in top_dirs:
+            inner = [f.name for f in files if not f.is_dir and f.path.startswith(d.path + "/")]
+            self._receive_group(ctx, [d], target_cid, spec, result, on_log, add_count=len(inner), extra_names=inner)
+        for i in range(0, len(loose), 1000):
+            self._receive_group(ctx, loose[i : i + 1000], target_cid, spec, result, on_log)
+        by_dir: dict[str, list[ShareFile]] = {}
+        for f in deeper:
+            by_dir.setdefault(f.path.rsplit("/", 1)[0], []).append(f)
+        for rel, group in by_dir.items():
+            cid = _ensure_under(target_cid, rel)
+            self._receive_group(ctx, group, cid, spec, result, on_log)
+        on_progress(100)
+        return result
+
+    def _receive_group(self, ctx: dict, files: list[ShareFile], cid: str, spec: TaskSpec, result: TransferResult, on_log,
+                       add_count: int | None = None, extra_names: list[str] | None = None) -> None:
+        """整组接收。整目录接收（files=[目录条目]）时用 add_count/extra_names 把子树内
+        真实文件数与文件名记进账——run_watch/推送都按文件名对 QMS 记录，账要记文件。"""
         if not files:
             return
         body = self._post(
@@ -321,11 +503,70 @@ class Pan115Adapter(CloudAdapter):
         )
         if self._check_state(body, "转存", already_ok=True):
             on_log("全部文件此前已接收过，无需重复接收（计为跳过）")
-            result.skip += len(files)
+            result.skip += add_count if add_count is not None else len(files)
             return
-        result.add += len(files)
-        for f in files:
-            result.transferred.append({"name": f.target_name or f.name, "fid": f.fid})
+        result.add += add_count if add_count is not None else len(files)
+        if add_count is None:
+            # 逐文件模式：记文件本身；整目录模式（add_count 给定）只记子树内真实文件名，
+            # 目录条目自己不是文件，混进账里会污染 run_watch/推送的文件名匹配
+            for f in files:
+                result.transferred.append({"name": f.target_name or f.name, "fid": f.fid})
+        for n in extra_names or []:
+            result.transferred.append({"name": n, "fid": ""})
+        if add_count is None:
+            self._apply_renames(files, cid, spec, result, on_log)
+
+    def _apply_renames(self, group: list[ShareFile], cid: str, spec: TaskSpec, result: TransferResult, on_log) -> None:
+        """转存后改名（正则目标名 ≠ 原名时）。receive 不带改名：列一次目标目录按
+        原名匹配到文件 id，逐条 files/rename（115 无 MD5 去重，名字即唯一依据）。"""
+        if not spec.rename_map:
+            return
+        rows = self._list_own_dir(cid)
+        for f in group:
+            target = f.target_name
+            if not target or target == f.name:
+                continue
+            hit = next((r for r in rows if self._row_name(r) == f.name and self._is_file_row(r)), None)
+            if hit is None:
+                on_log(f"改名跳过 {f.name}：目标目录里没找到刚接收的文件")
+                continue
+            row_id = str(hit.get("cid") or hit.get("fid") or "")
+            body = self._post(
+                "https://webapi.115.com/files/batch_rename",
+                {"fid": row_id, "file_name": target, f"files_new_name[{row_id}]": target},
+            )
+            self._check_state(body, "改名")
+            result.renamed += 1
 
     def summary(self) -> dict:
-        return {}
+        """会员 + 容量摘要。
+
+        会员走 get_user_aq 的 vip 字段（is_vip/expire_str，实测 2026-10-04）；
+        无会员/拿不到都按「普通用户」显示，别留空白。
+        容量走 get_storage_info（web Cookie 可用）：返回按空间分区（永久/转存等）
+        的 {total, used} 字典——各分区求和即为账号总容量。"""
+        vip = {"name": "普通用户", "expires": None}
+        cap = None
+        try:
+            data = self._get("https://my.115.com/", {"ct": "ajax", "ac": "get_user_aq"})
+            self._check_state(data, "会员信息")
+            v = (data.get("data") or {}).get("vip") or {}
+            if v.get("is_vip") or v.get("vip"):
+                expires = str(v.get("expire_str") or "").strip()
+                if expires in ("", "0", "1970-01-01"):
+                    expires = None
+                vip = {"name": "永久会员" if v.get("is_forever") else "会员", "expires": expires}
+        except (AdapterError, CredentialExpired):
+            pass  # 摘要拿不到会员就按普通用户，别影响账号卡片
+        try:
+            d = self._get("https://115.com/index.php", {"ct": "ajax", "ac": "get_storage_info"})
+            total = used = 0
+            for v in (d if isinstance(d, dict) else {}).values():
+                if isinstance(v, dict) and (v.get("total") or v.get("used")):
+                    total += int(v.get("total") or 0)
+                    used += int(v.get("used") or 0)
+            if total:
+                cap = {"total": total, "used": used}
+        except (AdapterError, CredentialExpired):
+            pass  # 容量拿不到就留空（前端显示"暂无容量信息"）
+        return {"capacity": cap, "vip": vip}

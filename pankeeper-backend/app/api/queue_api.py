@@ -30,6 +30,11 @@ class EnqueueBody(BaseModel):
     # 「带壳转存」（快速转存弹窗）：单壳分享把根文件夹整体转过来 + 可选根文件夹更名
     rename: str = ""
     with_shell: bool = False
+    # 显式指定 QMS 联动目标（普通转存弹窗下拉；空 = 按目标目录前缀匹配转存配置，旧行为）。
+    # STRM 不再单独指定——与 QMS 自动配对（同一条转存配置的 strm_id），刮削成功才生成
+    qms_id: int | None = None
+    # 明确关闭联动（弹窗开关关掉）：连目录前缀匹配也不做，转存完什么都不触发
+    media_off: bool = False
     # 任务来源：search（默认，搜索转存）/ auto（定时调度）；决定推送走哪个开关
     source: str = "search"
 

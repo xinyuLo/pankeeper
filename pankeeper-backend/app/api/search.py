@@ -71,3 +71,45 @@ def search_channels(_user=CurrentUser):
 
     selected = get_group("settings")["search"].get("channels") or []
     return [{"name": c, "on": (not selected) or (c in selected)} for c in pansou.channels()]
+
+
+@router.get("/share-files")
+def search_share_files(type: str, url: str, code: str = "", refresh: bool = False, _user=CurrentUser):
+    """分享链接内文件树（搜索结果行「查看文件」数据源，对齐 /records/{id}/share-files）。
+
+    搜索结果只有链接+提取码，没有任务/记录 id，按 type+url+code 直取。同走
+    share_list_cache（key 与转存链路一致：搜索转存跑完缓存即新），?refresh=1 直连重拉。"""
+    from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, TaskSpec
+    from ..adapters.factory import make_adapter
+    from ..services.share_cache import build_payload, share_key, share_list_cache
+
+    if not url:
+        raise HTTPException(status_code=400, detail="缺少分享链接")
+    try:
+        adapter = make_adapter(type)
+    except AdapterError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    def _live() -> dict:
+        files = adapter.list_share(TaskSpec(share_url=url, share_code=code, include_subdirs=True))
+        if not files:
+            # 死链典型形态：页面正常但清单为空。抛错而不是缓存空结果——
+            # 空清单一旦进缓存，查看文件会一直显示"共 0 个文件"的空壳
+            raise ShareBanned("分享内容为空（0 个文件），链接可能已失效")
+        return build_payload(files)
+
+    try:
+        payload, cached_at, pulled = share_list_cache.get_or_load(share_key(type, url, code), _live, refresh=refresh)
+    except ShareBanned as e:
+        raise HTTPException(status_code=410, detail=f"分享已失效：{e}")
+    except CredentialExpired as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except AdapterError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {
+        "total": len(payload["files"]),
+        "files": payload["files"],
+        "tree": payload["tree"],
+        "cached_at": int(cached_at),
+        "fresh": pulled,
+    }

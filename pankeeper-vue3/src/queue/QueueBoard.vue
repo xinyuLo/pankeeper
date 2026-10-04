@@ -1,16 +1,10 @@
 <script setup lang="ts">
 /* 转存队列看板（记录页「转存队列」分段）—— 原型 queue-core.js pqRow/renderPanel 的组件化移植。
- * 日志单选：同一时刻只展开一条 = 运行中的那条；没有运行中就是最新完成的。
- * pinnedLogId 存渲染外：每 600ms 一拍的重渲染不会把用户的展开选择打回去。 */
+ * 日志单选：同一时刻只展开一条 = 运行中的那条；没有运行中就是最新完成的。 */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { QueueTask } from '@/types/model'
 import { DRIVE_META } from '@/api/mock/meta'
 import { queueView, pkQueue, setOnNewTaskStart, isAutoQueued } from '@/queue/engine'
-
-const pinnedLogId = ref<number | null>(null)
-setOnNewTaskStart(() => {
-  pinnedLogId.value = null
-})
 
 /* 只列手动（搜索转存）任务：自动转存虽然后端同队列跑，但前台归「转存历史」/任务内转存日志 */
 const tasks = computed(() => queueView.tasks.filter((t) => !isAutoQueued(t)))
@@ -37,25 +31,30 @@ function statusOf(t: QueueTask): { cls: string; txt: string } {
   return { cls: 'pkq-st-run', txt: m[t.phase || 'transfer'] || '转存中' }
 }
 
-// 焦点行 = 正在运行的；没有运行中就是最新完成的
+// 焦点行 = 正在运行的；没有运行中就是最新结束的（完成/失效/失败都算）
 const focusId = computed(() => {
   let latestRun = 0
   let latestDone = 0
   for (const t of tasks.value) {
     if (t.status === 'run' && t.id > latestRun) latestRun = t.id
-    if ((t.status === 'done' || t.status === 'warn') && t.id > latestDone) latestDone = t.id
+    if (['done', 'warn', 'fail'].includes(t.status) && t.id > latestDone) latestDone = t.id
   }
   return latestRun || latestDone
 })
 
-function isOpen(t: QueueTask): boolean {
-  return pinnedLogId.value !== null ? pinnedLogId.value === t.id : t.id === focusId.value
+/* 详情按钮：未展开的行可手动展开看日志（钉住）；「收起」= 全部收起（不回自动跟随，
+ * 否则焦点行会立刻再展开，收了个寂寞）。三态：null=自动跟随 / -1=全收起 / id=钉住该条。
+ * 新任务开始时回到自动跟随（引擎回调）。 */
+const pinnedId = ref<number | null>(null)
+const COLLAPSED = -1
+setOnNewTaskStart(() => {
+  pinnedId.value = null
+})
+const isOpen = (t: QueueTask) => (pinnedId.value === COLLAPSED ? false : pinnedId.value !== null ? pinnedId.value === t.id : t.id === focusId.value)
+function toggleDetail(t: QueueTask) {
+  pinnedId.value = isOpen(t) ? COLLAPSED : t.id
 }
-
-function toggleLog(t: QueueTask) {
-  const openNow = isOpen(t)
-  pinnedLogId.value = openNow ? null : t.id
-}
+const detailText = (t: QueueTask): string => (isOpen(t) ? '收起' : '详情')
 
 const reversed = computed(() => tasks.value.slice().reverse())
 
@@ -95,8 +94,9 @@ pkQueue.onChange(() => {
           <span class="pq-st" :class="statusOf(t).cls">{{ statusOf(t).txt }}</span>
         </div>
 
-        <div v-if="t.status === 'run'" class="progress pkq-bar"><i :style="{ width: t.progress + '%' }"></i></div>
+        <div v-if="t.status === 'run'" class="progress pkq-bar pkq-loading"><i></i></div>
         <div v-else-if="t.status === 'done' || t.status === 'warn'" class="pq-pct">进度 100%</div>
+        <div v-else-if="t.status === 'fail'" class="pq-pct pq-fail">转存失败</div>
         <div v-else class="pq-pct">等待空闲线程</div>
 
         <div
@@ -112,26 +112,46 @@ pkQueue.onChange(() => {
           <div v-else class="pq-logempty">还没开始，轮到它就有日志</div>
         </div>
       </div>
-      <button class="ant-btn pq-logbtn" type="button" @click="toggleLog(t)">
-        {{ t.logs.length ? '日志' : '—' }}
-      </button>
+      <div class="pq-ops">
+        <button v-if="t.logs.length" class="pq-detail" :class="{ pinned: isOpen(t) }" @click="toggleDetail(t)">
+          {{ detailText(t) }}
+        </button>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.pq-logbtn {
-  height: 28px;
-  padding: 0 12px;
-  font-size: 13px;
+/* 运行中 = 不定量流动 loading 条（转存快时百分比条会"嗖一下"结束，观感差） */
+.pkq-loading i {
+  width: 40%;
+  transition: none;
+  background: linear-gradient(90deg, rgba(22, 119, 255, 0), #1677ff 30%, #69c0ff 70%, rgba(105, 192, 255, 0));
+  animation: pkqFlow 1.4s ease-in-out infinite;
+}
+@keyframes pkqFlow {
+  0% { margin-left: -40%; }
+  100% { margin-left: 100%; }
+}
+html[data-theme='dark'] .pkq-loading i {
+  background: linear-gradient(90deg, rgba(105, 192, 255, 0), #69c0ff 30%, #91caff 70%, rgba(145, 202, 255, 0));
+}
+
+/* 行内右侧：详情/收起（未展开的行给入口看日志；展开的行可收回自动跟随） */
+.pq-ops { display: flex; align-items: flex-start; }
+.pq-detail {
+  height: 24px;
+  padding: 0 10px;
+  font-size: 12px;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--card);
-  color: var(--text);
+  color: var(--text2);
   cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
 }
-.pq-logbtn:hover {
-  border-color: var(--primary);
-  color: var(--primary);
-}
+.pq-detail:hover { border-color: var(--primary); color: var(--primary); }
+.pq-detail.pinned { border-color: var(--primary); color: var(--primary); }
+/* 失败态的进度文案 */
+.pq-fail { color: var(--error); }
 </style>
