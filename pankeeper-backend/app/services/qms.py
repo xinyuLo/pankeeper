@@ -242,7 +242,11 @@ def get_emby_config() -> dict | None:
         data = resp.json()
         if resp.status_code == 200 and data.get("code") in (0, 200):
             d = data.get("data")
-            return d if isinstance(d, dict) else None
+            if not isinstance(d, dict):
+                return None
+            # QMS 实际返回 {"config": {...}} 套了一层（2026-10-04 实测），取里层；
+            # 兼容将来直接平铺的情况
+            return d.get("config") if isinstance(d.get("config"), dict) else d
         return None
     except (httpx.HTTPError, ValueError):
         return None
