@@ -7,7 +7,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
-import { CopyOutlined, FolderOpenOutlined } from '@ant-design/icons-vue'
+import { CopyOutlined, FolderOpenOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import PkPager from '@/components/PkPager.vue'
 import QuickTransferModal from './QuickTransferModal.vue'
 import TransferModal, { type TransferTarget } from './TransferModal.vue'
@@ -31,6 +31,14 @@ const DRIVE_ORDER: DriveType[] = ['baidu', 'quark', '115', 'magnet', '123', 'ali
 
 /* ===== 静态文案 ===== */
 const T_NO_CRED = '请先到「网盘连接」页配置该网盘凭据'
+
+/** 空态示例词：点击直接发起检索（2026-10-06 空态改版：装饰变入口） */
+const SAMPLE_WORDS = ['狂飙', '哪吒2', 'F1：狂飙飞车', '兰香如故', '飞驰人生2']
+function searchSample(word: string) {
+  if (busy.value) return
+  kw.value = word
+  void doSearch()
+}
 const T_NO_DD = '请先到「转存配置」页给该网盘添加一个路径'
 
 /* ===== 基础数据 ===== */
@@ -558,9 +566,12 @@ onUnmounted(() => {
           <a-button type="primary" class="pk-es-btn" @click="goPansouCfg">去「系统设置 → 搜索源」配置</a-button>
         </template>
         <template v-else>
-          <div class="pk-es-ico">🔍</div>
-          <div class="pk-es-title">暂无搜索结果</div>
-          <div class="pk-es-sub">输入关键词开始检索，或切换上方网盘筛选试试</div>
+          <div class="pk-es-ico st-es-brand"><SearchOutlined /></div>
+          <div class="pk-es-title">输入片名，全网资源一站直达</div>
+          <div class="pk-es-sub">支持百度 / 夸克 / 115 等七种网盘，找到后一键转存自动整理入库</div>
+          <div class="st-es-samples">
+            <span class="st-es-sample" v-for="w in SAMPLE_WORDS" :key="w" @click="searchSample(w)">{{ w }}</span>
+          </div>
         </template>
       </div>
       <!-- 检索中：能量环 + 放大镜动画（纯 CSS/SVG，无水印无体积） -->
@@ -947,6 +958,35 @@ table.st-table { table-layout: fixed; }
 .st-card-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .st-card-date { margin-left: auto; }
 .st-card-ops { justify-content: flex-end; }
+
+/* ===== 空态品牌渐变图标（替代 emoji）：与 logo/头像同一套靛蓝渐变 ===== */
+.pk-empty-state .pk-es-ico.st-es-brand {
+  width: 84px;
+  height: 84px;
+  border-radius: 24px;
+  font-size: 34px;
+  color: #fff;
+  background: linear-gradient(135deg, #7c5cf6, #3b6ef6 55%, #1d3ad8);
+  box-shadow: 0 10px 26px rgba(59, 110, 246, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+/* 示例词 chips：空态从纯装饰变成可点入口 */
+.st-es-samples { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 18px; }
+.st-es-sample {
+  padding: 5px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--split);
+  background: var(--surface-2);
+  font-size: 12.5px;
+  color: var(--text2);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s, transform 0.15s;
+}
+.st-es-sample:hover {
+  color: var(--primary);
+  border-color: var(--primary);
+  background: rgba(22, 119, 255, 0.06);
+  transform: translateY(-1px);
+}
 
 /* ===== 未配置 PanSou 时的空态引导：图标转警示色 + 去配置按钮 ===== */
 .pk-empty-state .pk-es-ico.is-warn {
