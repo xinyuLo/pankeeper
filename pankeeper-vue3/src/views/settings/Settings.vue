@@ -2,8 +2,8 @@
 /* =====================================================================
  * 系统设置页 —— 原型 _shell.html 设置段（5 个胶囊 tab）的 Vue 移植。
  * - tab1 搜索源 / tab2 推送通知：改完静默保存（原型即改即存内存，无保存按钮）
- * - tab3 QMS 联动：只保留连接参数（目录关联已迁到「转存配置」与自动转存任务弹窗），
- *   与 tab1/tab2 一致走防抖自动保存
+ * - tab3 联动后端：顶部选 qms/litepan，下面按所选显示 QMS 连接参数或 LitePan Webhook 参数
+ *   （目录关联在「转存配置」与自动转存任务弹窗），与 tab1/tab2 一致走防抖自动保存
  * - tab4 账号安全：改密码（前端先校验）+ 会话有效期
  * - tab5 头像管理：上传/移除头像（前端压缩后存后端）
  * ⚠️ 交互契约：推送只服务自动转存，手动转存不接 Server 酱（docs/01）。
@@ -16,15 +16,17 @@ import {
   getQmsHealth,
   getSettings,
   saveNotify,
+  saveLitePan,
   saveMediaBackend,
   saveQms,
   saveSearchSrc,
   saveSecurity,
+  testLitePan,
   testPansou,
   testQms,
   testSendkey,
 } from '@/api/modules/settings'
-import type { NotifyCfg, QmsCfg, SearchSrcCfg, SecurityCfg } from '@/api/mock/settings'
+import type { LitePanCfg, NotifyCfg, QmsCfg, SearchSrcCfg, SecurityCfg } from '@/api/mock/settings'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -56,6 +58,7 @@ const notify = reactive<NotifyCfg>({
   on_cred: true,
 })
 const qms = reactive<QmsCfg>({ enabled: true, url: '', apikey: '', tmdb_api_key: '', tmdb_proxy: '', act_strm: true, act_emby: true })
+const litepan = reactive<LitePanCfg>({ webhook_url: '', apikey: '', event: 'transfer.done' })
 const security = reactive<SecurityCfg>({ username: 'admin', session_days: 7 })
 
 /** 初始数据灌入完成前关闭自动保存：Object.assign 本身会触发 watch，不能让「进页面」变成一次保存 */
@@ -66,6 +69,7 @@ onMounted(async () => {
   Object.assign(search, d.search)
   Object.assign(notify, d.notify)
   Object.assign(qms, d.qms)
+  Object.assign(litepan, d.litepan || { webhook_url: '', apikey: '', event: 'transfer.done' })
   Object.assign(security, d.security)
   mediaBackend.value = d.media?.backend || 'qms'
   // QMS 引擎状态胶囊（语义同搜索页的 PanSou 在线/离线）
@@ -78,6 +82,7 @@ onMounted(async () => {
   _savedSnapshots.search = JSON.stringify(search)
   _savedSnapshots.notify = JSON.stringify(notify)
   _savedSnapshots.qms = JSON.stringify(qms)
+  _savedSnapshots.litepan = JSON.stringify(litepan)
 })
 
 /* ===== 三个配置 tab 统一防抖自动保存 =====
@@ -119,6 +124,9 @@ watch(notify, (v) => {
 })
 watch(qms, (v) => {
   if (ready.value) debouncedSave('qms', v, () => saveQms({ ...v }))
+})
+watch(litepan, (v) => {
+  if (ready.value) debouncedSave('litepan', v, () => saveLitePan({ ...v }))
 })
 
 /* ===== tab1 搜索源 ===== */
@@ -167,21 +175,42 @@ async function onTestSendkey() {
   }
 }
 
-/* ===== tab3 QMS 联动 ===== */
+/* ===== tab3 联动后端 ===== */
 const ONOFF_OPTS = [
   { value: 'on', label: '开启' },
   { value: 'off', label: '关闭' },
 ]
-/** QMS 引擎状态（进页拉一次；点「测试」成功/失败后同步） */
-/* ===== 联动后端选择（qms/litepan）：litepan 为预留模式，仅推送转存完成消息 ===== */
+/** 联动后端选择（qms/litepan）：切 litepan 后转存完成只发 Webhook，整理由 LitePan 规则自理 */
 const mediaBackend = ref<'qms' | 'litepan'>('qms')
 const MEDIA_OPTS = [
   { value: 'qms', label: 'QMS 全流程（刮削 / STRM，由 PanKeeper 跟踪结果）' },
-  { value: 'litepan', label: 'LitePan（转存完推送消息，后续整理由 LitePan 自理）' },
+  { value: 'litepan', label: 'LitePan（转存完 Webhook 通知，后续整理由 LitePan 自理）' },
 ]
 function onMediaBackend(v: 'qms' | 'litepan') {
+  // select 是 :value 绑定不是 v-model：本地值必须自己更新，否则下拉显示与下方表单都不切
+  mediaBackend.value = v
   saveMediaBackend(v)
-  message.info(v === 'qms' ? '已切换到 QMS 全流程联动' : '已切换到 LitePan 模式：转存完成后仅推送消息，QMS/STRM 流程停用')
+  message.info(v === 'qms' ? '已切换到 QMS 全流程联动' : '已切换到 LitePan 模式：转存完成后仅 Webhook 通知，QMS/STRM 流程停用')
+}
+
+const litepanTesting = ref(false)
+async function onTestLitePan() {
+  if (!litepan.webhook_url) {
+    message.warning('请先填写 Webhook 地址')
+    return
+  }
+  litepanTesting.value = true
+  try {
+    // 传「输入框正在编辑的值」——不等自动保存，点测试就测当前填的；掩码 key 后端自己回落
+    const r = await testLitePan(litepan.webhook_url, litepan.apikey)
+    if (r.ok) message.success(r.message || 'LitePan 连通正常')
+    else message.error(r.message || 'LitePan 连接失败', 5)
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || 'LitePan 连接失败', 5)
+  } finally {
+    litepanTesting.value = false
+  }
 }
 
 const qmsHealth = ref<{ ok: boolean; message?: string } | null>(null)
@@ -406,55 +435,91 @@ async function onRemoveAvatar() {
         </div>
       </div>
 
-      <!-- ===== tab3 QMS 联动（仅连接参数；目录关联在别处配） ===== -->
+      <!-- ===== tab3 联动后端：顶部选后端，下面按所选显示对应参数 ===== -->
       <div v-show="tab === 'tb3'">
-        <!-- 联动后端切换（mediaBackend/onMediaBackend）暂隐藏：LitePan 对接遥遥无期，
-             默认恒为 qms。对接时恢复这段模板即可，脚本逻辑都在。 -->
+        <div class="formrow">
+          <label>联动后端</label>
+          <div class="ctl">
+            <a-select :value="mediaBackend" :options="MEDIA_OPTS" style="width: 460px" @change="onMediaBackend" />
+          </div>
+        </div>
         <div class="st-mig">
           目录关联已迁到<b>「转存配置」</b>（每条目录配）与<b>自动转存任务弹窗</b>（每个任务配）两处，
-          这里只保留 QMS 连接参数。
+          这里只保留连接参数。
         </div>
-        <div class="formrow">
-          <label>启用联动</label>
-          <div class="ctl">
-            <a-select :value="qms.enabled ? 'on' : 'off'" :options="ONOFF_OPTS" style="width: 120px" @change="onQmsEnabled" />
-            <span class="qms-pill" :class="qmsHealth?.ok ? 'ok' : 'bad'"><i></i>{{ qmsHealth === null ? 'QMS 状态检测中…' : qmsHealth.ok ? 'QMS 引擎 在线' : `QMS 引擎 离线${qmsHealth.message ? ' · ' + qmsHealth.message : ''}` }}</span>
+        <template v-if="mediaBackend === 'qms'">
+          <div class="formrow">
+            <label>启用联动</label>
+            <div class="ctl">
+              <a-select :value="qms.enabled ? 'on' : 'off'" :options="ONOFF_OPTS" style="width: 120px" @change="onQmsEnabled" />
+              <span class="qms-pill" :class="qmsHealth?.ok ? 'ok' : 'bad'"><i></i>{{ qmsHealth === null ? 'QMS 状态检测中…' : qmsHealth.ok ? 'QMS 引擎 在线' : `QMS 引擎 离线${qmsHealth.message ? ' · ' + qmsHealth.message : ''}` }}</span>
+            </div>
           </div>
-        </div>
-        <div class="formrow">
-          <label>QMS 地址</label>
-          <div class="ctl">
-            <a-input v-model:value="qms.url" style="width: 300px" placeholder="请输入 QMS 服务地址" @blur="flushSave('qms')" />
-            <a-button :loading="qmsTesting" @click="onTestQms">测试</a-button>
+          <div class="formrow">
+            <label>QMS 地址</label>
+            <div class="ctl">
+              <a-input v-model:value="qms.url" style="width: 300px" placeholder="请输入 QMS 服务地址" @blur="flushSave('qms')" />
+              <a-button :loading="qmsTesting" @click="onTestQms">测试</a-button>
+            </div>
           </div>
-        </div>
-        <div class="formrow">
-          <label>API Key</label>
-          <div class="ctl">
-            <a-input-password v-model:value="qms.apikey" style="width: 280px" @blur="flushSave('qms')" />
+          <div class="formrow">
+            <label>API Key</label>
+            <div class="ctl">
+              <a-input-password v-model:value="qms.apikey" style="width: 280px" @blur="flushSave('qms')" />
+            </div>
           </div>
-        </div>
-        <div class="formrow">
-          <label>TMDB API Key</label>
-          <div class="ctl">
-            <a-input-password v-model:value="qms.tmdb_api_key" style="width: 280px" @blur="flushSave('qms')" />
-            <span class="muted small">转存完成的推送通知用它查封面/剧照（themoviedb.org 免费申请）</span>
+          <div class="formrow">
+            <label>TMDB API Key</label>
+            <div class="ctl">
+              <a-input-password v-model:value="qms.tmdb_api_key" style="width: 280px" @blur="flushSave('qms')" />
+              <span class="muted small">转存完成的推送通知用它查封面/剧照（themoviedb.org 免费申请）</span>
+            </div>
           </div>
-        </div>
-        <div class="formrow">
-          <label>TMDB 代理</label>
-          <div class="ctl">
-            <a-input v-model:value="qms.tmdb_proxy" style="width: 280px" placeholder="http://192.168.2.77:7890" @blur="flushSave('qms')" />
-            <span class="muted small">服务端连不上 TMDB 时填，留空直连</span>
+          <div class="formrow">
+            <label>TMDB 代理</label>
+            <div class="ctl">
+              <a-input v-model:value="qms.tmdb_proxy" style="width: 280px" placeholder="http://192.168.2.77:7890" @blur="flushSave('qms')" />
+              <span class="muted small">服务端连不上 TMDB 时填，留空直连</span>
+            </div>
           </div>
-        </div>
-        <div class="formrow">
-          <label>触发动作</label>
-          <div class="ctl st-gap18">
-            <a-checkbox v-model:checked="qms.act_strm">刮削后生成 STRM</a-checkbox>
-            <a-checkbox v-model:checked="qms.act_emby">完成后刷新 Emby</a-checkbox>
+          <div class="formrow">
+            <label>触发动作</label>
+            <div class="ctl st-gap18">
+              <a-checkbox v-model:checked="qms.act_strm">刮削后生成 STRM</a-checkbox>
+              <a-checkbox v-model:checked="qms.act_emby">完成后刷新 Emby</a-checkbox>
+            </div>
           </div>
-        </div>
+        </template>
+        <template v-else>
+          <div class="formrow">
+            <label>Webhook 地址</label>
+            <div class="ctl">
+              <a-input v-model:value="litepan.webhook_url" style="width: 360px" placeholder="http://LitePan地址:端口/api/open/automation/events" @blur="flushSave('litepan')" />
+              <a-button :loading="litepanTesting" @click="onTestLitePan">测试</a-button>
+            </div>
+          </div>
+          <div class="formrow">
+            <label>API Key</label>
+            <div class="ctl">
+              <a-input-password v-model:value="litepan.apikey" style="width: 280px" @blur="flushSave('litepan')" />
+              <span class="muted small">LitePan「API Key」页生成</span>
+            </div>
+          </div>
+          <div class="formrow">
+            <label>事件名</label>
+            <div class="ctl">
+              <a-input v-model:value="litepan.event" style="width: 200px" @blur="flushSave('litepan')" />
+              <span class="muted small">须与 LitePan 自动化规则里配的事件名完全一致</span>
+            </div>
+          </div>
+          <div class="formrow">
+            <label></label>
+            <div class="muted small" style="line-height: 1.8">
+              转存完成后 PanKeeper 发 Webhook（事件 + 转存目标路径），LitePan 按匹配到的规则自动整理；
+              规则的「路径前缀」按转存目标目录配。刮削/STRM 状态由 LitePan 自理，PanKeeper 只推自识别结果。
+            </div>
+          </div>
+        </template>
       </div>
 
       <!-- ===== tab4 账号安全 ===== -->

@@ -12,6 +12,7 @@ export function getSettings(): Promise<SettingsData> {
       search: { ...settingsStore.search },
       notify: { ...settingsStore.notify },
       qms: { ...settingsStore.qms },
+      litepan: { ...settingsStore.litepan },
       security: { ...settingsStore.security },
       media: { ...settingsStore.media },
     })
@@ -53,6 +54,25 @@ export async function saveMediaBackend(backend: 'qms' | 'litepan'): Promise<void
     return mockDelay(undefined)
   }
   await put('/settings/media', { backend })
+}
+
+/** 保存 LitePan 对接参数（联动后端=litepan 时的 Webhook 三件套） */
+export async function saveLitePan(cfg: SettingsData['litepan']): Promise<void> {
+  if (USE_MOCK) {
+    Object.assign(settingsStore.litepan, cfg)
+    return mockDelay(undefined)
+  }
+  await put('/settings/litepan', cfg)
+}
+
+/** 测试 LitePan Webhook 连通。url/apikey 传「输入框正在编辑的值」，掩码 key 后端回落已保存配置 */
+export async function testLitePan(url: string, apikey: string): Promise<{ ok: boolean; message?: string }> {
+  if (USE_MOCK) {
+    void url
+    void apikey
+    return mockDelay({ ok: true, message: '（mock）连通正常' }, 300)
+  }
+  return post<{ ok: boolean; message?: string }>('/settings/litepan/test', { webhook_url: url, apikey })
 }
 
 /** 测试 PanSou 连通。返回响应耗时；失败时 ok=false + message（HTTP 仍是 200） */
