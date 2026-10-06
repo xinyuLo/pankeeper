@@ -301,6 +301,7 @@ def _finish(eng, t: dict, status: str, message: str = "", qms_snap: dict | None 
             share_url=t.get("shareUrl", ""),
             share_code=t.get("shareCode", ""),
             source="search",  # 手动查询转存：记录页唯一来源
+            backend=get_group("media").get("backend", "qms"),  # 当时的联动后端（行级触发按它分流）
             logs_json=json.dumps(t["logs"], ensure_ascii=False),
             files_json=json.dumps(files_snap or [], ensure_ascii=False),
         )
