@@ -13,12 +13,14 @@ import { DD_MEDIA, DRIVE_META, MAIN_ORDER } from '@/api/mock/meta'
 import { recordsStore } from '@/api/mock/records'
 import type { RecordRow } from '@/api/mock/records'
 import { listQmsPaths, listStrmPaths } from '@/api/modules/dd'
+import { getSettings } from '@/api/modules/settings'
 import {
   clearRecords3MonthsAgo,
   deleteRecord,
   getRecordLog,
   getRecordShareFiles,
   listRecords,
+  retriggerRecord,
   retrigQms,
   retryFailedItems,
   triggerQms,
@@ -36,6 +38,7 @@ async function reload() {
 }
 onMounted(async () => {
   await reload()
+  getSettings().then((d) => (mediaBackend.value = d.media?.backend || 'qms')).catch(() => {})
 })
 
 const fStatus = ref('') // ''=全部状态 ok=完成 part=部分失败 fail=失败
@@ -158,11 +161,33 @@ async function onRetry() {
   if (n > 0) message.success(`已重新提交 ${n} 个失败项`)
   else message.info('这条记录没有失败项，不用重试')
 }
+/** 联动后端（决定触发行为：qms=重触发刮削 / litepan=重发 Webhook） */
+const mediaBackend = ref<'qms' | 'litepan'>('qms')
 async function onRetrigQms() {
   if (!cur.value) return
   await retrigQms(cur.value)
   message.success('已再次触发 QMS 刮削')
 }
+
+/* ===== 行级「触发」（详情后）：按联动后端分流重新触发 ===== */
+const retriggingRows = ref(new Set<number>())
+async function onRetrigger(r: RecordRow) {
+  if (retriggingRows.value.has(r.id)) return
+  retriggingRows.value = new Set(retriggingRows.value).add(r.id)
+  try {
+    const res = await retriggerRecord(r.id)
+    if (res.ok) message.success(res.message || '已触发')
+    else message.error(res.message || '触发失败', 5)
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '触发失败（该目录可能未配置联动）', 5)
+  } finally {
+    const next = new Set(retriggingRows.value)
+    next.delete(r.id)
+    retriggingRows.value = next
+  }
+}
+const isRetrigging = (id: number) => retriggingRows.value.has(id)
 async function onDelete() {
   if (!cur.value) return
   await deleteRecord(cur.value.id)
@@ -273,7 +298,7 @@ async function confirmTrig() {
           <a-select v-model:value="fPan" :options="PAN_OPTS" style="width: 120px" />
           <a-input v-model:value="kw" placeholder="资源名称" style="width: 200px" allow-clear />
           <span class="rk-flex1"></span>
-          <a-button type="primary" ghost @click="openTrig">触发 QMS / STRM</a-button>
+          <a-button v-if="mediaBackend === 'qms'" type="primary" ghost @click="openTrig">触发 QMS / STRM</a-button>
           <a-button danger ghost @click="onClearOld">清空三月前记录</a-button>
         </div>
         <table v-if="!isMobile" class="rk-table">
@@ -315,6 +340,8 @@ async function confirmTrig() {
               <td class="small muted rk-nowrap">{{ r.tm }}</td>
               <td>
                 <a-button type="link" size="small" class="rk-detail" @click="openDrawer(r)">详情</a-button>
+                <span class="rk-opdiv">丨</span>
+                <a-button type="link" size="small" class="rk-detail" :disabled="isRetrigging(r.id)" :title="isRetrigging(r.id) ? '正在触发…' : '按联动后端重新触发'" @click="onRetrigger(r)">触发</a-button>
                 <span class="rk-opdiv">丨</span>
                 <a-popconfirm title="确定删除这条记录？" ok-text="删除" cancel-text="取消" @confirm="onRowDelete(r)">
                   <a-button type="link" danger size="small" class="rk-detail">删除</a-button>
