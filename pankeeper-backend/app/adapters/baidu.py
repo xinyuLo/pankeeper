@@ -684,7 +684,7 @@ class BaiduClient(CloudAdapter):
         result = TransferResult()
         # 「建壳转存」（spec.with_shell，搜索转存快速弹窗）：按资源名/更名值新建文件夹、
         # 剥壳转入。早期 return——跳过文件级 MD5/名字去重（建壳模式按"目标已有同名文件夹"去重）
-        if spec.with_shell and not spec.only_paths:
+        if spec.with_shell:
             return self._save_with_shell(spec, getattr(self, "_root_shell", None), files, result, on_progress, on_log)
         save_list = [f for f in files if not f.is_dir and f.fid]
 
@@ -796,6 +796,16 @@ class BaiduClient(CloudAdapter):
 
         self._ensure_dirs([target])
         inner = [f for f in files if f.fid and not f.is_dir]
+        # 勾选清单（弹窗多选）：勾了文件=壳内只转这些（配合 with_shell 建"单文件夹单/多文件"）
+        if spec.only_paths:
+            def _sel(f: ShareFile) -> bool:
+                rel = f.path.strip("/")
+                for sel in spec.only_paths:
+                    sel = sel.strip("/")
+                    if rel == sel or rel.startswith(sel + "/"):
+                        return True
+                return False
+            inner = [f for f in inner if _sel(f)]
         # —— 全平铺：壳内所有子文件夹层级都不留（多层结构 QMS 识别不出，2026-10-06 用户实锤）。
         # 不同子目录的同名文件自动改名（父目录名前缀）防同名覆盖丢文件，日志留痕。
         used: set[str] = set()
