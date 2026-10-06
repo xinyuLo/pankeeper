@@ -410,6 +410,7 @@ def _finish(eng, t: dict, status: str, message: str = "", qms_snap: dict | None 
                 share_url=t.get("shareUrl", ""),
                 share_code=t.get("shareCode", ""),
                 source="auto",  # 自动转存：记录页不展示，走「转存历史」页 + 任务内转存日志
+                backend=get_group("media").get("backend", "qms"),
                 logs_json=json.dumps(t["logs"], ensure_ascii=False),
                 files_json=json.dumps(files_snap or [], ensure_ascii=False),
             )

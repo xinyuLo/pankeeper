@@ -177,6 +177,7 @@ def retrigger_record(record_id: int, _user=CurrentUser):
         if r is None:
             raise HTTPException(status_code=404, detail="记录不存在")
         p, name, drive = r.p or "", r.n or "", r.t or ""
+        r_backend = (r.backend or "").strip()
         files = [
             {"name": e.get("name")}
             for e in (json.loads(r.files_json or "[]") if r.files_json else [])
@@ -184,7 +185,9 @@ def retrigger_record(record_id: int, _user=CurrentUser):
         ][:20]
         share_url, share_code = r.share_url or "", r.share_code or ""
 
-    backend = get_group("media").get("backend", "qms")
+    # 按该记录**当时**的联动后端分流（用户 2026-10-06：根当时的记录来，不随当前设置变）；
+    # 老记录没落 backend 时回落当前设置
+    backend = (r_backend or "").strip() or get_group("media").get("backend", "qms")
     if backend == "litepan":
         link = resolve_litepan_link(p)
         if link is None:

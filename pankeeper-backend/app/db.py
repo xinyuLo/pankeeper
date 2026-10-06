@@ -84,6 +84,7 @@ def _migrate_columns() -> None:
         "records": [
             ("files_json", "TEXT DEFAULT '[]'"),
             ("source", "TEXT DEFAULT 'search'"),
+            ("backend", "TEXT DEFAULT ''"),
         ],
         "run_history": [
             ("skip_md5", "INTEGER DEFAULT 0"),
