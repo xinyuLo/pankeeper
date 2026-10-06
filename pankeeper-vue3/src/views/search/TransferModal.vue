@@ -25,6 +25,7 @@ import { USE_MOCK } from '@/api/http'
 import { getRootDirs } from '@/api/modules/accounts'
 import { listDdItems, listQmsPaths } from '@/api/modules/dd'
 import { recognizeShare, type RecognizeCandidate } from '@/api/modules/recognize'
+import { getSettings } from '@/api/modules/settings'
 import { ddStore } from '@/api/mock/dd'
 import ShareTree from './ShareTree.vue'
 import RecognizePicker from '@/components/RecognizePicker.vue'
@@ -168,6 +169,10 @@ const renameInput = ref('')
  *  开关关 = 明确不联动（media_off，连目录匹配都不做）。 ---- */
 const mediaOn = ref(true)
 const qmsSel = ref<number | null>(null)
+// LitePan 模式：联动行换成「推 LitePan」开关 + 事件名输入框（空=按转存配置目录/全局默认）
+const lpOn = ref(true)
+const lpEvent = ref('')
+const mediaBackend = ref<'qms' | 'litepan'>('qms')
 const qmsPaths = ref<DdQmsPath[]>([])
 const pathsLoading = ref(false)
 const mediaTouched = ref(false)
@@ -202,6 +207,9 @@ watch(selectedDir, () => {
     selectedDir.value = rootDir.value || DEFAULT_DIR
     includeSub.value = true
     mediaOn.value = true
+    lpOn.value = true
+    lpEvent.value = ''
+    getSettings().then((d) => (mediaBackend.value = d.media?.backend || 'qms')).catch(() => {})
     mediaTouched.value = false
     // QMS/STRM 目录清单后台拉（QMS 在 NAS 上，秒级）；到货后按目标目录带默认值
     if (!USE_MOCK) {
@@ -236,9 +244,11 @@ function start() {
     rename: renameInput.value.trim(),
     with_shell: checkedFiles.value === 0,
     /* 联动：开关关 = 明确不触发；开 = 用下拉选的 QMS（默认按目标位置自动带出）。
-       STRM 不传——后端与 QMS 自动配对，刮削成功才生成 */
-    media_off: !mediaOn.value,
-    qms_id: mediaOn.value ? qmsSel.value : null,
+       STRM 不传——后端与 QMS 自动配对，刮削成功才生成。
+       LitePan 模式：lp_event 带弹窗填的事件名（后端按 media.backend 分流，qms 时忽略） */
+    media_off: mediaBackend.value === 'litepan' ? !lpOn.value : !mediaOn.value,
+    qms_id: mediaBackend.value === 'qms' && mediaOn.value ? qmsSel.value : null,
+    lp_event: mediaBackend.value === 'litepan' && lpOn.value ? lpEvent.value.trim() : '',
   })
   if (pos < 0) {
     message.warning('该分享已在转存队列中，勿重复添加')
@@ -301,25 +311,44 @@ function start() {
         </div>
       </div>
 
-      <!-- 联动（样式对齐任务弹窗）：开关 + QMS 全宽下拉；开关关 = 完全不触发 -->
+      <!-- 联动：按「系统设置 → 联动后端」切换 QMS / LitePan 表单 -->
       <div class="tm-media">
-        <label class="tm-media-switch">
-          <a-switch v-model:checked="mediaOn" size="small" />
-          <span>转存完成后联动 QMS 整理</span>
-        </label>
-        <template v-if="mediaOn">
-          <a-select
-            v-model:value="qmsSel"
-            :options="qmsOpts"
-            style="width: 100%; margin-top: 10px"
-            :loading="pathsLoading"
-            :placeholder="pathsLoading ? '正在加载 QMS 目录…' : qmsPaths.length ? '选择 QMS 刮削目录' : 'QMS 未连接或没有刮削目录'"
-            allow-clear
-            @change="mediaTouched = true"
-          />
-          <div class="tm-hint">
-            默认按目标位置自动带出。QMS 整理成功后自动生成 STRM，失败不生成；不需要就清空。
-          </div>
+        <template v-if="mediaBackend === 'qms'">
+          <label class="tm-media-switch">
+            <a-switch v-model:checked="mediaOn" size="small" />
+            <span>转存完成后联动 QMS 整理</span>
+          </label>
+          <template v-if="mediaOn">
+            <a-select
+              v-model:value="qmsSel"
+              :options="qmsOpts"
+              style="width: 100%; margin-top: 10px"
+              :loading="pathsLoading"
+              :placeholder="pathsLoading ? '正在加载 QMS 目录…' : qmsPaths.length ? '选择 QMS 刮削目录' : 'QMS 未连接或没有刮削目录'"
+              allow-clear
+              @change="mediaTouched = true"
+            />
+            <div class="tm-hint">
+              默认按目标位置自动带出。QMS 整理成功后自动生成 STRM，失败不生成；不需要就清空。
+            </div>
+          </template>
+        </template>
+        <template v-else>
+          <label class="tm-media-switch">
+            <a-switch v-model:checked="lpOn" size="small" />
+            <span>转存完成后推送 LitePan</span>
+          </label>
+          <template v-if="lpOn">
+            <a-input
+              v-model:value="lpEvent"
+              style="width: 100%; margin-top: 10px"
+              :maxlength="80"
+              placeholder="LitePan 事件名，留空则用转存配置里配的"
+            />
+            <div class="tm-hint">
+              须与 LitePan 自动化规则里配的事件名一致；留空按转存配置目录的事件（再退全局默认）。
+            </div>
+          </template>
         </template>
       </div>
 

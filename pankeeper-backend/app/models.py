@@ -73,6 +73,8 @@ class PaTask(Base):
     exclude_count: Mapped[int] = mapped_column(Integer, default=0)
     qms_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     strm_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # LitePan 事件名（media.backend=litepan 时任务级覆盖；空=回退转存配置目录/全局默认）
+    lp_event: Mapped[str] = mapped_column(Text, default="")
     regex_pattern: Mapped[str] = mapped_column(Text, default="")
     regex_replace: Mapped[str] = mapped_column(Text, default="")
     drill_on: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -100,6 +102,10 @@ class DdItem(Base):
     qms_on: Mapped[bool] = mapped_column(Boolean, default=False)
     qms_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     strm_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # LitePan 联动（media.backend=litepan 时生效）：事件名按目录配——不同目录推不同
+    # LitePan 自动化规则（电影/电视剧各一条），全局单一事件名不够用（2026-10-06 用户定稿）
+    lp_on: Mapped[bool] = mapped_column(Boolean, default=False)
+    lp_event: Mapped[str] = mapped_column(Text, default="")
 
 
 class QmsPath(Base):

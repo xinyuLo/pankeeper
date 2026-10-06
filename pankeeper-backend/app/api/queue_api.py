@@ -35,6 +35,8 @@ class EnqueueBody(BaseModel):
     qms_id: int | None = None
     # 明确关闭联动（弹窗开关关掉）：连目录前缀匹配也不做，转存完什么都不触发
     media_off: bool = False
+    # LitePan 事件名（media.backend=litepan 时弹窗可覆盖；空=回退转存配置目录/全局默认）
+    lp_event: str = ""
     # 任务来源：search（默认，搜索转存）/ auto（定时调度）；决定推送走哪个开关
     source: str = "search"
 

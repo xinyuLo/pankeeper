@@ -150,15 +150,28 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
     回填/STRM 线程要用同一份，别再现场 _match_dd_link（显式指定会被目录匹配覆盖掉）。"""
     from ..services.settings_svc import get_group
     if get_group("media").get("backend", "qms") != "qms":
-        # 联动后端切到 LitePan：推送转存完成消息即收工，QMS/STRM 全流程跳过
+        # 联动后端切到 LitePan：按目录配的 lp_on/lp_event 推 webhook（未配的目录跳过）
         from ..services import litepan
+        from .auto import resolve_litepan_link
         t["_media"] = {"qms_id": None, "strm_id": None}
-        lp_res = litepan.notify_transfer_done({
-            "drive": t["type"], "task": name_head, "path": t["path"],
-            "files": [{"name": e.get("name")} for e in result.transferred],
-            "share_url": t.get("shareUrl", ""), "share_code": t.get("shareCode", ""),
-        })
-        _push_log(t, "INFO" if lp_res["ok"] else "WARN", f"联动后端为 LitePan：{lp_res['message']}")
+        lp_link = resolve_litepan_link(t["path"])
+        # 弹窗里填了事件名（搜索转存弹窗输入框）= 一次性覆盖，最高优先
+        popup_event = (t.get("lpEvent") or "").strip()
+        if lp_link is not None and popup_event:
+            lp_link = {"event": popup_event}
+        elif lp_link is None and popup_event:
+            lp_link = {"event": popup_event}
+        if lp_link is None:
+            _push_log(t, "INFO", "该目录未配置 LitePan 联动（转存配置里没开），跳过推送")
+        else:
+            lp_res = litepan.notify_transfer_done({
+                "drive": t["type"], "task": name_head, "path": t["path"],
+                "files": [{"name": e.get("name")} for e in result.transferred],
+                "share_url": t.get("shareUrl", ""), "share_code": t.get("shareCode", ""),
+                "event": lp_link["event"],
+            })
+            _push_log(t, "INFO" if lp_res["ok"] else "WARN", f"联动后端为 LitePan：{lp_res['message']}")
+        _push_log(t, "STEP", "LitePan 模式独立推送流程已挂后台（自识别 TMDB，不查 LitePan 状态）")
         # LitePan 模式的**独立推送流程**：自识别 TMDB 直接推送（与 QMS 流程隔离）
         media_push.watch_and_spawn({
             "drive": t["type"], "task": name_head,

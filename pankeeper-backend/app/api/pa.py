@@ -53,6 +53,7 @@ def _row(t: PaTask) -> dict:
         # 扩展字段（原内存 map 已并表）
         "qms_id": t.qms_id,
         "strm_id": t.strm_id,
+        "lp_event": t.lp_event or "",
         "regex_pattern": t.regex_pattern or "",
         "regex_replace": t.regex_replace or "",
         "drill_on": bool(t.drill_on),  # 下钻：字段保留、配置不丢；功能短期不实现（2026-10-03 定）
@@ -74,6 +75,7 @@ class PaBody(BaseModel):
     cron: str = ""
     qms_id: int | None = None
     strm_id: int | None = None
+    lp_event: str = ""
     regex_pattern: str = ""
     regex_replace: str = ""
     drill_on: bool = False
@@ -95,6 +97,7 @@ def _apply(t: PaTask, body: PaBody) -> None:
     t.cron = body.cron
     t.qms_id = body.qms_id
     t.strm_id = body.strm_id
+    t.lp_event = (body.lp_event or "").strip()
     t.regex_pattern = body.regex_pattern
     t.regex_replace = body.regex_replace
     t.drill_on = body.drill_on
