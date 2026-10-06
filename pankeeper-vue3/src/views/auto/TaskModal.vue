@@ -407,7 +407,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
               </div>
               <div v-if="postLp" style="margin-top: 10px">
                 <a-input v-model:value="lpEvent" :maxlength="80" placeholder="LitePan 事件名，留空则按转存配置里配的" />
-                <div class="mt-hint">须与 LitePan 自动化规则里配的事件名一致；留空按转存配置目录的事件（再退全局默认）。</div>
+                <div class="mt-hint">须与 LitePan 自动化规则里配的事件名一致；留空则按转存配置目录配的事件，目录也没配就不推送。</div>
               </div>
             </div>
           </div>

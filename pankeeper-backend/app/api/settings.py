@@ -149,9 +149,9 @@ def put_litepan(body: dict, _user=CurrentUser):
     掩码 apikey 由 save_group 的 litepan 分支保留旧值。"""
     body = body or {}
     save_group("litepan", {
+        "enabled": bool(body.get("enabled")),
         "webhook_url": (body.get("webhook_url") or "").strip(),
         "apikey": (body.get("apikey") or "").strip(),
-        "event": (body.get("event") or "").strip(),
     })
     return {"ok": True}
 
