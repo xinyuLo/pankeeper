@@ -78,6 +78,13 @@ export async function retrigQms(r: RecordRow): Promise<void> {
   await post(`/records/${r.id}/retrigger-qms`)
 }
 
+/** 行级「触发」：按联动后端分流重新触发（litepan=重发 Webhook / qms=重触发刮削）。
+ * 未配联动时后端 400 + detail（调用方展示）。 */
+export async function retriggerRecord(recordId: number): Promise<{ ok: boolean; message: string }> {
+  if (USE_MOCK) return mockDelay({ ok: true, message: '（mock）已触发' })
+  return post<{ ok: boolean; message: string }>(`/records/${recordId}/retrigger`)
+}
+
 /** 手动触发弹窗：触发 QMS 刮削。label 只做留痕 */
 export async function triggerQms(qmsId: number, label: string): Promise<void> {
   if (USE_MOCK) {
