@@ -132,3 +132,12 @@
   回填预览等宽渐变文字、无图占位斜纹网格。
 - 弹窗外壳样式走 wrapClassName 非 scoped 覆盖（antd v4 content/header/close）。
 - 浏览器实测渲染 + 点选回填（F1：狂飙飞车 (2025)）正常。
+
+## 十一、搜索转存记录页行级「触发」（用户 2026-10-06，未推 NAS）
+
+- 每行「详情」后加「触发」：调新端点 `POST /records/{id}/retrigger`，**按联动后端分流**——
+  litepan=按目标目录配的 lp_event 重发该记录的 Webhook（带记录文件清单）；
+  qms=按目录前缀匹配重触发 QMS 刮削；都没配 → 400 明确提示（toast 展示 detail）。
+- 顶栏「触发 QMS / STRM」按钮（手动选目标弹窗那套）litepan 模式下隐藏。
+- 实测三场景：litepan 命中「百度-电影」规则推送 ✓ / qms 触发刮削 ✓ / 未配 400 ✓。
+- 触发中按钮禁用防连点；PC 表格与手机卡片同 handler。

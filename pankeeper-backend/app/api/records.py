@@ -161,6 +161,53 @@ def retrigger_qms(record_id: int, _user=CurrentUser):
     return {"ok": ok, "message": msg}
 
 
+@router.post("/records/{record_id}/retrigger")
+def retrigger_record(record_id: int, _user=CurrentUser):
+    """行级「触发」（2026-10-06）：按联动后端分流重新触发——
+    - litepan：按目标目录配的 lp_event 重发该记录的 Webhook（没配 → 400）；
+    - qms：按目录前缀匹配重新触发 QMS 刮削（没配 → 400）。"""
+    import json as _json
+
+    from ..services import litepan as lp_svc
+    from ..services.settings_svc import get_group
+    from ..transfer.auto import resolve_litepan_link
+
+    with SessionLocal() as db:
+        r = db.get(Record, record_id)
+        if r is None:
+            raise HTTPException(status_code=404, detail="记录不存在")
+        p, name, drive = r.p or "", r.n or "", r.t or ""
+        files = [
+            {"name": e.get("name")}
+            for e in (json.loads(r.files_json or "[]") if r.files_json else [])
+            if isinstance(e, dict) and e.get("name")
+        ][:20]
+        share_url, share_code = r.share_url or "", r.share_code or ""
+
+    backend = get_group("media").get("backend", "qms")
+    if backend == "litepan":
+        link = resolve_litepan_link(p)
+        if link is None:
+            raise HTTPException(status_code=400, detail="该记录的目标目录未配置 LitePan 联动")
+        res = lp_svc.notify_transfer_done({
+            "drive": drive, "task": name, "path": p,
+            "files": files, "share_url": share_url, "share_code": share_code,
+            "event": link["event"],
+        })
+        return {"ok": res["ok"], "message": res["message"]}
+    # qms：目录前缀匹配 → 重触发刮削
+    with SessionLocal() as db:
+        link = None
+        for d in db.query(DdItem).filter(DdItem.qms_on.is_(True), DdItem.qms_id.isnot(None)).all():
+            if p == d.path or p.startswith(d.path.rstrip("/") + "/"):
+                link = d
+                break
+    if link is None:
+        raise HTTPException(status_code=400, detail="该记录的目标目录未配置 QMS 联动")
+    ok, msg = qms.trigger_scrape(link.qms_id)
+    return {"ok": ok, "message": msg or "已触发 QMS 刮削"}
+
+
 @router.post("/records/{record_id}/retry-failed")
 def retry_failed(record_id: int, _user=CurrentUser):
     """重试失败项：把失败记录重新入队（M3 细化为按文件粒度）。"""
