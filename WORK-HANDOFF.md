@@ -5,7 +5,9 @@
 
 ## 0. 一句话状态
 
-**10-06 批次：LitePan 对接落地**——外层 LitePan Go 源码通读定稿协议（**HTTP Webhook**，非此前猜测的 WS：`POST /api/open/automation/events`，体 `{event,source,path}`，Bearer API Key，规则异步执行响应带 matched/triggered）→ `services/litepan.py` 真实现（notify_transfer_done + test_webhook，失败分支如实报）→ 设置组 litepan（webhook_url/apikey 加密/event）+ 设置页 tab3 恢复后端切换下拉（顺修 onMediaBackend 不回写本地值的潜伏 bug）+ LitePan 参数表单与测试按钮。**真连 LitePan 实测未做**（NAS 尚无实例），部署后点「测试」即可验。详见 `工作日志/2026-10-06-PanKeeper-LitePan对接落地.md`。
+**10-06 批次二：推送串台/漏集双 bug 根修 + 推送历史详情**——用户实测两单（自动转存 6 集只推 1 集；搜索转存狂飙推送变成「兰香如故 · 更新 1 集 S01E17」）根因=①推送/回填「全部终态」判定漏了"还没记录的文件"（匹配到 1 条旧记录就早退）+②裸名文件跨剧串台（狂飙 17.mp4 撞兰香如故旧批次同名 QMS 记录，QMS 记录的 path 字段为空没法按目录过滤）。修法：`run_watch._wait` 重写为唯一真相源（**全覆盖才收工** + **baseline 指纹全路径必传**只认本次触发的新记录 + 停滞 10 分钟保护），media_push 委托调用；推送信息条/兜底对缺文件如实点名。另：push_logs 加 content 列（Server酱正文快照）+ 推送历史「详情」抽屉。详见 `工作日志/2026-10-06-PanKeeper-推送串台漏集根修与推送详情.md`。
+
+**10-06 批次一：LitePan 对接落地**——外层 LitePan Go 源码通读定稿协议（**HTTP Webhook**，非此前猜测的 WS：`POST /api/open/automation/events`，体 `{event,source,path}`，Bearer API Key，规则异步执行响应带 matched/triggered）→ `services/litepan.py` 真实现（notify_transfer_done + test_webhook，失败分支如实报）→ 设置组 litepan（webhook_url/apikey 加密/event）+ 设置页 tab3 恢复后端切换下拉（顺修 onMediaBackend 不回写本地值的潜伏 bug）+ LitePan 参数表单与测试按钮。**真连 LitePan 实测未做**（NAS 尚无实例），部署后点「测试」即可验。详见 `工作日志/2026-10-06-PanKeeper-LitePan对接落地.md`。
 
 **10-05 深夜批次已收口并部署 NAS（6df209e）**：**TMDB 自识别器**（`media_recognize.py`，±1 年容错+存疑标记，推送不再依赖后端刮削记录）+ **LitePan 独立推送流程**（`media.backend` 分流，两套日志互不掺和）+ **转存弹窗识别按钮**（回填按 QMS 规则「标题 (年份)」，年份以 TMDB 为准）+ **STRM 日志口径如实**（定向=临时任务，整路径=触发同步目录）+ **Emby 刷新修复**（QMS emby-config 套层解析）——**转存→刮削→定向同步→Emby 刷库全链闭合**。详见 `工作日志/2026-10-05-PanKeeper-TMDB自识别与联动收尾.md`。
 

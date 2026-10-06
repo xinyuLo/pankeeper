@@ -232,12 +232,18 @@ def test_qms(body: dict, _user=CurrentUser):
 def push_history(limit: int = 50, _user=CurrentUser):
     """推送历史明细（推送历史页数据源）：时间/标题/成败/失败原因，按时间倒序。
 
-    delivered/failed 是本页窗口内的计数（旧设置页按钮只回计数，字段保留兼容）。"""
+    delivered/failed 是本页窗口内的计数（旧设置页按钮只回计数，字段保留兼容）。
+    content 只回前 200 字预览（列表页够用，正文可能几十 KB）——完整正文走 /notify/history/{id}。"""
     limit = max(1, min(limit, 200))
     with SessionLocal() as db:
         rows = db.query(PushLog).order_by(PushLog.id.desc()).limit(limit).all()
         items = [
-            {"id": r.id, "ts": r.ts, "title": r.title, "kind": r.kind, "status": r.status, "error": r.error or ""}
+            {
+                "id": r.id, "ts": r.ts, "title": r.title, "kind": r.kind,
+                "status": r.status, "error": r.error or "",
+                "content": (r.content or "")[:200],
+                "has_more": bool(r.content and len(r.content) > 200),
+            }
             for r in rows
         ]
     return {
@@ -245,5 +251,18 @@ def push_history(limit: int = 50, _user=CurrentUser):
         "delivered": sum(1 for i in items if i["status"] == "success"),
         "failed": sum(1 for i in items if i["status"] == "fail"),
     }
+
+
+@router.get("/notify/history/{log_id}")
+def push_history_detail(log_id: int, _user=CurrentUser):
+    """单条推送的完整正文（推送历史「详情」弹窗用）。"""
+    with SessionLocal() as db:
+        r = db.get(PushLog, log_id)
+        if r is None:
+            raise HTTPException(status_code=404, detail="推送记录不存在")
+        return {
+            "id": r.id, "ts": r.ts, "title": r.title, "kind": r.kind,
+            "status": r.status, "error": r.error or "", "content": r.content or "",
+        }
 
 

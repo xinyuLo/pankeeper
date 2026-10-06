@@ -214,6 +214,10 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
     _sleep_phase(eng, t, "waitqms", int(cfg.get("qms", 10)), f"等待 {cfg.get('qms', 10)} 秒后触发 QMS 刮削")
     t["phase"] = "qms"
     t["phaseStart"] = int(time.time() * 1000)
+    # 触发**前**抓记录指纹：回填/推送只认本次触发产生的新记录（去重不重刮不冒充、
+    # 同名旧记录不串台，见 run_watch._wait 的教训清单）
+    from ..services import run_watch
+    t["_qms_baseline"] = run_watch.record_fingerprint([e.get("name") for e in result.transferred])
     ok, msg = qms.trigger_scrape(link["qms_id"])
     # ⚠️ 这里只能证明"QMS 受理了触发请求"，不是刮削结果——快照如实写「已触发」，
     # 真实结果由 run_watch 后台轮询回填（2026-10-04 用户实锤：QMS 侧 scrape_failed
@@ -453,10 +457,13 @@ def _sync_pa_task(t: dict, status: str, result, qms_snap: dict | None = None, st
         from ..services import media_push, run_watch
         from ..services.settings_svc import get_group
 
+        names = [e.get("name") for e in result.transferred]
+        baseline = t.get("_qms_baseline") or {}
         run_watch.watch_qms(
             run_id_new,
             t["name"].split(".")[0],
-            [e.get("name") for e in result.transferred],
+            names,
+            baseline=baseline,
         )
         link = resolve_media_link(t["path"], t.get("paTaskId"))
         strm_plan = None
@@ -464,14 +471,15 @@ def _sync_pa_task(t: dict, status: str, result, qms_snap: dict | None = None, st
             delay = int(get_group("queue_cfg").get("strm", 10))
             strm_plan = {"strm_id": int(link["strm_id"]), "delay": delay}
             run_watch.trigger_strm_after_scrape(run_id_new, int(link["qms_id"]), int(link["strm_id"]), delay)
-        # ③ 推送：ctx 带 run_id + STRM 计划，推送线程会等 STRM 触发结果再发，
-        #    信息条才能如实显示「STRM 已生成」（之前 strm_ok 恒 None，永远不显示）
+        # ③ 推送：ctx 带 run_id + STRM 计划 + 触发前指纹（推送只认本次的新记录），
+        #    推送线程会等 STRM 触发结果再发，信息条才能如实显示「STRM 已生成」
         media_push.watch_and_spawn({
             "drive": t["type"],
             "task": t["name"].split(".")[0],
-            "names": [e["name"] for e in result.transferred],
+            "names": names,
             "qms_ok": True,
             "strm_plan": strm_plan,
             "run_id": run_id_new,
+            "qms_baseline": baseline,
             "source": t.get("source", "auto"),
         })

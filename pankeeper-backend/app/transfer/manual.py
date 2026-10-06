@@ -197,6 +197,9 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
     _sleep_phase(eng, t, "waitqms", int(cfg.get("qms", 10)), f"等待 {cfg.get('qms', 10)} 秒后触发 QMS 刮削")
     t["phase"] = "qms"
     t["phaseStart"] = int(time.time() * 1000)
+    # 触发**前**抓记录指纹：回填/推送只认本次触发产生的新记录（与 auto.py 同款，教训见 run_watch._wait）
+    from ..services import run_watch
+    t["_qms_baseline"] = run_watch.record_fingerprint([e.get("name") for e in result.transferred])
     ok, msg = qms.trigger_scrape(int(qms_id))
     # 与自动转存同款口径（2026-10-04 用户要求："qms那已经是刮削失败了，pankeeper还显示qms触发成功"）：
     # 触发受理 ≠ 刮削成功，快照先如实写「已触发」，真实结果由 run_watch 后台轮询回填
@@ -302,8 +305,9 @@ def _finish(eng, t: dict, status: str, message: str = "", qms_snap: dict | None 
         from ..services.settings_svc import get_group
 
         names = [e.get("name") for e in result.transferred]
+        baseline = t.get("_qms_baseline") or {}
         strm_plan = None
-        run_watch.watch_qms(rid, t["name"].split(".")[0], names, table=Record)
+        run_watch.watch_qms(rid, t["name"].split(".")[0], names, baseline=baseline, table=Record)
         if strm_id:
             delay = int(get_group("queue_cfg").get("strm", 10))
             strm_plan = {"strm_id": int(strm_id), "delay": delay}
@@ -316,6 +320,7 @@ def _finish(eng, t: dict, status: str, message: str = "", qms_snap: dict | None 
             "strm_plan": strm_plan,
             "run_id": rid,
             "strm_table": "Record",
+            "qms_baseline": baseline,
             "source": t.get("source", "search"),
         })
     if status == "fail":

@@ -47,17 +47,21 @@ def push(title: str, content: str, kind: str = "info", short: str | None = None)
         ok, err = _webhook(cfg["webhook"], title, content)
         if not ok:
             errors.append(f"Webhook：{err}")
-    _log_push(title, kind, "fail" if errors else "success", "；".join(errors))
+    _log_push(title, kind, "fail" if errors else "success", "；".join(errors), content)
 
 
-def _log_push(title: str, kind: str, status: str, error: str) -> None:
-    """推送结果落库。日志失败绝不影响主流程（推送本身就是旁路）。"""
+def _log_push(title: str, kind: str, status: str, error: str, content: str = "") -> None:
+    """推送结果落库（含正文快照，推送历史「详情」用）。日志失败绝不影响主流程（推送本身就是旁路）。"""
     try:
         from ..db import SessionLocal
         from ..models import PushLog
 
+        # 正文快照截断：富文本推送带图片链接时可能几十 KB，SQLite 存得下但没必要
+        body = content or ""
+        if len(body) > 50000:
+            body = body[:50000] + "\n…（超长截断）"
         with SessionLocal() as db:
-            db.add(PushLog(ts=time.strftime("%Y-%m-%d %H:%M:%S"), title=title, kind=kind, status=status, error=error))
+            db.add(PushLog(ts=time.strftime("%Y-%m-%d %H:%M:%S"), title=title, kind=kind, status=status, error=error, content=body))
             db.commit()
     except Exception:
         pass

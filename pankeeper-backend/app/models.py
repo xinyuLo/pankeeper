@@ -267,3 +267,6 @@ class PushLog(Base):
     kind: Mapped[str] = mapped_column(Text, default="info")  # notify.push 的 kind
     status: Mapped[str] = mapped_column(Text, default="success")  # success|fail
     error: Mapped[str] = mapped_column(Text, default="")  # 失败原因（多渠道用「；」拼接）
+    # 实际推送的正文快照（Server酱 desp / Webhook body 的 text 段，2026-10-06 用户要求：
+    # 推送历史只有标题太薄，详情要能看到 Server酱收到的完整内容）。超长截断（见 notify._log_push）。
+    content: Mapped[str] = mapped_column(Text, default="")
