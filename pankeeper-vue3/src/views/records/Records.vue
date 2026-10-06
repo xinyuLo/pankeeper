@@ -308,12 +308,12 @@ async function confirmTrig() {
                    右侧 QMS/STRM/时间/操作收窄，别让宽屏下中间断崖、右边全空 -->
               <th style="width: 28%">资源名称</th>
               <th style="width: 118px">来源</th>
-              <th style="width: 200px">目标位置</th>
+              <th style="width: 170px">目标位置</th>
               <th style="width: 30%">结果</th>
               <th style="width: 96px">{{ mediaBackend === 'litepan' ? '整理' : 'QMS 整理' }}</th>
               <th style="width: 96px">{{ mediaBackend === 'litepan' ? 'STRM' : 'STRM 生成' }}</th>
               <th style="width: 88px">时间</th>
-              <th style="width: 110px">操作</th>
+              <th style="width: 150px">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -585,6 +585,10 @@ html[data-theme='dark'] .pa-ico.pa-ico-view { color: #69b1ff; }
 html[data-theme='dark'] .pa-ico.pa-ico-view:hover { background: #111a2c; }
 html[data-theme='dark'] .pa-ico.pa-ico-copy { color: #b37feb; }
 html[data-theme='dark'] .pa-ico.pa-ico-copy:hover { background: #1a1425; }
+/* 操作列三链接不换行（详情丨触发丨删除挤一行，换行很难看） */
+.rk-table td .rk-detail,
+.rk-table td .rk-opdiv { white-space: nowrap; }
+
 /* 详情丨删除 之间的竖线分隔 */
 .rk-opdiv {
   color: var(--text4);
