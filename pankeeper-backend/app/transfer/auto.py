@@ -314,10 +314,14 @@ def resolve_litepan_link(path: str, task_id: int | None = None) -> dict | None:
     lp_on=True 的目录，事件名**按目录配**——不同目录推不同 LitePan 自动化规则
     （电影/电视剧各一条），全局单一事件名不够用。
 
-    **总闸语义与 QMS 一致**（"那个目录要是关闭了，就等于没配"）：save_dir 没命中任何
-    lp_on 目录 → 一律返回 None，任务弹窗配的事件、搜索弹窗填的事件**全部作废**——
-    没配联动就连选都不该让选（2026-10-06 用户追问定稿）。
-    事件名优先级（目录已配时）：任务弹窗 > 目录配置 > 设置页全局默认。"""
+    **三道闸**（2026-10-06 用户逐步定稿）：
+    ① 设置页 LitePan「启用联动」关 → 全部不推；
+    ② save_dir 没命中任何 lp_on 目录 → 一律 None（任务/弹窗事件全部作废，没配就不让选）；
+    ③ **事件名没填就不联动**（无全局兜底）：任务弹窗和目录配置都没填事件 → None。
+    事件名优先级：任务弹窗 > 目录配置。"""
+    from ..services.settings_svc import get_group
+    if not get_group("litepan").get("enabled"):
+        return None
     hit: DdItem | None = None
     with SessionLocal() as s:
         for d in s.query(DdItem).filter(DdItem.lp_on.is_(True)).all():
@@ -332,9 +336,10 @@ def resolve_litepan_link(path: str, task_id: int | None = None) -> dict | None:
             row = s.get(PaTask, task_id)
             if row is not None:
                 task_event = (row.lp_event or "").strip()
-    from ..services.settings_svc import get_group
     dir_event = (hit.lp_event or "").strip()
-    event = task_event or dir_event or (get_group("litepan").get("event") or "").strip()
+    event = task_event or dir_event
+    if not event:
+        return None  # 事件名没填 = 不联动（无兜底）
     return {"event": event}
 
 

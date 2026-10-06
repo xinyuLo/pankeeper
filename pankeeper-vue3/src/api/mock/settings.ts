@@ -50,12 +50,12 @@ export interface QmsCfg {
 
 /** ===== tab3 LitePan 对接（联动后端=litepan 时生效：HTTP Webhook 推转存完成消息） ===== */
 export interface LitePanCfg {
+  /** 总闸：关 = 所有目录的 LitePan 联动都不推送 */
+  enabled: boolean
   /** 完整 Webhook 地址（LitePan 地址 + /api/open/automation/events） */
   webhook_url: string
-  /** LitePan API Key（真实系统加密存储、接口只回掩码） */
+  /** LitePan API Key（真实系统加密存储、接口只回掩码）。事件名按目录/任务配，没填不联动 */
   apikey: string
-  /** 事件名：须与 LitePan 自动化规则里配的完全一致 */
-  event: string
 }
 
 /** ===== tab4 账号安全 ===== */
@@ -100,9 +100,9 @@ export const settingsStore = reactive<SettingsData>({
     act_emby: true,
   },
   litepan: {
+    enabled: true,
     webhook_url: 'http://192.168.2.77:8030/api/open/automation/events',
     apikey: '****-****-****',
-    event: 'transfer.done',
   },
   security: {
     username: 'admin',

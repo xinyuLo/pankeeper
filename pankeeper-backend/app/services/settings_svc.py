@@ -49,8 +49,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     # litepan = 转存完成后 Webhook 推给 LitePan，后续整理由 LitePan 自动化规则自理
     "media": {"backend": "qms"},
     # LitePan 对接参数（HTTP Webhook，协议定稿见 services/litepan.py 模块注释）。
-    # event 是 LitePan 侧自动化规则匹配用的事件名，须与规则里配的完全一致。
-    "litepan": {"webhook_url": "", "apikey": "", "event": "transfer.done"},
+    # enabled 总闸（关=全部不推）；事件名不在这配（按目录/任务配，没填不联动）。
+    "litepan": {"enabled": False, "webhook_url": "", "apikey": ""},
     "queue_cfg": {"threads": 1, "gap": 5, "qms": 10, "strm": 10},
     # 网盘凭据每日探活（M3）：默认每天 10:00 跑一次。
     # 时间特意放在上午而不是凌晨——半夜探出失效也没人看，通知等于白发；
@@ -143,6 +143,7 @@ def save_group(key: str, value: dict[str, Any]) -> None:
         new_val = value.get("apikey", "")
         if isinstance(new_val, str) and new_val.startswith("****"):
             value["apikey"] = old.get("apikey", "")
+        value.pop("event", None)  # 事件名配置已废弃（按目录/任务配），老库残留一并清掉
         _encrypt(value)
     with SessionLocal() as s:
         row = s.get(Setting, key)

@@ -371,7 +371,7 @@ function start() {
               placeholder="LitePan 事件名，留空则用转存配置里配的"
             />
             <div class="tm-hint">
-              须与 LitePan 自动化规则里配的事件名一致；留空按转存配置目录的事件（再退全局默认）。
+              须与 LitePan 自动化规则里配的事件名一致；留空则按转存配置目录配的事件，目录也没配就不推送。
             </div>
           </template>
         </template>
