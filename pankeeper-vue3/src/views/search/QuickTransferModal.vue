@@ -11,6 +11,7 @@ import { listDdItems, listQmsPaths } from '@/api/modules/dd'
 import { recognizeShare, type RecognizeCandidate } from '@/api/modules/recognize'
 import { getSettings } from '@/api/modules/settings'
 import { listAccounts } from '@/api/modules/accounts'
+import { getSearchShareFiles } from '@/api/modules/search'
 import { ddStore } from '@/api/mock/dd'
 import RecognizePicker from '@/components/RecognizePicker.vue'
 import type { DdItem, DdQmsPath, DriveType, MainDriveType } from '@/types/model'
@@ -36,6 +37,40 @@ const accNames = ref<Record<string, string>>({})
 const selId = ref<number | null>(null)
 const rename = ref('')
 const renameRef = ref()
+
+/* ===== 电影目录的内容判断（2026-10-07 交互定稿）：
+ * 电视节目目录 → 直接转；电影目录 → 拉清单判断，多文件才展开多选框列表。
+ * 清单走 share_list_cache 联动（点过查看文件的分享毫秒级）。 ===== */
+const filesLoading = ref(false)
+const filesFailed = ref(false)
+const fileRows = ref<{ path: string; name: string; size: number }[]>([])
+const selPaths = ref<string[]>([])
+/** 当前所选目录是否电影目录：media_type 字段优先，存量老目录按名称推断（含电视/剧 → tv） */
+const isMovieDir = computed(() => {
+  const it = currentItem.value
+  if (!it) return false
+  if (it.media_type === 'tv' || it.media_type === 'movie') return it.media_type === 'movie'
+  const n = (it.name || '').toLowerCase()
+  return !(n.includes('电视') || n.includes('剧'))
+})
+/** 展开多选框列表的条件：电影目录 + 检测到多文件（单文件直接转，不用选） */
+const showFilePicker = computed(() => isMovieDir.value && !filesFailed.value && fileRows.value.length > 1)
+async function loadShareFiles() {
+  filesLoading.value = true
+  filesFailed.value = false
+  fileRows.value = []
+  selPaths.value = []
+  try {
+    const meta = await getSearchShareFiles(props.type || '', props.shareUrl || '', props.shareCode || '')
+    fileRows.value = (meta.files || [])
+      .filter((f) => !f.is_dir)
+      .map((f) => ({ path: f.path, name: f.name, size: f.size }))
+  } catch {
+    filesFailed.value = true
+  } finally {
+    filesLoading.value = false
+  }
+}
 // 联动后端（决定预览行显示 QMS 还是 LitePan）。LitePan 事件名不在这里配——
 // 转存配置目录已配（2026-10-06 用户定稿：快速转存完全跟随目录配置）
 const mediaBackend = ref<'qms' | 'litepan'>('qms')
@@ -83,6 +118,8 @@ watch(
   (v) => {
     if (!v) return
     rename.value = ''
+    selPaths.value = []
+    void loadShareFiles() // 电影目录的多文件判断数据源（share_list_cache 联动，秒开）
     getSettings().then((d) => (mediaBackend.value = d.media?.backend || 'qms')).catch(() => {})
     pinDefault() // 用 store 现成数据立即钉默认项，弹窗首帧就是完整表单
     // 后台静默刷新保存位置（写回 ddStore，items 是它的 computed 会自动更新）
@@ -278,6 +315,23 @@ function onOk() {
           </a-input>
         </div>
 
+        <!-- 电影目录内容判断：多文件 → 展开多选框列表（转存按钮行为待定稿）；
+             电视节目目录 / 单文件 / 清单失败 → 不展示，照旧直接转 -->
+        <div v-if="isMovieDir && filesLoading" class="dd-field qs-chk-loading">
+          <a-spin size="small" />
+          <span class="small muted">正在检测文件夹内容…</span>
+        </div>
+        <div v-if="showFilePicker" class="dd-field">
+          <label class="dd-label">检测到多个文件，勾选要转存的<i>*</i></label>
+          <div class="qs-chk-list">
+            <label v-for="f in fileRows" :key="f.path" class="qs-chk">
+              <input type="checkbox" :value="f.path" v-model="selPaths" />
+              <span class="qs-chk-name" :title="f.name">{{ f.name }}</span>
+              <span class="qs-chk-size">{{ f.size ? (f.size / 1024 / 1024 / 1024).toFixed(1) + ' GB' : '—' }}</span>
+            </label>
+          </div>
+        </div>
+
         <!-- 「转存后」预览：三段结构（标题/路径/触发行），防止被拍平回退 -->
         <div class="dd-field">
           <div v-if="pv" class="qs-preview" :class="{ 'is-renamed': pv.raw }">
@@ -348,6 +402,29 @@ function onOk() {
 }
 
 /* ---- 「转存后」结果预览（search-ui 原型样式移植） ---- */
+/* 电影目录内容判断：loading 行 + 多选框列表（固定高度滚动） */
+.qs-chk-loading { display: flex; align-items: center; gap: 10px; padding: 10px 0; }
+.qs-chk-list {
+  height: 150px;
+  overflow: auto;
+  border: 1px solid var(--split);
+  border-radius: 8px;
+  background: var(--surface-2);
+  padding: 5px;
+}
+.qs-chk {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+.qs-chk:hover { background: rgba(22, 119, 255, 0.07); }
+.qs-chk-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qs-chk-size { flex: none; color: var(--text3); font-size: 11.5px; }
+
 .qs-preview { border: 1px solid var(--split); border-radius: 10px; background: var(--surface-2); overflow: hidden; }
 .qs-pv-hd {
   display: flex; align-items: center; gap: 6px; padding: 8px 12px;
