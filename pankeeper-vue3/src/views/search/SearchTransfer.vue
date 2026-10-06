@@ -13,7 +13,7 @@ import QuickTransferModal from './QuickTransferModal.vue'
 import TransferModal, { type TransferTarget } from './TransferModal.vue'
 import ShareFilesModal from '@/views/auto/ShareFilesModal.vue'
 import { useIsMobile } from '@/composables/useIsMobile'
-import { getInitialResults, getPanSouAddr, getSearchChannels, getSearchResults, getSearchShareFiles, type SearchChannel, getEngineHealth, getEngineHealthCached } from '@/api/modules/search'
+import { checkShareLink, getInitialResults, getPanSouAddr, getSearchChannels, getSearchResults, getSearchShareFiles, type SearchChannel, getEngineHealth, getEngineHealthCached } from '@/api/modules/search'
 import { getSettings, saveSearchSrc } from '@/api/modules/settings'
 import { listDdItems } from '@/api/modules/dd'
 import { ddStore } from '@/api/mock/dd'
@@ -324,6 +324,38 @@ function rollStats(cards: StatCard[]) {
 function hasDD(t: DriveType) {
   return ddTypes.value.has(t)
 }
+
+/* ===== 转存前死活预检（2026-10-06 用户定稿：点了先探，死链直接不让过）=====
+ * pansou /api/check/links 单条透传（服务端有缓存，重复点很快）。
+ * 只拦 bad；locked（需提取码）/uncertain（无法判定）/unknown（检测器不可用）一律放行，
+ * 别让检测器挂掉把转存也挡死。检测中该行按钮禁用防连点。 */
+const checkingRows = ref(new Set<string>())
+function rowKeyOf(r: SearchResultItem) {
+  return `${r.t}|${r.url}`
+}
+function isChecking(r: SearchResultItem) {
+  return checkingRows.value.has(rowKeyOf(r))
+}
+async function aliveOrBlock(r: SearchResultItem): Promise<boolean> {
+  if (!r.url || r.t === 'magnet') return true
+  const key = rowKeyOf(r)
+  if (checkingRows.value.has(key)) return false
+  checkingRows.value = new Set(checkingRows.value).add(key)
+  try {
+    const res = await checkShareLink(r.t, r.url, r.share_code || '')
+    if (res.state === 'bad') {
+      message.warning(`分享已失效（${res.summary || '链接检测未通过'}），不转了`, 5)
+      return false
+    }
+    return true
+  } catch {
+    return true // 检测挂了/超时：放行，别挡转存
+  } finally {
+    const next = new Set(checkingRows.value)
+    next.delete(key)
+    checkingRows.value = next
+  }
+}
 /** 快速转存：要凭据 + 该网盘配过转存目录，两者缺一即禁用（title 指出去哪配） */
 function quickDisabled(r: SearchResultItem) {
   return !r.ok || !hasDD(r.t)
@@ -341,8 +373,9 @@ const qsCode = ref('')
 const tmOpen = ref(false)
 const tmTarget = ref<TransferTarget | null>(null)
 
-function openQuick(r: SearchResultItem) {
+async function openQuick(r: SearchResultItem) {
   if (!r.ok || r.t === 'magnet' || !hasDD(r.t)) return // 磁力没法转存（按钮也不会出现，双保险）
+  if (!(await aliveOrBlock(r))) return
   tmOpen.value = false
   qsType.value = r.t
   qsName.value = defaultName(r)
@@ -350,8 +383,9 @@ function openQuick(r: SearchResultItem) {
   qsCode.value = r.share_code || ''
   qsOpen.value = true
 }
-function openTransfer(r: SearchResultItem) {
+async function openTransfer(r: SearchResultItem) {
   if (!r.ok || r.t === 'magnet') return // 磁力没法转存（按钮也不会出现，双保险）
+  if (!(await aliveOrBlock(r))) return
   qsOpen.value = false
   tmTarget.value = { type: r.t, name: defaultName(r), size: r.s, url: r.url || '', share_code: r.share_code || '' }
   tmOpen.value = true
@@ -572,8 +606,8 @@ onUnmounted(() => {
                    磁力没法转存网盘：只留复制磁力 -->
               <div class="rowbtns">
                 <template v-if="r.t !== 'magnet'">
-                  <button class="btn btn-quick" :disabled="quickDisabled(r)" :title="quickTitle(r)" @click="openQuick(r)">快速转存</button>
-                  <button class="btn btn-trans" :disabled="!r.ok" :title="T_NO_CRED" @click="openTransfer(r)">转存</button>
+                  <button class="btn btn-quick" :disabled="quickDisabled(r) || isChecking(r)" :title="isChecking(r) ? '正在检测链接…' : quickTitle(r)" @click="openQuick(r)">快速转存</button>
+                  <button class="btn btn-trans" :disabled="!r.ok || isChecking(r)" :title="isChecking(r) ? '正在检测链接…' : T_NO_CRED" @click="openTransfer(r)">转存</button>
                   <span class="rb-sep"></span>
                   <button class="btn btn-jump" @click="onJump(r)">跳转</button>
                 </template>
@@ -607,8 +641,8 @@ onUnmounted(() => {
             </div>
             <div class="rowbtns st-card-ops">
               <template v-if="r.t !== 'magnet'">
-                <button class="btn btn-quick" :disabled="quickDisabled(r)" :title="quickTitle(r)" @click="openQuick(r)">快速转存</button>
-                <button class="btn btn-trans" :disabled="!r.ok" :title="T_NO_CRED" @click="openTransfer(r)">转存</button>
+                <button class="btn btn-quick" :disabled="quickDisabled(r) || isChecking(r)" :title="isChecking(r) ? '正在检测链接…' : quickTitle(r)" @click="openQuick(r)">快速转存</button>
+                <button class="btn btn-trans" :disabled="!r.ok || isChecking(r)" :title="isChecking(r) ? '正在检测链接…' : T_NO_CRED" @click="openTransfer(r)">转存</button>
                 <span class="rb-sep"></span>
                 <button class="btn btn-jump" @click="onJump(r)">跳转</button>
               </template>

@@ -26,6 +26,12 @@ def pansou_addr(_user=CurrentUser):
     return get_group("settings")["search"]["pansou_url"]
 
 
+def _pansou_base() -> str:
+    from ..services.settings_svc import get_group
+
+    return (get_group("settings")["search"]["pansou_url"] or "").rstrip("/")
+
+
 @router.get("/health")
 def engine_health(_user=CurrentUser):
     """检索引擎健康度（透传 pansou /api/health，不含任何地址信息）。结果写进缓存。"""
@@ -71,6 +77,38 @@ def search_channels(_user=CurrentUser):
 
     selected = get_group("settings")["search"].get("channels") or []
     return [{"name": c, "on": (not selected) or (c in selected)} for c in pansou.channels()]
+
+
+@router.post("/check-link")
+def check_link(body: dict, _user=CurrentUser):
+    """转存前死活预检：透传 pansou-web 的 `POST /api/check/links`（单条）。
+
+    pansou 侧自带缓存（ok≈24h / bad≈8h / uncertain≈30min），PanKeeper 不再缓存一层。
+    返回 {state, summary}：ok=有效 / bad=死链 / locked=需提取码 / uncertain=无法判定 /
+    unknown=检测服务不可用或没这能力——**前端只拦 bad，其余一律放行**（检测器挂了
+    也不能挡转存）。"""
+    import requests as rq
+
+    t = (body.get("type") or "").strip()
+    url = (body.get("url") or "").strip()
+    code = (body.get("share_code") or "").strip()
+    if not url:
+        return {"state": "unknown", "summary": "无链接"}
+    base = _pansou_base()
+    if not base:
+        return {"state": "unknown", "summary": "未配置 PanSou"}
+    # pansou 的盘类型名与 merged_by_type 一致（阿里是 aliyun 不是 ali）
+    disk_type = "aliyun" if t == "ali" else t
+    item = {"disk_type": disk_type, "url": url}
+    if code:
+        item["password"] = code
+    try:
+        resp = rq.post(f"{base}/api/check/links", json={"items": [item]}, timeout=30)
+        results = (resp.json() or {}).get("results") or []
+        r0 = results[0] if results else {}
+        return {"state": r0.get("state") or "unknown", "summary": r0.get("summary") or ""}
+    except (rq.RequestException, ValueError):
+        return {"state": "unknown", "summary": "检测服务不可用"}
 
 
 @router.get("/share-files")
