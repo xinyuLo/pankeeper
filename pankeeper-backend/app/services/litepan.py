@@ -20,32 +20,82 @@ import requests
 from .settings_svc import get_group
 
 TIMEOUT = 8
+WEBHOOK_PATH = "/api/open/automation/events"
+
+
+def _full_webhook_url(url: str) -> str:
+    """Webhook 地址补全：用户只填 LitePan 基地址（如 http://192.168.2.77:5545）时
+    自动拼上 /api/open/automation/events（2026-10-06 用户实填基地址，别让他记长路径）。"""
+    url = (url or "").strip().rstrip("/")
+    if url and not url.endswith(WEBHOOK_PATH):
+        url += WEBHOOK_PATH
+    return url
+
+
+def _base_origin(url: str) -> str:
+    """从 webhook 地址（基地址或完整路径均可）推 LitePan 的 origin，health 检测用。"""
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit((url or "").strip())
+        if parts.scheme and parts.netloc:
+            return f"{parts.scheme}://{parts.netloc}"
+    except ValueError:
+        pass
+    return (url or "").strip().rstrip("/")
+
+
+def litepan_health() -> dict:
+    """LitePan 在线状态（设置页状态胶囊用）：打 {基地址}/api/health（免认证、轻量）。
+    返回 {ok, message}。"""
+    cfg = get_group("litepan")
+    origin = _base_origin(cfg.get("webhook_url") or "")
+    if not origin:
+        return {"ok": False, "message": "未配置地址"}
+    try:
+        resp = requests.get(f"{origin}/api/health", timeout=5)
+        parsed = resp.json() if resp.status_code == 200 else {}
+        if parsed.get("success") is True or resp.status_code == 200:
+            return {"ok": True, "message": "在线"}
+        return {"ok": False, "message": f"HTTP {resp.status_code}"}
+    except (requests.RequestException, ValueError) as e:
+        return {"ok": False, "message": str(e)[:80] or "连接失败"}
 
 
 def _post(url: str, body: dict, apikey: str) -> dict:
     """POST 一个 webhook 事件并解包响应。返回 {ok, matched, triggered, message}。
-    LitePan 的 writeOK 信封形状源码里没带走（writeOK 定义不在手头文件），
-    解包按两种常见形状兜：{code, data:{...}} 取 data、裸 {...} 直接用。"""
+
+    LitePan 真实信封（2026-10-06 对着本机实例实测）：HTTP 200 时
+    `{"success":true,"data":{...},"message":""}`；失败时 HTTP 401/404... 且
+    `{"success":false,"message":"缺少 Authorization"/"文件不存在",...}`。
+    优先认 success 字段，HTTP 状态与 {code,data} 旧形状兜底。"""
     headers = {"Authorization": f"Bearer {(apikey or '').strip()}"}
     try:
         resp = requests.post(url, json=body, headers=headers, timeout=TIMEOUT)
     except requests.RequestException as e:
         return {"ok": False, "matched": 0, "triggered": [], "message": f"请求失败：{e}"}
-    data: dict = {}
+    parsed: dict = {}
     try:
-        parsed = resp.json()
-        if isinstance(parsed, dict):
-            data = parsed["data"] if isinstance(parsed.get("data"), dict) else parsed
-            # 信封带业务码且非成功 → 按 HTTP 200 也算失败处理
-            if parsed.get("code") not in (None, 0, 200) and resp.status_code < 400:
-                msg = str(parsed.get("message") or "").strip()
-                return {"ok": False, "matched": 0, "triggered": [],
-                        "message": f"LitePan 返回错误 {parsed.get('code')}{'：' + msg if msg else ''}"}
+        body_json = resp.json()
+        if isinstance(body_json, dict):
+            parsed = body_json
     except ValueError:
         pass
-    if resp.status_code >= 400:
+    # LitePan 信封：success=false 一律失败，message 是人话原因（缺 Authorization / 文件不存在=key 不对 等）
+    if parsed.get("success") is False:
+        msg = str(parsed.get("message") or "").strip()
         return {"ok": False, "matched": 0, "triggered": [],
-                "message": f"HTTP {resp.status_code}（地址或 API Key 不对？）"}
+                "message": f"LitePan 拒绝：{msg or f'HTTP {resp.status_code}'}"}
+    if resp.status_code >= 400:
+        msg = str(parsed.get("message") or "").strip()
+        return {"ok": False, "matched": 0, "triggered": [],
+                "message": f"HTTP {resp.status_code}{'：' + msg if msg else '（地址或 API Key 不对？）'}"}
+    # 旧形状兜底：信封带业务码且非成功
+    if parsed.get("code") not in (None, 0, 200):
+        msg = str(parsed.get("message") or "").strip()
+        return {"ok": False, "matched": 0, "triggered": [],
+                "message": f"LitePan 返回错误 {parsed.get('code')}{'：' + msg if msg else ''}"}
+    data = parsed.get("data") if isinstance(parsed.get("data"), dict) else parsed
     return {"ok": True, "matched": data.get("matched") or 0,
             "triggered": data.get("triggered") or [], "message": ""}
 
@@ -78,7 +128,7 @@ def notify_transfer_done(payload: dict) -> dict:
         "share_url": payload.get("share_url", ""),
         "share_code": payload.get("share_code", ""),
     }
-    res = _post(url, body, cfg.get("apikey") or "")
+    res = _post(_full_webhook_url(url), body, cfg.get("apikey") or "")
     if not res["ok"]:
         print(f"[litepan] 推送失败：{res['message']}", flush=True)
     elif res["matched"]:
@@ -98,7 +148,7 @@ def test_webhook(url: str, apikey: str) -> dict:
     url = (url or "").strip()
     if not url:
         return {"ok": False, "message": "还没填写 Webhook 地址"}
-    res = _post(url, {"event": "pankeeper.test", "source": "pankeeper", "path": "/"}, apikey)
+    res = _post(_full_webhook_url(url), {"event": "pankeeper.test", "source": "pankeeper", "path": "/"}, apikey)
     if res["ok"]:
         res["message"] = "连通正常（测试事件未命中规则属预期）"
     return res

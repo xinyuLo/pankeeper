@@ -156,17 +156,29 @@ def put_litepan(body: dict, _user=CurrentUser):
     return {"ok": True}
 
 
+@router.get("/litepan/health")
+def litepan_health(_user=CurrentUser):
+    """LitePan 在线状态（设置页状态胶囊，语义同 /qms/health）：打 {基地址}/api/health。"""
+    from ..services import litepan
+
+    return litepan.litepan_health()
+
+
 @router.post("/settings/litepan/test")
 def test_litepan(body: dict, _user=CurrentUser):
     """打一次真实 webhook 验证地址+密钥+连通（测试事件不会命中正常规则）。
+    url/apikey 传「输入框正在编辑的值」，没传则回落已保存配置；
     掩码 apikey（****开头）= 没改 → 用库里已保存的密钥，别把掩码当真 key 发。"""
     from ..services import litepan
 
     body = body or {}
+    saved = get_group("litepan")
+    url = (body.get("webhook_url") or "").strip() or (saved.get("webhook_url") or "")
     apikey = (body.get("apikey") or "").strip()
-    if apikey.startswith("****"):
-        apikey = get_group("litepan").get("apikey") or ""
-    return litepan.test_webhook(body.get("webhook_url") or "", apikey)
+    # 空值或掩码都回落已保存的 key（空 Bearer 会被 LitePan 拒「Authorization 格式错误」）
+    if not apikey or apikey.startswith("****"):
+        apikey = saved.get("apikey") or ""
+    return litepan.test_webhook(url, apikey)
 
 
 @router.put("/settings/{group}")
