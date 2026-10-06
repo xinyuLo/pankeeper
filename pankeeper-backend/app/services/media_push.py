@@ -59,51 +59,57 @@ def watch_and_spawn(ctx: dict) -> None:
 
 def _watch_own(ctx: dict) -> None:
     """LitePan 模式的**独立推送流程**：后端刮削状态不可见（只有 webhook 进、没有查询出），
-    PanKeeper 自己从转存文件名识别 TMDB 直接推送——不等、不查、不假装。
+    PanKeeper 自己识别 TMDB 直接推送——不等、不查、不假装。
 
-    识别失败（tmdb_id=None）的文件进纯文字兜底清单；信息条显示自识别统计，
-    全程不出现 QMS 字样（用户要求：两套日志流程分开，别混乱）。"""
+    **按转存文件夹识别一次**（2026-10-06 用户定稿）：识别到了推那一部影片的富文本
+    （海报+简介+文件清单）；识别不到推纯文字文件清单。不再逐文件识别——一个分享里
+    正片+花絮+多版本各自命中不同 TMDB 条目，会把推送撑成一大坨杂烩（哪吒 12 文件实锤）。
+    全程不出现 QMS 字样（两套日志流程分开）。"""
     from . import media_recognize
+    from . import tmdb
 
-    names = list(ctx["names"])
-    recs = media_recognize.recognize_batch(names, hint=ctx.get("task", ""))
-    ok = [r for r in recs if r.get("tmdb_id")]
-    fail = [r for r in recs if not r.get("tmdb_id")]
-    print(f"[push] LitePan 模式自识别：{len(ok)}/{len(recs)} 项命中 TMDB" + (f"（{len(fail)} 项未识别）" if fail else ""), flush=True)
-
+    names = [n for n in ctx.get("names", []) if n]
+    task = (ctx.get("task") or "").strip()
     icon, drive_name = DRIVE_META.get(ctx.get("drive"), ("📁", ctx.get("drive", "")))
-    st_icon, st_text = ("✅", "成功") if not fail else ("🟡", f"识别 {len(ok)}/{len(recs)}")
-    lines = [f"{icon} **{drive_name} · {ctx.get('task', '')}** {st_icon} {st_text}", ""]
-    stats = [f"📦 转存 {len(names)} 项", f"🔍 自识别 {len(ok)}/{len(recs)}"]
-    for r in recs:
-        if r.get("doubt"):
-            stats.append(f"❓ {r.get('media_name') or r.get('title')}（识别存疑）")
-            break
-    lines.append(" · ".join(stats))
-    header = "\n".join(lines)
+    header = f"{icon} **{drive_name} · {task}** ✅ 成功\n\n📦 转存 {len(names)} 个文件"
 
-    renamed = [
-        {"file_name": r["name"], "media_name": r.get("media_name") or r.get("title"),
-         "tmdb_id": r["tmdb_id"], "episode_number": r.get("episode"),
-         "type": "tvshow" if r.get("episode") else "movie"}
-        for r in ok
-    ]
-    if renamed:
-        body, title = _build(renamed)
-        if body:
-            notify.push(title, f"{header}\n\n{body}", kind=f"{ctx.get('source', 'search')}_done", short="简介")
-            return
-    # 识别不出/拿不到 TMDB → 纯文字兜底（通知不丢）
-    failed = {r["name"]: "未识别到 TMDB 条目" for r in fail}
-    body_lines = []
-    for n in names:
-        mark = f"（{failed[n]}）" if n in failed else ""
-        body_lines.append(f"- {n}{mark}")
-    notify.push(
-        f"{ctx.get('task', '转存')} · 转存完成",
-        f"{header}\n\n" + "\n".join(body_lines),
-        kind=f"{ctx.get('source', 'search')}_done",
-    )
+    # 文件夹名识别一次（recognize_candidates：movie+tv 双搜打分，best 即最可信条目；
+    # 内部自带 30 分钟缓存）。文件名集合作为消歧信号传入
+    res = media_recognize.recognize_candidates(task or (names[0] if names else ""), file_names=names)
+    hit = res.get("best") if res.get("ok") else None
+
+    file_lines = [f"- {n}" for n in names[:15]]
+    if len(names) > 15:
+        file_lines.append(f"- …等共 {len(names)} 个")
+
+    if hit and hit.get("tmdb_id"):
+        media_name = hit.get("title") or "未知影片"
+        # 候选里的简介只截了 120 字：用 tmdb_id 补拉详情拿完整简介 + 背景图
+        detail = None
+        try:
+            detail = tmdb.tv_detail(hit["tmdb_id"]) if hit.get("media_type") == "tv" else tmdb.movie_detail(hit["tmdb_id"])
+        except Exception:  # noqa: BLE001 —— 补拉失败就用候选里的截断简介
+            detail = None
+        overview = ((detail or {}).get("overview") or hit.get("overview") or "").strip()
+        cover = tmdb.img_url((detail or {}).get("backdrop_path")) or hit.get("poster")
+        year = hit.get("year")
+        name_line = f"{media_name} ({year})" if year else media_name
+        body = "\n".join([
+            f"## {name_line}",
+            "",
+            f"![{name_line}]({cover})" if cover else "",
+            "",
+            f"**简介：{_clip(overview)}**" if overview else "",
+            "",
+            f"**本次转存 {len(names)} 个文件：**",
+            *file_lines,
+        ])
+        notify.push(name_line, f"{header}\n\n{body}", kind=f"{ctx.get('source', 'search')}_done", short="简介")
+        return
+
+    # 识别不到 → 纯文字（文件清单 + 如实说明），通知不丢
+    body = "\n".join([header, "", "**未识别到影片条目，转存文件清单：**", *file_lines])
+    notify.push(f"{task or '转存'} · 转存完成", body, kind=f"{ctx.get('source', 'search')}_done")
 
 
 def _watch(ctx: dict) -> None:
