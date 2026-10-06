@@ -68,9 +68,9 @@ async function doDelete(it: DdItem) {
 const modalOpen = ref(false)
 const editingId = ref<number | null>(null) // null = 新增
 const fName = ref('')
-/** 目录类型（电影/电视节目，必选）：快速转存电影目录+多文件时展示文件多选；
- * 电视节目目录照旧全转（多集合理）。存量老目录按名称推断初值 */
-const fMediaType = ref<'movie' | 'tv'>('movie')
+/** 目录类型（电影/电视节目）：**必填**——新建初始未选（淡红提醒），不选不能保存；
+ * 编辑存量老目录时按名称推断初值（含电视/剧 → 电视节目） */
+const fMediaType = ref<'movie' | 'tv' | ''>('')
 const MEDIA_TYPE_OPTS = [
   { value: 'movie', label: '电影' },
   { value: 'tv', label: '电视节目' },
@@ -163,7 +163,9 @@ function openEditor(id: number | null) {
   if (!it && !firstAcc) message.warning(`该网盘还没有已连接的账号，请先到「网盘连接」配置`)
   fPath.value = it ? it.path : ''
   fName.value = it ? it.name : ''
-  fMediaType.value = it ? (it.media_type === 'tv' || it.media_type === 'movie' ? it.media_type : inferMediaType(it.name)) : 'movie'
+  fMediaType.value = it
+    ? (it.media_type === 'tv' || it.media_type === 'movie' ? it.media_type : inferMediaType(it.name))
+    : ''
   // 新增时排序默认排到该网盘现有最大值 + 1（原型如此）
   fSort.value = it
     ? it.sort
@@ -406,10 +408,16 @@ async function confirmEditor() {
     wrap-class-name="dd-modal-wrap"
   >
     <div class="dd-field">
-      <label class="dd-label">名称<i>*</i></label>
+      <label class="dd-label">名称 / 类型<i>*</i></label>
       <div style="display: flex; gap: 10px; align-items: center">
         <a-input v-model:value="fName" :maxlength="20" style="flex: 0 0 60%" />
-        <a-select v-model:value="fMediaType" :options="MEDIA_TYPE_OPTS" style="flex: 1" />
+        <a-select
+          v-model:value="fMediaType"
+          :options="MEDIA_TYPE_OPTS"
+          style="flex: 1"
+          placeholder="请选择类型"
+          :class="{ 'dd-mt-need': !fMediaType }"
+        />
       </div>
       <div class="dd-tip">名字出现在搜索结果「快速转存」的下拉框里；类型决定快速转存的行为——电影目录检测到多文件时可以勾选只转正片，电视节目目录照旧全部转存。</div>
     </div>
@@ -718,6 +726,11 @@ async function confirmEditor() {
   color: var(--error);
   font-style: normal;
   margin-left: 2px;
+}
+/* 类型未选提醒：淡红描边（必填项） */
+.dd-mt-need :deep(.ant-select-selector) {
+  border-color: rgba(255, 120, 117, 0.55) !important;
+  background: rgba(255, 120, 117, 0.05);
 }
 .dd-tip {
   font-size: 12px;
