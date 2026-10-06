@@ -24,9 +24,10 @@ import type { DriveType, SearchResultItem } from '@/types/model'
 /* 手机（<768px）渲染卡片列表代替结果表——393px 宽塞不下 5 列表格 */
 const isMobile = useIsMobile()
 
-/** tab 固定顺序 = DRIVE_META 的键序（全部/百度/夸克/115/123/阿里/迅雷/UC，与原型一致） */
-// tab 顺序：主力转存盘在前（百度→夸克→115→123→阿里），其余靠后
-const DRIVE_ORDER: DriveType[] = ['baidu', 'quark', '115', '123', 'ali', 'xunlei', 'uc']
+/** tab 固定顺序（全部/百度/夸克/115/磁力/123/阿里/迅雷/UC）
+ * tab 顺序：主力转存盘在前（百度→夸克→115→123→阿里），其余靠后；
+ * 磁力不是网盘转存不了，按用户 2026-10-06 要求排 115 后面 */
+const DRIVE_ORDER: DriveType[] = ['baidu', 'quark', '115', 'magnet', '123', 'ali', 'xunlei', 'uc']
 
 /* ===== 静态文案 ===== */
 const T_NO_CRED = '请先到「网盘连接」页配置该网盘凭据'
@@ -229,7 +230,7 @@ watch(
 
 /* ===== 检索动效 ===== */
 const busy = ref(false)
-const scanCount = ref(1) // 「已扫 N 个源」（7 = 七个网盘源）
+const scanCount = ref(1) // 「已扫 N 个源」（8 = 八路来源：七网盘 + 磁力）
 const elapsed = ref<string | null>(null) // 上一次检索耗时（首屏未知 → 不渲染耗时卡）
 const rowEpoch = ref(0) // 结果 tbody 的 key：检索完成后整组重挂载，重放逐行入场动画
 let scanTimer: number | undefined
@@ -252,9 +253,9 @@ async function doSearch() {
   page.value = 1 // 新一次搜索必须回第 1 页
   kwRef.value?.blur?.()
 
-  // 扫源计数动画：模拟 PanSou 逐源返回（210ms 一跳，封顶 7 个源）
+  // 扫源计数动画：模拟 PanSou 逐源返回（210ms 一跳，封顶 8 个源）
   scanTimer = window.setInterval(() => {
-    scanCount.value = Math.min(7, scanCount.value + 1)
+    scanCount.value = Math.min(8, scanCount.value + 1)
   }, 210)
 
   const t0 = Date.now()
@@ -341,7 +342,7 @@ const tmOpen = ref(false)
 const tmTarget = ref<TransferTarget | null>(null)
 
 function openQuick(r: SearchResultItem) {
-  if (!r.ok || !hasDD(r.t)) return
+  if (!r.ok || r.t === 'magnet' || !hasDD(r.t)) return // 磁力没法转存（按钮也不会出现，双保险）
   tmOpen.value = false
   qsType.value = r.t
   qsName.value = defaultName(r)
@@ -350,7 +351,7 @@ function openQuick(r: SearchResultItem) {
   qsOpen.value = true
 }
 function openTransfer(r: SearchResultItem) {
-  if (!r.ok) return
+  if (!r.ok || r.t === 'magnet') return // 磁力没法转存（按钮也不会出现，双保险）
   qsOpen.value = false
   tmTarget.value = { type: r.t, name: defaultName(r), size: r.s, url: r.url || '', share_code: r.share_code || '' }
   tmOpen.value = true
@@ -560,19 +561,23 @@ onUnmounted(() => {
             <td>
               <span class="st-srccell">
                 <span class="tag" :class="DRIVE_META[r.t].tag">{{ DRIVE_META[r.t].full }}</span>
-                <a-tooltip v-if="r.url" title="查看文件"><button class="pa-ico pa-ico-view" @click.stop="onViewFiles(r)"><FolderOpenOutlined /></button></a-tooltip>
-                <a-tooltip v-if="r.url" title="复制链接"><button class="pa-ico pa-ico-copy" @click.stop="onCopy(r)"><CopyOutlined /></button></a-tooltip>
+                <a-tooltip v-if="r.url && r.t !== 'magnet'" title="查看文件"><button class="pa-ico pa-ico-view" @click.stop="onViewFiles(r)"><FolderOpenOutlined /></button></a-tooltip>
+                <a-tooltip v-if="r.url" :title="r.t === 'magnet' ? '复制磁力链接' : '复制链接'"><button class="pa-ico pa-ico-copy" @click.stop="onCopy(r)"><CopyOutlined /></button></a-tooltip>
               </span>
             </td>
             <td class="small muted">{{ r.s }}</td>
             <td class="small muted">{{ r.d }}</td>
             <td>
-              <!-- 三按钮前置条件各不相同：快速转存要凭据+转存配置；转存只要凭据；跳转常驻 -->
+              <!-- 三按钮前置条件各不相同：快速转存要凭据+转存配置；转存只要凭据；跳转常驻。
+                   磁力没法转存网盘：只留复制磁力 -->
               <div class="rowbtns">
-                <button class="btn btn-quick" :disabled="quickDisabled(r)" :title="quickTitle(r)" @click="openQuick(r)">快速转存</button>
-                <button class="btn btn-trans" :disabled="!r.ok" :title="T_NO_CRED" @click="openTransfer(r)">转存</button>
-                <span class="rb-sep"></span>
-                <button class="btn btn-jump" @click="onJump(r)">跳转</button>
+                <template v-if="r.t !== 'magnet'">
+                  <button class="btn btn-quick" :disabled="quickDisabled(r)" :title="quickTitle(r)" @click="openQuick(r)">快速转存</button>
+                  <button class="btn btn-trans" :disabled="!r.ok" :title="T_NO_CRED" @click="openTransfer(r)">转存</button>
+                  <span class="rb-sep"></span>
+                  <button class="btn btn-jump" @click="onJump(r)">跳转</button>
+                </template>
+                <button v-else class="btn btn-jump" @click="onCopy(r)">复制磁力</button>
               </div>
             </td>
           </tr>
@@ -595,16 +600,19 @@ onUnmounted(() => {
             </div>
             <div class="st-card-meta">
               <span class="tag" :class="DRIVE_META[r.t].tag">{{ DRIVE_META[r.t].full }}</span>
-              <a-tooltip v-if="r.url" title="查看文件"><button class="pa-ico pa-ico-view" @click.stop="onViewFiles(r)"><FolderOpenOutlined /></button></a-tooltip>
-              <a-tooltip v-if="r.url" title="复制链接"><button class="pa-ico pa-ico-copy" @click.stop="onCopy(r)"><CopyOutlined /></button></a-tooltip>
+              <a-tooltip v-if="r.url && r.t !== 'magnet'" title="查看文件"><button class="pa-ico pa-ico-view" @click.stop="onViewFiles(r)"><FolderOpenOutlined /></button></a-tooltip>
+              <a-tooltip v-if="r.url" :title="r.t === 'magnet' ? '复制磁力链接' : '复制链接'"><button class="pa-ico pa-ico-copy" @click.stop="onCopy(r)"><CopyOutlined /></button></a-tooltip>
               <span class="small muted">{{ r.s }}</span>
               <span class="small muted st-card-date">{{ r.d }}</span>
             </div>
             <div class="rowbtns st-card-ops">
-              <button class="btn btn-quick" :disabled="quickDisabled(r)" :title="quickTitle(r)" @click="openQuick(r)">快速转存</button>
-              <button class="btn btn-trans" :disabled="!r.ok" :title="T_NO_CRED" @click="openTransfer(r)">转存</button>
-              <span class="rb-sep"></span>
-              <button class="btn btn-jump" @click="onJump(r)">跳转</button>
+              <template v-if="r.t !== 'magnet'">
+                <button class="btn btn-quick" :disabled="quickDisabled(r)" :title="quickTitle(r)" @click="openQuick(r)">快速转存</button>
+                <button class="btn btn-trans" :disabled="!r.ok" :title="T_NO_CRED" @click="openTransfer(r)">转存</button>
+                <span class="rb-sep"></span>
+                <button class="btn btn-jump" @click="onJump(r)">跳转</button>
+              </template>
+              <button v-else class="btn btn-jump" @click="onCopy(r)">复制磁力</button>
             </div>
           </div>
       </div>

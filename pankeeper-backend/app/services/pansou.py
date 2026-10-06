@@ -14,7 +14,8 @@ import requests
 
 from .settings_svc import get_group
 
-# pansou 类型 → 前端 DriveType（没列的丢弃：magnet/ed2k/guangya/tianyi/mobile/pikpak 暂不支持转存）
+# pansou 类型 → 前端 DriveType（没列的丢弃：ed2k/guangya/tianyi/mobile/pikpak 暂不支持）。
+# magnet 2026-10-06 用户要求放行：只展示+复制（磁力没法转存网盘），排序在 115 后面。
 TYPE_MAP = {
     "baidu": "baidu",
     "quark": "quark",
@@ -23,6 +24,7 @@ TYPE_MAP = {
     "aliyun": "ali",
     "xunlei": "xunlei",
     "uc": "uc",
+    "magnet": "magnet",
 }
 
 
@@ -64,6 +66,19 @@ def search(kw: str, cloud_types: list[str] | None = None, refresh: bool = False)
     return _map_merged(body.get("data", {}).get("merged_by_type", {}))
 
 
+def _magnet_name(url: str) -> str:
+    """裸磁力链接的显示名：从 dn= 参数取（缺失返回空串，调用方再兜）。"""
+    from urllib.parse import parse_qs, urlsplit
+
+    from .names import sanitize_name
+
+    try:
+        dn = parse_qs(urlsplit(url).query).get("dn", [""])[0]
+        return sanitize_name(dn) if dn else ""
+    except ValueError:
+        return ""
+
+
 def _map_merged(merged: dict) -> list[dict]:
     """merged_by_type → 前端结果行。大小 pansou 不提供，展示 —；时间取日期部分。"""
     from .names import sanitize_name
@@ -77,7 +92,12 @@ def _map_merged(merged: dict) -> list[dict]:
             dt = (link.get("datetime") or "")[:10]
             # 频道 note 常带 emoji/装饰符：当文件夹名会撞网盘非法字符（errno=2 实锤），
             # 源头洗掉；洗空了回落链接本身（总得有个可认的名字）
-            name = sanitize_name(link.get("note") or "") or link.get("url", "")
+            url = link.get("url", "")
+            name = sanitize_name(link.get("note") or "")
+            if not name and t == "magnet":
+                name = _magnet_name(url)  # 裸磁力没 note：取 dn= 参数当名字
+            if not name:
+                name = url
             out.append(
                 {
                     "n": name,
@@ -86,7 +106,7 @@ def _map_merged(merged: dict) -> list[dict]:
                     "d": dt,
                     "ok": True,
                     "hot": False,
-                    "url": link.get("url", ""),
+                    "url": url,
                     "share_code": link.get("password") or "",
                     "source": link.get("source", ""),
                 }

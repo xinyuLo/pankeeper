@@ -5,7 +5,7 @@
  * ===================================================================== */
 
 /** 网盘类型：搜索结果支持 7 家；转存/任务只涉及前三家 */
-export type DriveType = 'baidu' | 'quark' | '115' | '123' | 'ali' | 'xunlei' | 'uc'
+export type DriveType = 'baidu' | 'quark' | '115' | '123' | 'ali' | 'xunlei' | 'uc' | 'magnet'
 
 /** 转存/自动任务涉及的网盘 */
 export type MainDriveType = 'baidu' | 'quark' | '115'

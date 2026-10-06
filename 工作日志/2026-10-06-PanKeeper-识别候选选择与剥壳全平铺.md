@@ -41,3 +41,13 @@
 
 - 后端编译 + TMDB 真查（上述案例）+ 接口实测；前端 typecheck + 浏览器候选弹窗全链通过。
 - NAS 待部署：`git pull` → `/vol1/1001/compose/pankeeper` 下 `docker compose up -d`。
+
+## 三、搜索结果加磁力类型（用户 2026-10-06 追加）
+
+- 后端 `pansou.TYPE_MAP` 放行 magnet（此前刻意丢弃）；`cloud_types` 请求随之带上。
+- 裸磁力没 note 时从 `dn=` 参数取显示名（URL decode + sanitize）。
+- 前端：DriveType/DRIVE_META 加 magnet（灰 tag `t-magnet`）；Tab 按用户要求排 **115 后面**
+  （DRIVE_ORDER：百度→夸克→115→磁力→123→阿里→迅雷→UC），全部 tab 分组序同序；
+- 磁力行**不能转存**：快速转存/转存/跳转/查看文件全部不渲染，只留「复制磁力」+ 复制图标
+  （openQuick/openTransfer 双保险 guard，magnet 永远进不了转存链路）。
+- 实测：搜"狂飙"出 201 条磁力，Tab/统计卡/行操作渲染正确；typecheck 过。

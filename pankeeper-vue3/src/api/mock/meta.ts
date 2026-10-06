@@ -9,6 +9,8 @@ export const DRIVE_META: Record<DriveType, { name: string; color: string; full: 
   ali: { name: '阿里', color: '#ff6a00', full: '阿里云盘', tag: 't-ali' },
   xunlei: { name: '迅雷', color: '#2db7f5', full: '迅雷网盘', tag: 't-xunlei' },
   uc: { name: 'UC', color: '#597ef7', full: 'UC 网盘', tag: 't-uc' },
+  // 磁力不是网盘：只展示+复制链接（转存不了），排序按用户要求放 115 后面
+  magnet: { name: '磁力', color: '#8c8c8c', full: '磁力链接', tag: 't-magnet' },
 }
 
 /** 转存/自动转存固定顺序 */
