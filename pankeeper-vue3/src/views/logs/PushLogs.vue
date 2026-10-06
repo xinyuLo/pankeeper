@@ -57,6 +57,11 @@ async function openDetail(row: PushLogRow) {
   }
 }
 
+/** 列表预览：正文压平换行截 60 字（全文走详情抽屉；不压平会把行撑爆错位） */
+function preview(c: string) {
+  return (c || '').replace(/\s+/g, ' ').trim().slice(0, 60)
+}
+
 /* kind → 中文（标题下的次级说明） */
 const KIND_TXT: Record<string, string> = {
   search_done: '搜索转存',
@@ -102,7 +107,7 @@ function kindTxt(k: string) {
             </td>
             <td>
               <div class="pl-title">{{ r.title }}</div>
-              <span class="pl-sub">{{ kindTxt(r.kind) }}<template v-if="r.content"> · {{ r.content }}</template></span>
+              <span class="pl-sub">{{ kindTxt(r.kind) }}<template v-if="r.content"> · {{ preview(r.content) }}</template></span>
             </td>
             <td class="small pl-err" :class="r.error ? 'bad-text' : 'muted'">{{ r.error || '—' }}</td>
             <td><a class="pl-detail" @click="openDetail(r)"><EyeOutlined /> 详情</a></td>
@@ -169,7 +174,7 @@ function kindTxt(k: string) {
 .pl-table td { padding-left: 12px; padding-right: 12px; }
 .pl-nowrap { white-space: nowrap; }
 .pl-title { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pl-sub { font-size: 12px; color: var(--text3); }
+.pl-sub { font-size: 12px; color: var(--text3); display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pl-err { overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-all; }
 .bad-text { color: var(--error); }
 
