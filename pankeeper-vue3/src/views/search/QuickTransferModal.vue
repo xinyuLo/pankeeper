@@ -8,9 +8,10 @@ import { message } from 'ant-design-vue'
 import { pkQueue } from '@/queue/engine'
 import { DRIVE_META, DD_MEDIA } from '@/api/mock/meta'
 import { listDdItems, listQmsPaths } from '@/api/modules/dd'
-import { recognizeShare } from '@/api/modules/recognize'
+import { recognizeShare, type RecognizeCandidate } from '@/api/modules/recognize'
 import { listAccounts } from '@/api/modules/accounts'
 import { ddStore } from '@/api/mock/dd'
+import RecognizePicker from '@/components/RecognizePicker.vue'
 import type { DdItem, DdQmsPath, DriveType, MainDriveType } from '@/types/model'
 
 const props = defineProps<{
@@ -106,8 +107,11 @@ function close() {
   emit('update:open', false)
 }
 
-/** 一键识别：分享名 → TMDB → 回填「文件夹更名」（识别器后端无关，QMS/LitePan 模式都可用） */
+/** 一键识别：分享名 → TMDB → 回填「文件夹更名」（识别器后端无关，QMS/LitePan 模式都可用）。
+ * 置信度高直接回填；歧义（同名剧/电影，实锤：狂飙 vs F1：狂飙飞车）弹候选卡片让用户挑。 */
 const recognizing = ref(false)
+const pickerOpen = ref(false)
+const pickerCands = ref<RecognizeCandidate[]>([])
 async function onRecognize() {
   const src = (props.shareName || '').trim()
   if (!src) {
@@ -117,10 +121,15 @@ async function onRecognize() {
   if (recognizing.value) return
   recognizing.value = true
   try {
-    const r = await recognizeShare(src, src)
+    const r = await recognizeShare(src, src, { share_type: props.type || '', share_url: props.shareUrl || '', share_code: props.shareCode || '' })
     if (r.ok && r.media_name) {
-      rename.value = r.media_name
-      message.success(r.doubt ? `已识别（存疑，请确认）：${r.media_name}` : `已识别：${r.media_name}`)
+      if (r.confident) {
+        rename.value = r.media_name
+        message.success(r.doubt ? `已识别（存疑，请确认）：${r.media_name}` : `已识别：${r.media_name}`)
+      } else {
+        pickerCands.value = r.candidates || []
+        pickerOpen.value = true
+      }
     } else {
       message.warning(r.message || '未识别到 TMDB 条目')
     }
@@ -129,6 +138,9 @@ async function onRecognize() {
   } finally {
     recognizing.value = false
   }
+}
+function onPick(c: RecognizeCandidate) {
+  rename.value = c.year ? `${c.title} (${c.year})` : c.title
 }
 
 /** 预览「转存后长什么样」+ 按所选位置的配置列出触发的 QMS / STRM */
@@ -264,6 +276,9 @@ function onOk() {
       <a-button @click="close">取消</a-button>
       <a-button type="primary" :disabled="!currentItem" @click="onOk">开始转存</a-button>
     </div>
+
+    <!-- 识别歧义候选（同名剧/电影时让用户挑，回填「文件夹更名」） -->
+    <RecognizePicker v-model:open="pickerOpen" :candidates="pickerCands" :source-name="shareName" @pick="onPick" />
   </a-modal>
 </template>
 

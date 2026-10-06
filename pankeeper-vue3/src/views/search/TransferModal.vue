@@ -24,9 +24,10 @@ import LazyDirTree from '@/components/LazyDirTree.vue'
 import { USE_MOCK } from '@/api/http'
 import { getRootDirs } from '@/api/modules/accounts'
 import { listDdItems, listQmsPaths } from '@/api/modules/dd'
-import { recognizeShare } from '@/api/modules/recognize'
+import { recognizeShare, type RecognizeCandidate } from '@/api/modules/recognize'
 import { ddStore } from '@/api/mock/dd'
 import ShareTree from './ShareTree.vue'
+import RecognizePicker from '@/components/RecognizePicker.vue'
 import { pkQueue } from '@/queue/engine'
 import { DRIVE_META } from '@/api/mock/meta'
 import { SHARE_TREE, MINE_TREE } from '@/api/mock/tree'
@@ -59,8 +60,11 @@ const meta = computed(() => (props.target ? DRIVE_META[props.target.type] : null
 /** 分享摘要行：资源名 + 「N 项 · X GB」跟着资源走（项数 mock 固定 12） */
 const sumMeta = computed(() => `12 项 · ${props.target?.size || '82.4 GB'}`)
 
-/** 一键识别：资源名 → TMDB → 回填「文件夹更名」（识别器后端无关，QMS/LitePan 模式都可用） */
+/** 一键识别：资源名 → TMDB → 回填「文件夹更名」（识别器后端无关，QMS/LitePan 模式都可用）。
+ * 置信度高直接回填；歧义（同名剧/电影，实锤：狂飙 vs F1：狂飙飞车）弹候选卡片让用户挑。 */
 const recognizing = ref(false)
+const pickerOpen = ref(false)
+const pickerCands = ref<RecognizeCandidate[]>([])
 async function onRecognize() {
   const src = (props.target?.name || '').trim()
   if (!src) {
@@ -70,10 +74,15 @@ async function onRecognize() {
   if (recognizing.value) return
   recognizing.value = true
   try {
-    const r = await recognizeShare(src, src)
+    const r = await recognizeShare(src, src, { share_type: props.target?.type || '', share_url: props.target?.url || '', share_code: props.target?.share_code || '' })
     if (r.ok && r.media_name) {
-      renameInput.value = r.media_name
-      message.success(r.doubt ? `已识别（存疑，请确认）：${r.media_name}` : `已识别：${r.media_name}`)
+      if (r.confident) {
+        renameInput.value = r.media_name
+        message.success(r.doubt ? `已识别（存疑，请确认）：${r.media_name}` : `已识别：${r.media_name}`)
+      } else {
+        pickerCands.value = r.candidates || []
+        pickerOpen.value = true
+      }
     } else {
       message.warning(r.message || '未识别到 TMDB 条目')
     }
@@ -82,6 +91,9 @@ async function onRecognize() {
   } finally {
     recognizing.value = false
   }
+}
+function onPickCandidate(c: RecognizeCandidate) {
+  renameInput.value = c.year ? `${c.title} (${c.year})` : c.title
 }
 
 /* ---- 分享树（勾选） ---- */
@@ -350,6 +362,9 @@ function start() {
       <a-button @click="close">取消</a-button>
       <a-button type="primary" @click="start">开始转存</a-button>
     </div>
+
+    <!-- 识别歧义候选（同名剧/电影时让用户挑，回填「文件夹更名」） -->
+    <RecognizePicker v-model:open="pickerOpen" :candidates="pickerCands" :source-name="target?.name" @pick="onPickCandidate" />
   </a-modal>
 </template>
 

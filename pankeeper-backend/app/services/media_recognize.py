@@ -121,3 +121,115 @@ def recognize_batch(names: list[str], hint: str = "") -> list[dict]:
                 )
         out.append(it)
     return out
+
+
+# ===== 候选识别（转存弹窗「识别」按钮的歧义解法，2026-10-06 用户拍板） =====
+# 痛点：分享名本身歧义（搜"狂飙"既可能是 2023 剧集也可能是 F1：狂飙飞车电影），
+# 旧逻辑按热度自作主张挑一个，用户想存的永远是另一个。解法：movie+tv 双搜出候选池，
+# 文件名信号（分享内文件常带英文原名/年份）辅助打分，置信度不够就把候选交给用户挑。
+
+
+def _search_pool(title: str, year: int | None) -> list[dict]:
+    """movie+tv 双搜合并候选池。带年份搜太窄（<3 条）就放开年份再搜一轮补池；
+    全空再试**粘连名变体**（"F1狂飙赛车"→"狂飙赛车"：TMDB 对无分隔的混排名常常查不到）。"""
+    def _pool(t: str) -> list[dict]:
+        pool: dict[tuple[str, int], dict] = {}
+        for mt in ("movie", "tv"):
+            for y in ([year, None] if year else [None]):
+                raw = tmdb.search(t, y, mt) or {}
+                for r in raw.get("results") or []:
+                    key = (mt, int(r.get("id") or 0))
+                    if key[1] and key not in pool:
+                        pool[key] = {**r, "_mt": mt}
+                if len(pool) >= 10:
+                    break
+        return list(pool.values())
+
+    pool = _pool(title)
+    if not pool:
+        # 粘连变体：剥掉首/尾的连续英文数字段再搜（"F1狂飙赛车"→"狂飙赛车"）
+        m = re.match(r"^[A-Za-z0-9.\- ]+(.+)$", title) or re.match(r"^(.+?)[A-Za-z0-9.\- ]+$", title)
+        if m and m.group(1).strip() and m.group(1).strip() != title:
+            pool = _pool(m.group(1).strip())
+    return pool
+
+
+def _file_signals(file_names: list[str]) -> list[tuple[str, int | None]]:
+    """分享内文件名 → (清洗后的标题小写, 年份)。英文原名/年份是强指向信号。"""
+    out: list[tuple[str, int | None]] = []
+    for n in (file_names or [])[:12]:
+        t, y, _ep = clean_work(n)
+        t = (t or "").strip().lower()
+        if t or y:
+            out.append((t, y))
+    return out
+
+
+def _score_candidate(r: dict, title: str, year: int | None, signals: list[tuple[str, int | None]]) -> tuple[float, int | None]:
+    """单条候选打分：年份/名字贴合为基础，文件名信号（英文原名命中）是大头，热度只做 tie-break。"""
+    cn = (r.get("title") or r.get("name") or "").strip().lower()
+    orig = (r.get("original_title") or r.get("original_name") or "").strip().lower()
+    date_key = "release_date" if r.get("_mt") == "movie" else "first_air_date"
+    try:
+        yr = int(str(r.get(date_key) or "")[:4])
+    except ValueError:
+        yr = 0
+    score = 0.0
+    if year and yr == year:
+        score += 60
+    t = (title or "").strip().lower()
+    if t and cn == t:
+        score += 50
+    elif t and (t in cn or cn in t):
+        score += 25
+    if signals:
+        if any(st and (st in orig or orig in st or st in cn) for st, _sy in signals):
+            score += 80  # 分享内文件名的英文原名/别名命中：强指向
+        if any(sy and yr == sy for _st, sy in signals):
+            score += 30  # 文件名里的年份与候选一致：辅助信号
+    score += min(float(r.get("popularity") or 0), 10.0)
+    return score, (yr or None)
+
+
+def recognize_candidates(name: str, hint: str = "", file_names: list[str] | None = None) -> dict:
+    """候选式识别：返回排序后的候选列表 + 是否高置信（前端据此决定直接回填还是弹候选卡片）。
+
+    file_names：分享内文件名（只读预热缓存，没有不影响）——用于消歧信号。
+    返回 {ok, confident, best, candidates, title, year, message?}，
+    best/candidate 结构：{tmdb_id, media_type, title, original_title, year, poster, overview}。
+    """
+    title, year, _ep = clean_work(name)
+    if not title and hint:
+        title, y2, _ = clean_work(hint)
+        title = title or hint.strip()
+        year = year or y2
+    title = (title or "").strip()
+    if not title:
+        return {"ok": False, "message": "缺少可识别的名字", "candidates": []}
+    signals = _file_signals(file_names or [])
+    pool = _search_pool(title, year)
+    if not pool:
+        return {"ok": False, "message": "未识别到 TMDB 条目", "candidates": []}
+    scored = []
+    for r in pool:
+        s, yr = _score_candidate(r, title, year, signals)
+        scored.append((s, yr, r))
+    scored.sort(key=lambda x: (-x[0], -float(x[2].get("popularity") or 0)))
+    candidates = [
+        {
+            "tmdb_id": r.get("id"),
+            "media_type": r.get("_mt"),
+            "title": r.get("title") or r.get("name") or "",
+            "original_title": r.get("original_title") or r.get("original_name") or "",
+            "year": yr,
+            "poster": tmdb.img_url(r.get("poster_path")),
+            "overview": (r.get("overview") or "").strip()[:120],
+        }
+        for s, yr, r in scored[:6]
+    ]
+    top = scored[0][0]
+    second = scored[1][0] if len(scored) > 1 else 0.0
+    # 置信：唯一候选直接算稳；否则第一名要比第二名高出一截、且绝对分不低
+    # （年份+名字至少占一样）——有歧义就交给用户挑，别赌热度
+    confident = len(scored) == 1 or (top - second >= 40 and top >= 80)
+    return {"ok": True, "confident": confident, "best": candidates[0], "candidates": candidates, "title": title, "year": year}
