@@ -11,8 +11,13 @@ Server酱富文本推送需要的 名称/年份/集数/tmdb_id 只能自己识�
 from __future__ import annotations
 
 import re
+import time
 
 from . import tmdb
+
+# 识别结果缓存：同 名字+hint+文件名 的重复识别 30 分钟内直接用缓存（不再打 TMDB）
+_RECOGNIZE_CACHE: dict[str, tuple[float, dict]] = {}
+RECOGNIZE_CACHE_TTL = 30 * 60
 
 # 发布组/编码规格噪音（识别时整段剥掉，别让 "2160p WEB-DL DoVi" 混进标题）
 _TAG_NOISE = re.compile(
@@ -202,9 +207,17 @@ def recognize_candidates(name: str, hint: str = "", file_names: list[str] | None
     """候选式识别：返回排序后的候选列表 + 是否高置信（前端据此决定直接回填还是弹候选卡片）。
 
     file_names：分享内文件名（只读预热缓存，没有不影响）——用于消歧信号。
+    结果带 30 分钟内存缓存（同 名字+hint+文件名集合 的重复识别不再打 TMDB，
+    2026-10-06 用户要求）。
     返回 {ok, confident, best, candidates, title, year, message?}，
     best/candidate 结构：{tmdb_id, media_type, title, original_title, year, poster, overview}。
     """
+    cache_key = f"{name}|{hint}|{hash(tuple(file_names or []))}"
+    now = time.time()
+    cached = _RECOGNIZE_CACHE.get(cache_key)
+    if cached and now - cached[0] < RECOGNIZE_CACHE_TTL:
+        return cached[1]
+
     title, year, _ep = clean_work(name)
     if not title and hint:
         title, y2, _ = clean_work(hint)
@@ -222,6 +235,10 @@ def recognize_candidates(name: str, hint: str = "", file_names: list[str] | None
         s, yr = _score_candidate(r, title, year, signals)
         scored.append((s, yr, r))
     scored.sort(key=lambda x: (-x[0], -float(x[2].get("popularity") or 0)))
+    # 凑数过滤：与第一名分差超 30 的不进候选（实锤："哪吒2"推出 0.5 分的 TV 凑数项，
+    # 用户抱怨候选太杂；第一名自己始终保留）
+    top_score = scored[0][0]
+    scored = [x for x in scored if x[0] >= top_score - 30] or scored[:1]
     candidates = [
         {
             "tmdb_id": r.get("id"),
@@ -232,11 +249,17 @@ def recognize_candidates(name: str, hint: str = "", file_names: list[str] | None
             "poster": tmdb.img_url(r.get("poster_path")),
             "overview": (r.get("overview") or "").strip()[:120],
         }
-        for s, yr, r in scored[:6]
+        for s, yr, r in scored[:4]
     ]
     top = scored[0][0]
     second = scored[1][0] if len(scored) > 1 else 0.0
     # 置信：唯一候选直接算稳；否则第一名要比第二名高出一截、且绝对分不低
     # （年份+名字至少占一样）——有歧义就交给用户挑，别赌热度
     confident = len(scored) == 1 or (top - second >= 40 and top >= 80)
-    return {"ok": True, "confident": confident, "best": candidates[0], "candidates": candidates, "title": title, "year": year}
+    res = {"ok": True, "confident": confident, "best": candidates[0], "candidates": candidates, "title": title, "year": year}
+    # 缓存写入 + 过期清理（超量时丢最旧的过期项）
+    _RECOGNIZE_CACHE[cache_key] = (now, res)
+    if len(_RECOGNIZE_CACHE) > 64:
+        for k in [k for k, (t, _r) in _RECOGNIZE_CACHE.items() if now - t >= RECOGNIZE_CACHE_TTL]:
+            _RECOGNIZE_CACHE.pop(k, None)
+    return res
