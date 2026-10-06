@@ -310,8 +310,8 @@ async function confirmTrig() {
               <th style="width: 118px">来源</th>
               <th style="width: 200px">目标位置</th>
               <th style="width: 30%">结果</th>
-              <th style="width: 96px">QMS 整理</th>
-              <th style="width: 96px">STRM 生成</th>
+              <th style="width: 96px">{{ mediaBackend === 'litepan' ? '整理' : 'QMS 整理' }}</th>
+              <th style="width: 96px">{{ mediaBackend === 'litepan' ? 'STRM' : 'STRM 生成' }}</th>
               <th style="width: 88px">时间</th>
               <th style="width: 110px">操作</th>
             </tr>
@@ -335,8 +335,12 @@ async function confirmTrig() {
               </td>
               <td class="small muted rk-path" :title="r.p">{{ r.p }}</td>
               <td><span class="tag rk-tagclip" :class="r.cls" :title="r.st">{{ r.st }}</span></td>
-              <td><span class="tag rk-tagclip" :class="r.qms.cls" :title="r.qms.st">{{ r.qms.st }}</span></td>
-              <td><span class="tag rk-tagclip" :class="r.strm.cls" :title="r.strm.st">{{ r.strm.st }}</span></td>
+              <td v-if="mediaBackend === 'litepan'">
+                <span class="tag rk-tagclip rk-lp">LitePan 接管</span>
+              </td>
+              <td v-else><span class="tag rk-tagclip" :class="r.qms.cls" :title="r.qms.st">{{ r.qms.st }}</span></td>
+              <td v-if="mediaBackend === 'litepan'" class="small muted">—</td>
+              <td v-else><span class="tag rk-tagclip" :class="r.strm.cls" :title="r.strm.st">{{ r.strm.st }}</span></td>
               <td class="small muted rk-nowrap">{{ r.tm }}</td>
               <td>
                 <a-button type="link" size="small" class="rk-detail" @click="openDrawer(r)">详情</a-button>
@@ -382,8 +386,11 @@ async function confirmTrig() {
               <span class="small muted rk-card-path">{{ r.p }}</span>
             </div>
             <div class="rk-card-foot">
-              <span class="tag rk-card-tag" :class="r.qms.cls" :title="r.qms.st">整理：{{ r.qms.st }}</span>
-              <span class="tag rk-card-tag" :class="r.strm.cls" :title="r.strm.st">STRM：{{ r.strm.st }}</span>
+              <span v-if="mediaBackend === 'litepan'" class="tag rk-card-tag rk-lp">整理：LitePan 接管</span>
+              <template v-else>
+                <span class="tag rk-card-tag" :class="r.qms.cls" :title="r.qms.st">整理：{{ r.qms.st }}</span>
+                <span class="tag rk-card-tag" :class="r.strm.cls" :title="r.strm.st">STRM：{{ r.strm.st }}</span>
+              </template>
               <span class="small muted rk-card-tm">{{ r.tm }}</span>
             </div>
           </div>
@@ -672,6 +679,14 @@ html[data-theme='dark'] .pa-ico.pa-ico-copy:hover { background: #1a1425; }
   font-size: 13px;
   color: var(--text2);
   margin-bottom: 6px;
+}
+
+/* LitePan 接管徽标：淡紫描边（联动后端=litepan 时整理列） */
+.rk-lp {
+  color: #b39cf8;
+  max-width: none !important;
+  border-color: rgba(179, 156, 248, 0.45) !important;
+  background: rgba(179, 156, 248, 0.08) !important;
 }
 
 /* ---- 移动端（<768px）：8 列表格换卡片列表；PC 一条不动 ---- */
