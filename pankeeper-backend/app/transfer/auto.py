@@ -16,6 +16,7 @@ from ..adapters.factory import make_adapter
 from ..db import SessionLocal
 from ..models import Account, DdItem, PaTask, Record, RunHistory
 from ..services import media_push, notify, qms
+from ..services.settings_svc import get_group
 from ..services.share_cache import build_payload, share_key, share_list_cache
 
 MAX_LOGS = 40
@@ -179,7 +180,6 @@ def run_auto(eng, t: dict, cfg: dict) -> None:
 
 def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict, dict]:
     """触发 QMS / STRM。链接来源：转存配置里 qms_on 的目录（按目标路径前缀匹配）。"""
-    from ..services.settings_svc import get_group
     if get_group("media").get("backend", "qms") != "qms":
         # 联动后端切到 LitePan：按目录配的 lp_on/lp_event 推 webhook（未配的目录跳过）
         from ..services import litepan
@@ -319,7 +319,6 @@ def resolve_litepan_link(path: str, task_id: int | None = None) -> dict | None:
     ② save_dir 没命中任何 lp_on 目录 → 一律 None（任务/弹窗事件全部作废，没配就不让选）；
     ③ **事件名没填就不联动**（无全局兜底）：任务弹窗和目录配置都没填事件 → None。
     事件名优先级：任务弹窗 > 目录配置。"""
-    from ..services.settings_svc import get_group
     if not get_group("litepan").get("enabled"):
         return None
     hit: DdItem | None = None
@@ -496,7 +495,6 @@ def _sync_pa_task(t: dict, status: str, result, qms_snap: dict | None = None, st
     # ① QMS 真实结果回填（"触发受理"≠"刮削成功"）；② 等刮削真跑完再触发 STRM
     if qms_snap and qms_snap.get("st") == "已触发" and result and result.transferred:
         from ..services import media_push, run_watch
-        from ..services.settings_svc import get_group
 
         names = [e.get("name") for e in result.transferred]
         baseline = t.get("_qms_baseline") or {}
