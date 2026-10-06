@@ -55,7 +55,8 @@ def ensure_admin() -> None:
         if s.get(Setting, ADMIN_KEY) is None:
             s.add(Setting(key=ADMIN_KEY, value_json=json.dumps({"pwd_hash": hash_password(DEFAULT_PWD)})))
             s.commit()
-    print(f"[init] 默认管理员已创建：admin / {DEFAULT_PWD}（请尽快在「系统设置 → 账号安全」修改）")
+            # 文案在守卫内：账号已存在时别再喊"已创建"吓人（2026-10-06 NAS 部署时实拍误导）
+            print(f"[init] 默认管理员已创建：admin / {DEFAULT_PWD}（请尽快在「系统设置 → 账号安全」修改）")
 
 
 class LoginBody(BaseModel):
