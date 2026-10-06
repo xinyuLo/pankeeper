@@ -18,8 +18,6 @@ import type { DdItem, DdQmsPath, DriveType, MainDriveType } from '@/types/model'
 
 const props = defineProps<{
   open: boolean
-  /** 影视类型（搜索行必选下拉）：决定保存位置候选与 LitePan 事件 */
-  mediaType?: 'movie' | 'tv'
   /** 目标网盘类型（只有配过转存配置的网盘才进得来） */
   type: DriveType | null
   /** 默认任务名/新建文件夹名（搜索页给：搜索词+年份，见 SearchTransfer.defaultName） */
@@ -87,19 +85,24 @@ function toggleAllFiles(e: Event) {
 // 转存配置目录已配（2026-10-06 用户定稿：快速转存完全跟随目录配置）
 const mediaBackend = ref<'qms' | 'litepan'>('qms')
 
-function nameMatchesMedia(name: string, mt: 'movie' | 'tv' | undefined): boolean {
-  if (!mt) return true
-  const n = (name || '').toLowerCase()
-  const isTv = n.includes('电视') || n.includes('剧')
-  return mt === 'tv' ? isTv : !isTv
+/** 所选目录的类型：media_type 字段优先，存量老目录按名称推断（含电视/剧 → tv）。
+ * 电影目录 + 检测到多文件 → 展示文件多选（单文件刮削）；电视节目目录照旧全转。 */
+function dirMediaType(it: DdItem): 'movie' | 'tv' {
+  if (it.media_type === 'tv' || it.media_type === 'movie') return it.media_type
+  const n = (it.name || '').toLowerCase()
+  return n.includes('电视') || n.includes('剧') ? 'tv' : 'movie'
 }
-/** 该网盘可用的保存位置：按网盘 + 影视类型（目录名含电视/剧=电视剧，其余=电影）。
- * 类型过滤后为空时显示全部兜底（别把用户堵死）。 */
-const options = computed<DdItem[]>(() => {
-  const all = items.value.filter((x) => x.type === props.type)
-  const byMedia = all.filter((x) => nameMatchesMedia(x.name, props.mediaType))
-  return (byMedia.length ? byMedia : all).sort((a, b) => (a.sort || 0) - (b.sort || 0))
+/** 当前所选目录是否电影目录（决定文件多选块是否展示） */
+const isMovieDir = computed(() => {
+  const it = currentItem.value
+  return it ? dirMediaType(it) === 'movie' : false
 })
+/** 该网盘可用的保存位置（按 sort 升序，与转存配置页排序一致） */
+const options = computed<DdItem[]>(() =>
+  items.value
+    .filter((x) => x.type === props.type)
+    .sort((a, b) => (a.sort || 0) - (b.sort || 0)),
+)
 
 function accLabel(it: DdItem): string {
   return accNames.value[it.account] || ''
@@ -270,7 +273,7 @@ function onOk() {
     return
   }
   const picked = selPaths.value
-  if (!filesFailed.value && fileRows.value.length && !picked.length) {
+  if (isMovieDir.value && !filesFailed.value && fileRows.value.length && !picked.length) {
     message.warning('请至少勾选一个要转存的文件')
     return
   }
@@ -284,10 +287,10 @@ function onOk() {
     /* 建壳转存：在保存位置下按资源名（或更名值）新建文件夹，分享内容剥壳转入——
        记录页显示的名字和盘里的文件夹名天然一致 */
     rename: raw,
-    /* 勾了文件=建壳后只转勾选的（单文件夹单文件，QMS/LitePan 刮削要求）；
-       清单拉取失败回退建壳全转 */
-    with_shell: filesFailed.value || !fileRows.value.length,
-    file_paths: picked,
+    /* 电影目录 + 勾了文件 = 建壳后只转勾选的（单文件夹单文件，刮削要求）；
+       电视节目目录 / 清单拉取失败 = 建壳全转 */
+    with_shell: isMovieDir.value ? (filesFailed.value || !fileRows.value.length) : true,
+    file_paths: isMovieDir.value ? picked : [],
     // 转存配置条目属于哪个账号就用哪个转（account 是账号 id 字符串）；
     // 空 = 该类型默认账号（后端兜底取 id 最小）
     acc_id: it.account ? Number(it.account) : null,
@@ -347,8 +350,8 @@ function onOk() {
           </a-input>
         </div>
 
-        <!-- 文件多选（固定高度）：勾了的才转（QMS/LitePan 只吃单文件夹单/少文件） -->
-        <div class="dd-field">
+        <!-- 文件多选（仅电影目录展示）：勾了的才转；电视节目目录照旧全转（多集合理） -->
+        <div v-if="isMovieDir" class="dd-field">
           <label class="dd-label">选择要转存的文件<i v-if="!filesFailed && fileRows.length">*</i></label>
           <div v-if="filesLoading" class="qs-files qs-files-loading">
             <a-spin size="small" />

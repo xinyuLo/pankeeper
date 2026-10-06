@@ -113,6 +113,8 @@ export interface DdItem {
   /** LitePan 联动（media.backend=litepan 时用）：事件按目录配，空 = 全局默认 */
   lp_on: boolean
   lp_event: string
+  /** 目录类型：快速转存电影目录+多文件时展示文件多选（单文件刮削） */
+  media_type: 'movie' | 'tv' | ''
 }
 
 /** 保存载荷：新建时 id 传 null（后端自增分配），更新时带已入库的正数 id。

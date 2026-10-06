@@ -106,6 +106,9 @@ class DdItem(Base):
     # LitePan 自动化规则（电影/电视剧各一条），全局单一事件名不够用（2026-10-06 用户定稿）
     lp_on: Mapped[bool] = mapped_column(Boolean, default=False)
     lp_event: Mapped[str] = mapped_column(Text, default="")
+    # 目录类型（movie/tv）：快速转存电影目录且检测到多文件时展示文件多选（单文件刮削）；
+    # 电视节目目录照旧全转（多集合理）。空 = 按名称推断（含电视/剧 → tv）
+    media_type: Mapped[str] = mapped_column(Text, default="")
 
 
 class QmsPath(Base):
