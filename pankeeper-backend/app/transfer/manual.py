@@ -15,6 +15,7 @@ from ..adapters.factory import make_adapter
 from ..db import SessionLocal
 from ..models import Account, DdItem, Record
 from ..services import media_push, notify, qms
+from ..services.settings_svc import get_group
 
 MAX_LOGS = 40
 
@@ -148,7 +149,6 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
     QMS 目标来源两档：任务显式指定的 qmsId（普通转存弹窗下拉）→ 按目标路径前缀匹配
     「转存配置」里 qms_on 的目录。解析结果挂在 t["_media"] 上——_finish 落库后挂
     回填/STRM 线程要用同一份，别再现场 _match_dd_link（显式指定会被目录匹配覆盖掉）。"""
-    from ..services.settings_svc import get_group
     if get_group("media").get("backend", "qms") != "qms":
         # 联动后端切到 LitePan：按目录配的 lp_on/lp_event 推 webhook（未配的目录跳过）
         from ..services import litepan
@@ -315,8 +315,7 @@ def _finish(eng, t: dict, status: str, message: str = "", qms_snap: dict | None 
     qms_fired = bool(qms_snap and qms_snap.get("st") == "已触发")
     if result and result.transferred and qms_fired:
         from ..services import media_push, run_watch
-        from ..services.settings_svc import get_group
-
+    
         names = [e.get("name") for e in result.transferred]
         baseline = t.get("_qms_baseline") or {}
         strm_plan = None
