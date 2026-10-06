@@ -120,7 +120,6 @@ def notify_transfer_done(payload: dict) -> dict:
         return {"ok": False, "matched": 0, "triggered": [], "message": msg}
     body = {
         "event": event,
-        "source": "pankeeper",
         "path": payload.get("path", ""),
         "drive": payload.get("drive", ""),
         "task": payload.get("task", ""),
@@ -128,6 +127,11 @@ def notify_transfer_done(payload: dict) -> dict:
         "share_url": payload.get("share_url", ""),
         "share_code": payload.get("share_code", ""),
     }
+    # source 全局通知来源（设置页配）：填了才传——LitePan 规则按 source 精确匹配
+    # （大小写敏感），留空就不传该字段，规则里的 source 留空即不限来源
+    source = (cfg.get("source") or "").strip()
+    if source:
+        body["source"] = source
     res = _post(_full_webhook_url(url), body, cfg.get("apikey") or "")
     if not res["ok"]:
         print(f"[litepan] 推送失败：{res['message']}", flush=True)
@@ -144,11 +148,16 @@ def notify_transfer_done(payload: dict) -> dict:
 
 def test_webhook(url: str, apikey: str) -> dict:
     """设置页「测试」：发一个正常配置不会命中的测试事件，HTTP/信封通了就算 ok
-    （matched=0 属预期——真规则的 event/path_prefix 不会配 pankeeper.test）。"""
+    （matched=0 属预期——真规则的 event/path_prefix 不会配 pankeeper.test）。
+    source 按设置页配的带/不带，与真实推送行为一致。"""
     url = (url or "").strip()
     if not url:
         return {"ok": False, "message": "还没填写 Webhook 地址"}
-    res = _post(_full_webhook_url(url), {"event": "pankeeper.test", "source": "pankeeper", "path": "/"}, apikey)
+    body = {"event": "pankeeper.test", "path": "/"}
+    source = (get_group("litepan").get("source") or "").strip()
+    if source:
+        body["source"] = source
+    res = _post(_full_webhook_url(url), body, apikey)
     if res["ok"]:
         res["message"] = "连通正常（测试事件未命中规则属预期）"
     return res
