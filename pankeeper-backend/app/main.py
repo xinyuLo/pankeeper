@@ -83,18 +83,25 @@ def create_app() -> FastAPI:
         def _index():
             return FileResponse(WEB_DIR / "index.html")
 
-        _STATIC_NAMES = ("favicon.svg", "manifest.webmanifest")
+        # favicon.ico 显式 content-type：桌面/面板类工具抓图标只认 <site>/favicon.ico
+        # 且不认 SVG——没有真 .ico 时该请求会落进 SPA 回退返回 HTML，图标获取直接失败
+        # （2026-10-06 fnOS 桌面「获取图标」实锤）。
+        _STATIC_FILES = (
+            ("favicon.svg", None),
+            ("favicon.ico", "image/x-icon"),
+            ("manifest.webmanifest", None),
+        )
 
-        for name in _STATIC_NAMES:
+        for name, ctype in _STATIC_FILES:
             p = WEB_DIR / name
             if p.is_file():
 
-                def _make(fp: Path):
+                def _make(fp: Path, ct: str | None):
                     def _serve():
-                        return FileResponse(fp)
+                        return FileResponse(fp, media_type=ct) if ct else FileResponse(fp)
                     return _serve
 
-                app.get("/" + name, include_in_schema=False)(_make(p))
+                app.get("/" + name, include_in_schema=False)(_make(p, ctype))
 
         icons = WEB_DIR / "icons"
         if icons.is_dir():
