@@ -50,7 +50,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "media": {"backend": "qms"},
     # LitePan 对接参数（HTTP Webhook，协议定稿见 services/litepan.py 模块注释）。
     # enabled 总闸（关=全部不推）；事件名不在这配（按目录/任务配，没填不联动）。
-    "litepan": {"enabled": False, "webhook_url": "", "apikey": ""},
+    # source 全局通知来源：填了才随事件传（LitePan 规则匹配大小写敏感），留空不传该字段。
+    "litepan": {"enabled": False, "webhook_url": "", "apikey": "", "source": ""},
     "queue_cfg": {"threads": 1, "gap": 5, "qms": 10, "strm": 10},
     # 网盘凭据每日探活（M3）：默认每天 10:00 跑一次。
     # 时间特意放在上午而不是凌晨——半夜探出失效也没人看，通知等于白发；

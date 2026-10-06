@@ -152,6 +152,7 @@ def put_litepan(body: dict, _user=CurrentUser):
         "enabled": bool(body.get("enabled")),
         "webhook_url": (body.get("webhook_url") or "").strip(),
         "apikey": (body.get("apikey") or "").strip(),
+        "source": (body.get("source") or "").strip(),
     })
     return {"ok": True}
 

@@ -52,10 +52,12 @@ export interface QmsCfg {
 export interface LitePanCfg {
   /** 总闸：关 = 所有目录的 LitePan 联动都不推送 */
   enabled: boolean
-  /** 完整 Webhook 地址（LitePan 地址 + /api/open/automation/events） */
+  /** 完整 Webhook 地址（填 LitePan 基地址即可，后端自动补 webhook 路径） */
   webhook_url: string
   /** LitePan API Key（真实系统加密存储、接口只回掩码）。事件名按目录/任务配，没填不联动 */
   apikey: string
+  /** 全局通知来源（source）：填了才随事件传（LitePan 规则按 source 大小写敏感精确匹配），留空不传 */
+  source: string
 }
 
 /** ===== tab4 账号安全 ===== */
@@ -103,6 +105,7 @@ export const settingsStore = reactive<SettingsData>({
     enabled: true,
     webhook_url: 'http://192.168.2.77:8030/api/open/automation/events',
     apikey: '****-****-****',
+    source: 'PanKeeper',
   },
   security: {
     username: 'admin',

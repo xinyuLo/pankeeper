@@ -60,7 +60,7 @@ const notify = reactive<NotifyCfg>({
   on_cred: true,
 })
 const qms = reactive<QmsCfg>({ enabled: true, url: '', apikey: '', tmdb_api_key: '', tmdb_proxy: '', act_strm: true, act_emby: true })
-const litepan = reactive<LitePanCfg>({ enabled: false, webhook_url: '', apikey: '' })
+const litepan = reactive<LitePanCfg>({ enabled: false, webhook_url: '', apikey: '', source: '' })
 const security = reactive<SecurityCfg>({ username: 'admin', session_days: 7 })
 
 /** 初始数据灌入完成前关闭自动保存：Object.assign 本身会触发 watch，不能让「进页面」变成一次保存 */
@@ -71,7 +71,7 @@ onMounted(async () => {
   Object.assign(search, d.search)
   Object.assign(notify, d.notify)
   Object.assign(qms, d.qms)
-  Object.assign(litepan, d.litepan || { enabled: false, webhook_url: '', apikey: '' })
+  Object.assign(litepan, d.litepan || { enabled: false, webhook_url: '', apikey: '', source: '' })
   Object.assign(security, d.security)
   mediaBackend.value = d.media?.backend || 'qms'
   // QMS 引擎状态胶囊（语义同搜索页的 PanSou 在线/离线）
@@ -560,6 +560,13 @@ async function onRemoveAvatar() {
             <div class="ctl">
               <a-input-password v-model:value="litepan.apikey" style="width: 280px" @blur="flushSave('litepan')" />
               <span class="muted small">LitePan「API Key」页生成</span>
+            </div>
+          </div>
+          <div class="formrow">
+            <label>通知来源</label>
+            <div class="ctl">
+              <a-input v-model:value="litepan.source" style="width: 280px" placeholder="如 PanKeeper" @blur="flushSave('litepan')" />
+              <span class="muted small">选填。LitePan 规则按来源精确匹配（区分大小写）；留空则事件不带来源</span>
             </div>
           </div>
           <div class="formrow">
