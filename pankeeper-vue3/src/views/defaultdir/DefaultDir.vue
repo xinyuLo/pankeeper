@@ -68,6 +68,18 @@ async function doDelete(it: DdItem) {
 const modalOpen = ref(false)
 const editingId = ref<number | null>(null) // null = 新增
 const fName = ref('')
+/** 目录类型（电影/电视节目，必选）：快速转存电影目录+多文件时展示文件多选；
+ * 电视节目目录照旧全转（多集合理）。存量老目录按名称推断初值 */
+const fMediaType = ref<'movie' | 'tv'>('movie')
+const MEDIA_TYPE_OPTS = [
+  { value: 'movie', label: '电影' },
+  { value: 'tv', label: '电视节目' },
+]
+/** 按目录名推断类型（存量目录没标过时用） */
+function inferMediaType(name: string): 'movie' | 'tv' {
+  const n = (name || '').toLowerCase()
+  return n.includes('电视') || n.includes('剧') ? 'tv' : 'movie'
+}
 const fType = ref<MainDriveType>('baidu')
 const fAcc = ref('')
 const fPath = ref('')
@@ -151,6 +163,7 @@ function openEditor(id: number | null) {
   if (!it && !firstAcc) message.warning(`该网盘还没有已连接的账号，请先到「网盘连接」配置`)
   fPath.value = it ? it.path : ''
   fName.value = it ? it.name : ''
+  fMediaType.value = it ? (it.media_type === 'tv' || it.media_type === 'movie' ? it.media_type : inferMediaType(it.name)) : 'movie'
   // 新增时排序默认排到该网盘现有最大值 + 1（原型如此）
   fSort.value = it
     ? it.sort
@@ -196,6 +209,10 @@ async function confirmEditor() {
     message.error('请填写名称')
     return
   }
+  if (!fMediaType.value) {
+    message.error('请选择目录类型（电影 / 电视节目）')
+    return
+  }
   if (!fPath.value) {
     message.error('请选择网盘路径')
     return
@@ -224,6 +241,7 @@ async function confirmEditor() {
     return
   }
   const qmsFields = {
+    media_type: fMediaType.value,
     qms_on: fQmsOn.value,
     qms_id: fQmsOn.value && fQmsId.value != null ? fQmsId.value : null,
     strm_id: null, // 此表单只管 QMS；STRM 目录在任务弹窗里配（DdItemDraft 要求字段存在）
@@ -389,8 +407,11 @@ async function confirmEditor() {
   >
     <div class="dd-field">
       <label class="dd-label">名称<i>*</i></label>
-      <a-input v-model:value="fName" :maxlength="20" />
-      <div class="dd-tip">这个名字会出现在搜索结果「快速转存」的下拉框里。</div>
+      <div style="display: flex; gap: 10px; align-items: center">
+        <a-input v-model:value="fName" :maxlength="20" style="flex: 0 0 60%" />
+        <a-select v-model:value="fMediaType" :options="MEDIA_TYPE_OPTS" style="flex: 1" />
+      </div>
+      <div class="dd-tip">名字出现在搜索结果「快速转存」的下拉框里；类型决定快速转存的行为——电影目录检测到多文件时可以勾选只转正片，电视节目目录照旧全部转存。</div>
     </div>
 
     <div class="dd-row2">

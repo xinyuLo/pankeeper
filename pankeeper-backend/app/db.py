@@ -112,6 +112,7 @@ def _migrate_columns() -> None:
         "dd_items": [
             ("lp_on", "INTEGER DEFAULT 0"),
             ("lp_event", "TEXT DEFAULT ''"),
+            ("media_type", "TEXT DEFAULT ''"),
         ],
         "pa_tasks": [
             ("lp_event", "TEXT DEFAULT ''"),

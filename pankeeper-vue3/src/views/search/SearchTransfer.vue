@@ -35,20 +35,6 @@ const T_NO_CRED = '请先到「网盘连接」页配置该网盘凭据'
 /** 空态胶囊：优先真实最近搜索（去重前 5），没历史才回落这些示例词。点击直接发起检索 */
 const FALLBACK_WORDS = ['狂飙', '哪吒2', 'F1：狂飙飞车', '兰香如故', '飞驰人生2']
 const sampleWords = ref<string[]>(FALLBACK_WORDS)
-
-/** 每行的影视类型选择（电影/电视节目）：快速转存按它选保存位置与 LitePan 事件。
- * key = rowKeyOf(r)；必选——openQuick 时未选会拦下提示 */
-const mediaSel = ref<Record<string, 'movie' | 'tv'>>({})
-const MEDIA_SEL_OPTS = [
-  { value: 'movie', label: '电影' },
-  { value: 'tv', label: '电视节目' },
-]
-function mediaOf(r: SearchResultItem): 'movie' | 'tv' | undefined {
-  return mediaSel.value[rowKeyOf(r)]
-}
-function onMediaSel(r: SearchResultItem, v: 'movie' | 'tv') {
-  mediaSel.value = { ...mediaSel.value, [rowKeyOf(r)]: v }
-}
 function searchSample(word: string) {
   if (busy.value) return
   kw.value = word
@@ -410,20 +396,14 @@ const qsType = ref<DriveType | null>(null)
 const qsName = ref('')
 const qsUrl = ref('')
 const qsCode = ref('')
-const qsMediaType = ref<'movie' | 'tv'>('movie')
 const tmOpen = ref(false)
 const tmTarget = ref<TransferTarget | null>(null)
 
 async function openQuick(r: SearchResultItem) {
   if (!r.ok || r.t === 'magnet' || !hasDD(r.t)) return // 磁力没法转存（按钮也不会出现，双保险）
-  if (!mediaOf(r)) {
-    message.warning('请先在该行选择影视类型（电影 / 电视节目）', 4)
-    return
-  }
   if (!(await aliveOrBlock(r))) return
   tmOpen.value = false
   qsType.value = r.t
-  qsMediaType.value = mediaOf(r)!
   qsName.value = defaultName(r)
   qsUrl.value = r.url || ''
   qsCode.value = r.share_code || ''
@@ -643,16 +623,6 @@ onUnmounted(() => {
                 <span class="srcbar" :style="{ background: DRIVE_META[r.t].color }"></span>
                 <span class="resname" :title="r.n">{{ r.n }}</span>
                 <span v-if="r.hot" class="tag t-123 st-hot">极速</span>
-                <!-- 影视类型必选：快速转存按它选保存位置 / LitePan 事件 -->
-                <a-select
-                  :value="mediaOf(r)"
-                  size="small"
-                  class="st-mtypesel"
-                  :class="{ 'need-pick': !mediaOf(r) }"
-                  :options="MEDIA_SEL_OPTS"
-                  placeholder="类型*"
-                  @change="(v: 'movie' | 'tv') => onMediaSel(r, v)"
-                />
               </div>
             </td>
             <td>
@@ -695,15 +665,6 @@ onUnmounted(() => {
               <span class="st-card-title">{{ r.n }}</span>
               <span v-if="r.hot" class="tag t-123 st-hot">极速</span>
             </div>
-            <a-select
-              :value="mediaOf(r)"
-              size="small"
-              class="st-mtypesel"
-              :class="{ 'need-pick': !mediaOf(r) }"
-              :options="MEDIA_SEL_OPTS"
-              placeholder="类型*"
-              @change="(v: 'movie' | 'tv') => onMediaSel(r, v)"
-            />
             <div class="st-card-meta">
               <span class="tag" :class="DRIVE_META[r.t].tag">{{ DRIVE_META[r.t].full }}</span>
               <a-tooltip v-if="r.url && r.t !== 'magnet'" title="查看文件"><button class="pa-ico pa-ico-view" @click.stop="onViewFiles(r)"><FolderOpenOutlined /></button></a-tooltip>
@@ -729,8 +690,7 @@ onUnmounted(() => {
 
 
     <!-- 快速转存弹窗（qsMask）：凭转存配置直入队列 -->
-    <QuickTransferModal v-model:open="qsOpen"
-      :media-type="qsMediaType" :type="qsType" :share-name="qsName" :share-url="qsUrl" :share-code="qsCode" />
+    <QuickTransferModal v-model:open="qsOpen" :type="qsType" :share-name="qsName" :share-url="qsUrl" :share-code="qsCode" />
     <!-- 分享内容文件树弹窗：与自动转存「查看」同款（fetcher 按搜索结果的链接直取） -->
     <ShareFilesModal
       v-model:open="sfOpen"
@@ -797,14 +757,6 @@ onUnmounted(() => {
 
 /* ===== 结果行：来源色条 + 名称省略 ===== */
 .st-namecell { display: flex; align-items: center; gap: 8px; min-width: 0; }
-/* 名称按用户要求限 60% 宽（省略），余量给类型下拉 */
-.st-namecell .resname { max-width: 60%; }
-/* 影视类型下拉（必选）：未选时淡红描边提醒 */
-.st-mtypesel { width: 96px; flex: none; }
-.st-mtypesel.need-pick :deep(.ant-select-selector) {
-  border-color: rgba(255, 120, 117, 0.55);
-  background: rgba(255, 120, 117, 0.05);
-}
 .srcbar { flex: none; width: 3px; height: 15px; border-radius: 3px; }
 .resname {
   min-width: 0;

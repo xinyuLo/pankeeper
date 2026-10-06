@@ -17,6 +17,7 @@ def _row(r: DdItem) -> dict:
         "name": r.name, "path": r.path, "is_default": r.is_default,
         "qms_on": r.qms_on, "qms_id": r.qms_id, "strm_id": r.strm_id,
         "lp_on": r.lp_on, "lp_event": r.lp_event or "",
+        "media_type": r.media_type or "",
     }
 
 
@@ -56,6 +57,8 @@ class DdBody(BaseModel):
     # LitePan 联动（media.backend=litepan 时用）：事件名空 = 用设置页的全局默认
     lp_on: bool = False
     lp_event: str = ""
+    # 目录类型 movie/tv：快速转存电影目录+多文件时展示文件多选（单文件刮削）
+    media_type: str = ""
 
 
 @router.post("/dd/items")
