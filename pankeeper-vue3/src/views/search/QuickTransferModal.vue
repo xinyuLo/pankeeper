@@ -67,10 +67,8 @@ async function loadShareFiles() {
       .filter((f) => !f.is_dir)
       .map((f) => ({ path: f.path, name: f.name, size: f.size }))
     fileRows.value = rows
-    // 默认勾第一个视频文件；没有视频就勾第一个
-    const firstVideo = rows.find((f) => VIDEO_EXT.test(f.name))
-    const first = firstVideo || rows[0]
-    if (first) selPaths.value = [first.path]
+    // 默认全部选中（左栏勾选、右栏同步展示已选）
+    selPaths.value = rows.map((f) => f.path)
   } catch {
     filesFailed.value = true // 清单拉不到：回退"建壳全转"老行为，不挡转存
   } finally {
@@ -78,9 +76,17 @@ async function loadShareFiles() {
   }
 }
 function toggleAllFiles(e: Event) {
-  const on = (e.target as HTMLInputElement).checked
-  selPaths.value = on ? fileRows.value.map((f) => f.path) : []
+  selPaths.value = (e.target as HTMLInputElement).checked ? fileRows.value.map((f) => f.path) : []
 }
+function toggleFile(path: string) {
+  selPaths.value = selPaths.value.includes(path)
+    ? selPaths.value.filter((x) => x !== path)
+    : [...selPaths.value, path]
+}
+function removeSel(path: string) {
+  selPaths.value = selPaths.value.filter((x) => x !== path)
+}
+const selectedRows = computed(() => fileRows.value.filter((f) => selPaths.value.includes(f.path)))
 // 联动后端（决定预览行显示 QMS 还是 LitePan）。LitePan 事件名不在这里配——
 // 转存配置目录已配（2026-10-06 用户定稿：快速转存完全跟随目录配置）
 const mediaBackend = ref<'qms' | 'litepan'>('qms')
@@ -353,24 +359,40 @@ function onOk() {
             <span class="small muted">正在获取文件清单…（点过「查看文件」的分享秒开）</span>
           </div>
           <template v-else-if="fileRows.length">
-            <div class="qs-files">
-              <label class="qs-file qs-file-all">
-                <input
-                  type="checkbox"
-                  :checked="selPaths.length === fileRows.length"
-                  @change="toggleAllFiles"
-                />
-                <b>全选</b>
-                <span class="qs-file-meta">共 {{ fileRows.length }} 个 · 已选 {{ selPaths.length }}</span>
-              </label>
-              <label v-for="f in fileRows" :key="f.path" class="qs-file">
-                <input type="checkbox" :value="f.path" v-model="selPaths" />
-                <span class="qs-file-name" :title="f.name">{{ f.name }}</span>
-                <span class="qs-file-meta">{{ fmtSize(f.size) }}</span>
-              </label>
+            <div class="qs-dual">
+              <div class="qs-dual-col">
+                <div class="qs-dual-hd">
+                  <label class="qs-file">
+                    <input type="checkbox" :checked="selPaths.length === fileRows.length" @change="toggleAllFiles" />
+                    <b>全部文件</b>
+                  </label>
+                  <span class="qs-dual-n">{{ fileRows.length }}</span>
+                </div>
+                <div class="qs-dual-list">
+                  <label v-for="f in fileRows" :key="f.path" class="qs-file" :class="{ on: selPaths.includes(f.path) }">
+                    <input type="checkbox" :checked="selPaths.includes(f.path)" @change="toggleFile(f.path)" />
+                    <span class="qs-file-name" :title="f.name">{{ f.name }}</span>
+                    <span class="qs-file-meta">{{ fmtSize(f.size) }}</span>
+                  </label>
+                </div>
+              </div>
+              <div class="qs-dual-col">
+                <div class="qs-dual-hd">
+                  <b class="qs-dual-t">已选</b>
+                  <span class="qs-dual-n">{{ selPaths.length }}</span>
+                </div>
+                <div class="qs-dual-list">
+                  <div v-for="f in selectedRows" :key="'s-' + f.path" class="qs-file on">
+                    <span class="qs-file-name" :title="f.name">{{ f.name }}</span>
+                    <span class="qs-file-meta">{{ fmtSize(f.size) }}</span>
+                    <a class="qs-file-x" @click.stop="removeSel(f.path)">✕</a>
+                  </div>
+                  <div v-if="!selectedRows.length" class="qs-dual-empty">取消左侧勾选即不转该文件</div>
+                </div>
+              </div>
             </div>
             <div class="small muted" style="margin-top: 4px">
-              默认勾选第一个视频文件——QMS / LitePan 刮削只认「单文件夹单文件」，多选会刮削失败
+              默认全部选中——去掉不想要的再转存（QMS / LitePan 刮削只认「单文件夹单文件」，多文件会刮削失败）
             </div>
           </template>
           <div v-else class="small muted" style="padding: 8px 0">
@@ -449,28 +471,54 @@ function onOk() {
 
 /* ---- 「转存后」结果预览（search-ui 原型样式移植） ---- */
 /* 文件多选：固定高度滚动，选中行高亮 */
-.qs-files {
-  height: 168px;
-  overflow: auto;
+/* 文件双栏：左=全部（默认全选），右=已选（同步联动） */
+.qs-dual { display: flex; gap: 10px; }
+.qs-dual-col {
+  flex: 1;
+  min-width: 0;
   border: 1px solid var(--split);
   border-radius: 8px;
   background: var(--surface-2);
-  padding: 6px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
-.qs-files-loading { display: flex; align-items: center; gap: 10px; justify-content: center; padding: 18px 0; }
+.qs-dual-hd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--split);
+  background: rgba(255, 255, 255, 0.03);
+}
+.qs-dual-t { font-size: 12.5px; }
+.qs-dual-n {
+  margin-left: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: #aebdff;
+  background: rgba(110, 140, 255, 0.12);
+  border-radius: 999px;
+  padding: 0 8px;
+  line-height: 17px;
+}
+.qs-dual-list { height: 172px; overflow: auto; padding: 5px; }
+.qs-dual-empty { padding: 22px 10px; text-align: center; font-size: 12px; color: var(--text3); }
 .qs-file {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 8px;
+  padding: 4px 7px;
   border-radius: 6px;
   cursor: pointer;
   font-size: 12.5px;
 }
 .qs-file:hover { background: rgba(22, 119, 255, 0.07); }
-.qs-file-all { border-bottom: 1px dashed var(--split); border-radius: 0; margin-bottom: 4px; }
+.qs-file.on { background: rgba(22, 119, 255, 0.06); }
 .qs-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .qs-file-meta { flex: none; color: var(--text3); font-size: 11.5px; }
+.qs-file-x { flex: none; color: var(--text3); padding: 0 3px; }
+.qs-file-x:hover { color: var(--error); }
 
 .qs-preview { border: 1px solid var(--split); border-radius: 10px; background: var(--surface-2); overflow: hidden; }
 .qs-pv-hd {
