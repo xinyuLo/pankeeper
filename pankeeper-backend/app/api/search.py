@@ -81,12 +81,13 @@ def search_channels(_user=CurrentUser):
 
 @router.post("/check-link")
 def check_link(body: dict, _user=CurrentUser):
-    """转存前死活预检：透传 pansou-web 的 `POST /api/check/links`（单条）。
+    """转存前死活预检（单条）：① 零延迟路径——分享清单缓存命中且非空（用户点过「查看
+    文件」或刚转过）= 链接有效，直接返回不打 pansou；② 未命中才透传 pansou-web 的
+    `POST /api/check/links`（pansou 侧自带缓存 ok≈24h / bad≈8h / uncertain≈30min）。
 
-    pansou 侧自带缓存（ok≈24h / bad≈8h / uncertain≈30min），PanKeeper 不再缓存一层。
-    返回 {state, summary}：ok=有效 / bad=死链 / locked=需提取码 / uncertain=无法判定 /
-    unknown=检测服务不可用或没这能力——**前端只拦 bad，其余一律放行**（检测器挂了
-    也不能挡转存）。"""
+    返回 {state, summary, from_cache}：ok=有效 / bad=死链 / locked=需提取码 /
+    uncertain=无法判定 / unknown=检测服务不可用——**前端只拦 bad，其余一律放行**
+    （检测器挂了也不能挡转存）。"""
     import requests as rq
 
     t = (body.get("type") or "").strip()
@@ -94,6 +95,12 @@ def check_link(body: dict, _user=CurrentUser):
     code = (body.get("share_code") or "").strip()
     if not url:
         return {"state": "unknown", "summary": "无链接"}
+    # ① 清单缓存快路径：毫秒级返回，前端 loading 都不用出
+    from ..services.share_cache import share_key, share_list_cache
+
+    hit = share_list_cache.get(share_key(t, url, code))
+    if hit and isinstance(hit[0], dict) and (hit[0].get("total") or 0) > 0:
+        return {"state": "ok", "summary": "近期查看过文件清单", "from_cache": True}
     base = _pansou_base()
     if not base:
         return {"state": "unknown", "summary": "未配置 PanSou"}
@@ -106,9 +113,9 @@ def check_link(body: dict, _user=CurrentUser):
         resp = rq.post(f"{base}/api/check/links", json={"items": [item]}, timeout=30)
         results = (resp.json() or {}).get("results") or []
         r0 = results[0] if results else {}
-        return {"state": r0.get("state") or "unknown", "summary": r0.get("summary") or ""}
+        return {"state": r0.get("state") or "unknown", "summary": r0.get("summary") or "", "from_cache": bool(r0.get("cache_hit"))}
     except (rq.RequestException, ValueError):
-        return {"state": "unknown", "summary": "检测服务不可用"}
+        return {"state": "unknown", "summary": "检测服务不可用", "from_cache": False}
 
 
 @router.get("/share-files")
