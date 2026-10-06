@@ -27,6 +27,7 @@ import {
   testQms,
   testSendkey,
 } from '@/api/modules/settings'
+import { getEngineHealth } from '@/api/modules/search'
 import type { LitePanCfg, NotifyCfg, QmsCfg, SearchSrcCfg, SecurityCfg } from '@/api/mock/settings'
 
 const router = useRouter()
@@ -75,6 +76,7 @@ onMounted(async () => {
   mediaBackend.value = d.media?.backend || 'qms'
   // QMS 引擎状态胶囊（语义同搜索页的 PanSou 在线/离线）
   getQmsHealth().then((h) => (qmsHealth.value = h)).catch(() => (qmsHealth.value = { ok: false, message: '检测失败' }))
+  refreshPansouHealth()
   if (mediaBackend.value === 'litepan') refreshLpHealth()
   // watch 回调不是同步执行的（flush: 'pre' 排队等当前同步代码跑完），
   // 必须等这一拍过去再放行，否则灌初值会触发「已自动保存」
@@ -132,6 +134,13 @@ watch(litepan, (v) => {
 })
 
 /* ===== tab1 搜索源 ===== */
+/** PanSou 在线胶囊（语义同 QMS/LitePan 引擎胶囊）：进页拉一次，点「测试连通」后同步 */
+const pansouHealth = ref<{ ok: boolean; message?: string } | null>(null)
+function refreshPansouHealth() {
+  getEngineHealth()
+    .then((h) => (pansouHealth.value = { ok: h.ok, message: h.ok ? `${h.ms ?? 0} ms · ${h.plugins ?? 0} 插件` : h.message }))
+    .catch(() => (pansouHealth.value = { ok: false, message: '检测失败' }))
+}
 /* 缓存时长固定 30 分钟，不开放给用户选——选项只留开/关，时长写进旁边说明 */
 const CACHE_OPTS = [
   { value: 'on', label: '开启' },
@@ -147,6 +156,7 @@ async function onTestPansou() {
   try {
     const r = await testPansou(search.pansou_url)
     // 后端连通失败也是 200 + {ok:false}，必须看 ok 字段，不能 promise 不抛就当成功
+    pansouHealth.value = { ok: r.ok, message: r.ok ? `${r.ms} ms` : (r.message || '离线') }
     if (r.ok) message.success(`连通正常，响应 ${r.ms} ms`)
     else message.error(`连通失败：${r.message || '请检查地址'}`, 5)
   } catch (e: unknown) {
@@ -415,6 +425,7 @@ async function onRemoveAvatar() {
             <div class="ctl">
               <a-input v-model:value="search.pansou_url" style="width: 300px" placeholder="如 http://127.0.0.1:8000" @blur="flushSave('search')" />
               <a-button :loading="testing" @click="onTestPansou">测试连通</a-button>
+              <span class="qms-pill" :class="pansouHealth?.ok ? 'ok' : 'bad'"><i></i>{{ pansouHealth === null ? 'PanSou 状态检测中…' : pansouHealth.ok ? `PanSou 在线 · ${pansouHealth.message}` : `PanSou 离线${pansouHealth.message ? ' · ' + pansouHealth.message : ''}` }}</span>
             </div>
           </div>
         </div>

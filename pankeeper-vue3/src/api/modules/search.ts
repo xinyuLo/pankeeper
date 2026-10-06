@@ -62,6 +62,10 @@ export interface EngineHealth {
   ok: boolean
   plugins: number | null
   channels: number | null
+  /** 成功时的响应耗时（毫秒） */
+  ms?: number
+  /** 失败原因（pansou 连不上等） */
+  message?: string
 }
 
 /** 检索引擎健康度（不含地址，IP 属隐私）。实时探测，结果由后端写进缓存 */
