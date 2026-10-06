@@ -573,7 +573,7 @@ async function onRemoveAvatar() {
             <label></label>
             <div class="muted small" style="line-height: 1.8">
               转存完成后 PanKeeper 发 Webhook（事件 + 转存目标路径），LitePan 按匹配到的规则自动整理。
-              事件名在「转存配置」目录和任务弹窗里按需配，<b>没填事件名就不联动</b>；
+              事件名在「转存配置」目录和任务弹窗里按需配，<b>没填事件名就不联动</b>；<br />
               规则的「路径前缀」按转存目标目录配。刮削/STRM 状态由 LitePan 自理，PanKeeper 只推自识别结果。
             </div>
           </div>
