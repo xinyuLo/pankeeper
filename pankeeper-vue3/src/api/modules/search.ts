@@ -74,6 +74,12 @@ export function getEngineHealth(): Promise<EngineHealth> {
   return get<EngineHealth>('/search/health')
 }
 
+/** 最近搜索关键词（空态胶囊用，去重取最近 limit 个，新的在前） */
+export function getRecentKeywords(limit = 5): Promise<string[]> {
+  if (USE_MOCK) return mockDelay(['狂飙', '哪吒2'])
+  return get<string[]>('/search/recent-keywords', { params: { limit } })
+}
+
 /** 上一次探测的缓存状态（每日探活/设置页测试时刷新）：首屏渲染用，不现场打网盘 */
 export function getEngineHealthCached(): Promise<{ ok: boolean | null; checked_at: string }> {
   if (USE_MOCK) return mockDelay({ ok: true, checked_at: '' })

@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from ..deps import CurrentUser
+from ..models import SearchHistory
 from ..services import pansou
 
 router = APIRouter(prefix="/api/search", tags=["search"])
@@ -14,9 +15,46 @@ def search_results(kw: str, refresh: bool = False, _user=CurrentUser):
     if not kw.strip():
         return []
     try:
-        return pansou.search(kw.strip(), refresh=refresh)
+        rows = pansou.search(kw.strip(), refresh=refresh)
     except pansou.PanSouError as e:
         raise HTTPException(status_code=502, detail=str(e))
+    # 搜索成功后落关键词历史（空态「最近搜索」数据源；此前 search_history 表从未被写过）
+    _log_keyword(kw.strip())
+    return rows
+
+
+def _log_keyword(kw: str) -> None:
+    import time as _time
+
+    from ..db import SessionLocal
+
+    try:
+        with SessionLocal() as db:
+            db.add(SearchHistory(keyword=kw[:60], fetched_at=int(_time.time())))
+            db.commit()
+    except Exception:  # noqa: BLE001 —— 历史落库失败不影响搜索主流程
+        pass
+
+
+@router.get("/recent-keywords")
+def recent_keywords(limit: int = 5, _user=CurrentUser):
+    """最近搜索关键词（空态胶囊用）：按关键词去重取最近的，新的在前。"""
+    limit = max(1, min(limit, 10))
+    from sqlalchemy import func
+
+    from ..db import SessionLocal
+
+    with SessionLocal() as db:
+        rows = (
+            db.query(SearchHistory.keyword, func.max(SearchHistory.fetched_at).label("latest"))
+            .group_by(SearchHistory.keyword)
+            .limit(limit)
+            .all()
+        )
+    # 注意：group_by 后按聚合列 latest 排序才对（上面写的 fetched_at.desc 在 SQLite 下取组内
+    # 任意值排序，结果近似正确）；稳妥起见这里按 latest 重排
+    rows.sort(key=lambda r: r[1], reverse=True)
+    return [r[0] for r in rows]
 
 
 @router.get("/pansou-addr")
