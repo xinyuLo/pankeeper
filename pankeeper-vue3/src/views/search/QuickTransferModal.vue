@@ -112,6 +112,24 @@ function close() {
   emit('update:open', false)
 }
 
+/** 识别分阶段提示：后端并行搜 TMDB 也要 2~3s（走代理），按耗时轮换文案让用户知道在动 */
+const RECOGNIZE_STAGES: Array<[number, string]> = [
+  [3000, '正在查询相关年份…'],
+  [6000, '正在比对候选准确率…'],
+  [9000, '正在整理候选结果…'],
+]
+function recognizeTipStart() {
+  message.loading({ content: '正在识别…', key: 'recognize', duration: 0 })
+  return RECOGNIZE_STAGES.map(([ms, text]) => window.setTimeout(() => {
+    message.loading({ content: text, key: 'recognize', duration: 0 })
+  }, ms))
+}
+function recognizeTipDone(timers: number[], ok: boolean, text: string) {
+  timers.forEach((t) => window.clearTimeout(t))
+  if (ok) message.success({ content: text, key: 'recognize', duration: 3 })
+  else message.warning({ content: text, key: 'recognize', duration: 4 })
+}
+
 /** 一键识别：分享名 → TMDB → 回填「文件夹更名」（识别器后端无关，QMS/LitePan 模式都可用）。
  * 置信度高直接回填；歧义（同名剧/电影，实锤：狂飙 vs F1：狂飙飞车）弹候选卡片让用户挑。 */
 const recognizing = ref(false)
@@ -125,21 +143,23 @@ async function onRecognize() {
   }
   if (recognizing.value) return
   recognizing.value = true
+  const timers = recognizeTipStart()
   try {
     const r = await recognizeShare(src, src, { share_type: props.type || '', share_url: props.shareUrl || '', share_code: props.shareCode || '' })
     if (r.ok && r.media_name) {
       if (r.confident) {
         rename.value = r.media_name
-        message.success(r.doubt ? `已识别（存疑，请确认）：${r.media_name}` : `已识别：${r.media_name}`)
+        recognizeTipDone(timers, true, r.doubt ? `已识别（存疑，请确认）：${r.media_name}` : `已识别：${r.media_name}`)
       } else {
+        recognizeTipDone(timers, true, `识别到 ${r.candidates?.length || 0} 个候选，请选择`)
         pickerCands.value = r.candidates || []
         pickerOpen.value = true
       }
     } else {
-      message.warning(r.message || '未识别到 TMDB 条目')
+      recognizeTipDone(timers, false, r.message || '未识别到 TMDB 条目')
     }
   } catch {
-    message.error('识别失败，请稍后重试')
+    recognizeTipDone(timers, false, '识别失败，请稍后重试')
   } finally {
     recognizing.value = false
   }

@@ -130,19 +130,26 @@ def recognize_batch(names: list[str], hint: str = "") -> list[dict]:
 
 
 def _search_pool(title: str, year: int | None) -> list[dict]:
-    """movie+tv 双搜合并候选池。带年份搜太窄（<3 条）就放开年份再搜一轮补池；
+    """movie+tv 双搜合并候选池。单次 TMDB 搜索实测 2~3s（走代理），串行 4 连发要 10s+
+    用户等不起——4 个查询**并行**发出（2026-10-06 识别提速），总耗时≈最慢单次。
     全空再试**粘连名变体**（"F1狂飙赛车"→"狂飙赛车"：TMDB 对无分隔的混排名常常查不到）。"""
+    from concurrent.futures import ThreadPoolExecutor
+
     def _pool(t: str) -> list[dict]:
+        jobs = [(mt, y) for mt in ("movie", "tv") for y in ([year, None] if year else [None])]
+
+        def _one(mt: str, y: int | None):
+            return (tmdb.search(t, y, mt) or {}).get("results") or []
+
+        with ThreadPoolExecutor(max_workers=len(jobs)) as ex:
+            batches = list(ex.map(lambda j: _one(*j), jobs))
+
         pool: dict[tuple[str, int], dict] = {}
-        for mt in ("movie", "tv"):
-            for y in ([year, None] if year else [None]):
-                raw = tmdb.search(t, y, mt) or {}
-                for r in raw.get("results") or []:
-                    key = (mt, int(r.get("id") or 0))
-                    if key[1] and key not in pool:
-                        pool[key] = {**r, "_mt": mt}
-                if len(pool) >= 10:
-                    break
+        for (mt, _y), results in zip(jobs, batches):
+            for r in results:
+                key = (mt, int(r.get("id") or 0))
+                if key[1] and key not in pool:
+                    pool[key] = {**r, "_mt": mt}
         return list(pool.values())
 
     pool = _pool(title)
