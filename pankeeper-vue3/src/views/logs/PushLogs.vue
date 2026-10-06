@@ -109,7 +109,11 @@ function kindTxt(k: string) {
               <div class="pl-title">{{ r.title }}</div>
               <span class="pl-sub">{{ kindTxt(r.kind) }}<template v-if="r.content"> · {{ preview(r.content) }}</template></span>
             </td>
-            <td class="small pl-err" :class="r.error ? 'bad-text' : 'muted'">{{ r.error || '—' }}</td>
+            <!-- ⚠️ pl-err（display:-webkit-box）绝不能挂在 td 上：会覆盖 table-cell 布局，
+                 td 不随行拉伸、border 错位（2026-10-06 行错位实锤根因）。挂内部 span。 -->
+            <td class="small">
+              <span class="pl-err" :class="r.error ? 'bad-text' : 'muted'">{{ r.error || '—' }}</span>
+            </td>
             <td><a class="pl-detail" @click="openDetail(r)"><EyeOutlined /> 详情</a></td>
           </tr>
           <tr v-if="!rows.length">
