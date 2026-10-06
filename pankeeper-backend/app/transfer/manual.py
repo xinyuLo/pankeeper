@@ -155,11 +155,10 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
         from .auto import resolve_litepan_link
         t["_media"] = {"qms_id": None, "strm_id": None}
         lp_link = resolve_litepan_link(t["path"])
-        # 弹窗里填了事件名（搜索转存弹窗输入框）= 一次性覆盖，最高优先
+        # 弹窗里填了事件名（搜索转存弹窗输入框）= 一次性覆盖；总闸在 resolve 里：
+        # 目录没配 lp_on 时 lp_link 为 None，弹窗填了事件也**不推**（没配联动就不让选/不生效）
         popup_event = (t.get("lpEvent") or "").strip()
         if lp_link is not None and popup_event:
-            lp_link = {"event": popup_event}
-        elif lp_link is None and popup_event:
             lp_link = {"event": popup_event}
         if lp_link is None:
             _push_log(t, "INFO", "该目录未配置 LitePan 联动（转存配置里没开），跳过推送")
