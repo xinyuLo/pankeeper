@@ -74,30 +74,16 @@ def record_fingerprint(names: list[str]) -> dict[str, list]:
 def watch_qms(run_id: int, task_name: str, names: list[str], baseline: dict[str, list] | None = None, table=RunHistory) -> None:
     """spawn 后台线程回填 QMS 真实结果（无文件/无任务名直接返回）。
 
-    baseline：触发前指纹。传了它就只认「更新的记录」——用于手动重刷，避免 QMS 去重
-    （没真重刮）时把旧记录当成本次结果。不传（转存路径）则维持原判定逻辑。
-    table：快照写回哪张表 —— RunHistory（自动转存）/ Record（搜索转存，2026-10-04 起同款回填，
-    用户实锤：搜索转存 QMS 侧刮失败了这边还显示"触发成功"）。
+    baseline：**触发前**的记录指纹（`record_fingerprint`，在 `qms.trigger_scrape` 之前取）。
+    2026-10-06 起转存路径也必传——回填只认本次触发产生的新记录：一是 QMS 按文件路径去重
+    （没重刮）时不能把旧结果当新结果，二是同名裸名文件跨剧碰撞（狂飙 17.mp4 撞兰香如故
+    旧批次同名记录）时不能把别人的结果记到自己头上。
+    table：快照写回哪张表 —— RunHistory（自动转存）/ Record（搜索转存，2026-10-04 起同款回填）。
     """
     names = [n for n in (names or []) if n]
     if not run_id or not names:
         return
     threading.Thread(target=_watch, args=(run_id, task_name or "", names, baseline or {}, table), daemon=True).start()
-
-
-def _is_fresh(latest: dict[str, dict], baseline: dict[str, list]) -> bool:
-    """是否出现了「比触发前更新」的记录（无 baseline 一律算新，走原逻辑）。"""
-    if not baseline:
-        return True
-    for name, rec in latest.items():
-        base = baseline.get(name)
-        if base is None:
-            return True  # 触发前没记录、现在有了 = 新
-        if rec.get("id") is not None and base[0] is not None and rec.get("id") > base[0]:
-            return True  # id 更大 = 重刮产生了新记录
-        if rec.get("status") != base[1]:
-            return True  # 同一条被就地更新（状态变了）也算新
-    return False
 
 
 def _scrape_dest_dirs(names: set[str]) -> list[str]:
@@ -297,8 +283,8 @@ def _load_snap(raw: str) -> dict | None:
 
 def _watch(run_id: int, task_name: str, names: list[str], baseline: dict[str, list], table=RunHistory) -> None:
     try:
-        recs, fresh = _wait(task_name, names, baseline)
-        if not fresh:
+        recs, verdict = _wait(names, baseline)
+        if verdict == "dedup":
             # QMS 没产生新记录 = 按文件去重、根本没重刮：保留原判定，不拿旧结果冒充新结果
             print(f"[run-watch] record {run_id} QMS 未产生新记录（按文件去重，未重刮）→ 保持原判定", flush=True)
             return
@@ -307,41 +293,82 @@ def _watch(run_id: int, task_name: str, names: list[str], baseline: dict[str, li
         print(f"[run-watch] 回填 QMS 结果失败（record {run_id}）：{e}", flush=True)
 
 
-def _wait(task_name: str, names: list[str], baseline: dict[str, list] | None = None) -> tuple[list[dict], bool]:
-    """轮询到「本次文件全部终态」或超时。每个文件名只取最新一条记录。
+def _fresh_map(latest: dict[str, dict], baseline: dict[str, list]) -> dict[str, dict]:
+    """按名字挑出「本次触发产生的」新记录：触发前没记录 / 记录 id 更大 / 状态被就地更新。
 
-    返回 (记录, 是否出现新记录)。给了 baseline 时，若在 DEDUP_WAIT 内没有出现更新的
-    记录，判定为 QMS 去重未重刮（fresh=False，调用方保持原判定）。
+    为什么必须逐名判定（2026-10-06 实锤）：QMS 记录只有 file_name 没有目录归属，
+    同名裸名文件跨剧碰撞（狂飙的 17.mp4 ↔ 兰香如故旧批次的 17.mp4）时，旧记录会被
+    误当成这次的刮削结果——推送标题张冠李戴、回填把别人的"成功"记到自己头上。
+    baseline 指纹（触发前的 {名字: [记录id, 状态]}）是唯一可靠的分界线。"""
+    out: dict[str, dict] = {}
+    for fn, r in latest.items():
+        base = baseline.get(fn)
+        if base is None:
+            out[fn] = r  # 触发前没记录：现在有 = 本次产生的
+        elif r.get("id") is not None and base[0] is not None and r.get("id") > base[0]:
+            out[fn] = r  # id 更大 = 重刮产生了新记录
+        elif len(base) > 1 and base[1] is not None and r.get("status") != base[1]:
+            out[fn] = r  # 同一条被就地更新（状态变了）也算新
+    return out
 
-    ⚠️ 刻意**不按任务名筛**：QMS 的 name 过滤实测会漏记录（2026-10-04：41.4k.mp4 明明
-    有 scrape_failed 记录，带 name 查却查不到，media_push 那套因此可能永远等不到终态）。
-    改为一次拉最新 N 条、只按 file_name 精确匹配——记录是新→旧，刚转存的文件必在前排。
+
+def _wait(names: list[str], baseline: dict[str, list] | None = None) -> tuple[list[dict], str]:
+    """轮询到「本次转存的文件**全部**出现本次触发产生的终态记录」，或停滞/总超时。
+
+    返回 (记录, verdict)。verdict：
+    - done    全部文件都有本次的新终态记录（或全是 ignore）
+    - dedup   触发前就有记录的文件全部原状、记录池纹丝不动 → QMS 按路径去重没重刮
+    - stale   记录池超过 NO_RECORD_TIMEOUT 无新增（QMS 不再产出）→ 有什么报什么
+    - timeout 总超时（POLL_TIMEOUT）→ 按已有记录回填
+
+    ⚠️ 三个历史教训都钉死在这里，别改回去：
+    1. 不按 name= 筛：QMS 的 name 过滤实测会漏记录（2026-10-04：41.4k.mp4 明明有
+       scrape_failed 记录，带 name 查却查不到）。一次拉最新 N 条按 file_name 精确匹配。
+    2. **必须全覆盖才收工**（2026-10-06 实锤）：旧判定只看"已匹配的记录是否全部终态"，
+       没管还没出现记录的文件——6 个新文件只等到 1 个旧记录就全数返回，推送变成
+       「更新 1 集」、回填写成"成功 1 / 未见记录 5"（其实 QMS 后来把 6 个全刮好了）。
+    3. **只认本次触发后的新记录**（2026-10-06 实锤）：旧记录一律不算这次的账，
+       否则同名旧记录顶替（狂飙 17.mp4 撞兰香如故旧记录，推送变成"兰香如故 · 更新 1 集"）。
     """
     baseline = baseline or {}
-    deadline = time.time() + POLL_TIMEOUT
-    no_record_deadline = time.time() + NO_RECORD_TIMEOUT
-    dedup_deadline = time.time() + DEDUP_WAIT
     want = set(names)
+    deadline = time.time() + POLL_TIMEOUT
+    stale_deadline = time.time() + NO_RECORD_TIMEOUT
+    dedup_deadline = time.time() + DEDUP_WAIT
+    seen_max_id = 0
+    initial_max_id: int | None = None
     while True:
+        rows = qms.scrape_records(page_size=PAGE_SIZE) or []
+        max_id = max((int(r.get("id") or 0) for r in rows), default=0)
+        if initial_max_id is None:
+            initial_max_id = max_id
+        if max_id > seen_max_id:
+            seen_max_id = max_id
+            stale_deadline = time.time() + NO_RECORD_TIMEOUT  # 记录池还在产出：停滞时钟重置
         latest: dict[str, dict] = {}
-        for r in qms.scrape_records(page_size=PAGE_SIZE) or []:
+        for r in rows:
             # 记录按新→旧返回：第一次遇到的名字就是该文件最新的那条
             fn = r.get("file_name")
             if fn in want and fn not in latest:
                 latest[fn] = r
-        fresh = _is_fresh(latest, baseline)
-        alive = [r for r in latest.values() if r.get("status") not in IGNORE_STATUS]
-        if fresh and alive and all(r.get("status") in TERMINAL_STATUS for r in alive):
-            return list(latest.values()), True
-        if fresh and latest and not alive:
-            return list(latest.values()), True  # 查到的全是 ignore：等于没得等
+        fresh = _fresh_map(latest, baseline)
+        alive = [r for r in fresh.values() if r.get("status") not in IGNORE_STATUS]
+        missing = want - set(fresh)
         now = time.time()
-        if baseline and not fresh and now > dedup_deadline:
-            return [], False  # 去重没重刮：别把旧结果当新结果，保持原判定
-        if not latest and now > no_record_deadline:
-            return [], fresh  # 10 分钟一条都没建：如实报"未见刮削记录"，别死等
+        if not missing and (not alive or all(r.get("status") in TERMINAL_STATUS for r in alive)):
+            return list(fresh.values()), "done"
+        if (
+            baseline
+            and not fresh
+            and all(fn in baseline for fn in want)  # 所有文件触发前就有记录，才谈得上"被去重"
+            and now > dedup_deadline
+            and seen_max_id == initial_max_id  # 记录池纹丝不动：连别处的新记录都没有
+        ):
+            return [], "dedup"
+        if now > stale_deadline:
+            return list(fresh.values()), ("stale" if missing else "done")
         if now > deadline:
-            return list(latest.values()), fresh  # 超时：按已有记录回填
+            return list(fresh.values()), "timeout"
         time.sleep(POLL_INTERVAL)
 
 

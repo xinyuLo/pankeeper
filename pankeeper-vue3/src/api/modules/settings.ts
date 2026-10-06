@@ -110,7 +110,7 @@ export function getQmsHealth(): Promise<{ ok: boolean; message?: string }> {
   return get<{ ok: boolean; message?: string }>('/qms/health')
 }
 
-/** 推送历史行（push_logs 快照，一次投递一行） */
+/** 推送历史行（push_logs 快照，一次投递一行）。content 只回 200 字预览，完整正文走 getPushLogDetail */
 export interface PushLogRow {
   id: number
   ts: string
@@ -118,12 +118,24 @@ export interface PushLogRow {
   kind: string
   status: 'success' | 'fail'
   error: string
+  content: string
+  has_more: boolean
 }
 
 /** 推送历史（推送历史页数据源）：items 按时间倒序 + 窗口内成败计数 */
 export function getPushLogs(limit = 100): Promise<{ items: PushLogRow[]; delivered: number; failed: number }> {
   if (USE_MOCK) return mockDelay({ items: [], delivered: 0, failed: 0 })
   return get<{ items: PushLogRow[]; delivered: number; failed: number }>('/notify/history', { params: { limit } })
+}
+
+/** 单条推送完整详情（正文快照，即 Server酱实际收到的内容；详情接口不区分预览/全量） */
+export interface PushLogDetail extends Omit<PushLogRow, 'has_more'> {
+  content: string
+}
+
+export function getPushLogDetail(id: number): Promise<PushLogDetail> {
+  if (USE_MOCK) return mockDelay({ id, ts: '', title: '（mock）', kind: 'info', status: 'success', error: '', content: 'mock 正文' })
+  return get<PushLogDetail>(`/notify/history/${id}`)
 }
 
 /** 修改用户名 + 密码 + 会话有效期。后端同一端点：new_password 为空则只更新用户名/会话 */

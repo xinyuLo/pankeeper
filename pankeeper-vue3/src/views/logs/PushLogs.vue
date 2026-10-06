@@ -1,12 +1,13 @@
 <script setup lang="ts">
 /* 推送历史页（侧边栏：日志管理 → 推送历史）
  * Server 酱/Webhook 每次投递一行：几点推的、成功/失败、推送标题、失败原因。
+ * 行内「详情」/点卡片 → 抽屉展示 Server酱实际收到的完整正文（push_logs.content 快照）。
  * 数据源 GET /notify/history（notify.push 落库的 push_logs 快照，倒序取最近 100 条）。
  * 表格口径与转存历史页一致：全局基础样式 + 本页只收横向内边距（pl- 前缀）。 */
 import { onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
-import { ReloadOutlined } from '@ant-design/icons-vue'
-import { getPushLogs, type PushLogRow } from '@/api/modules/settings'
+import { ReloadOutlined, EyeOutlined } from '@ant-design/icons-vue'
+import { getPushLogs, getPushLogDetail, type PushLogRow, type PushLogDetail } from '@/api/modules/settings'
 import { useIsMobile } from '@/composables/useIsMobile'
 
 const isMobile = useIsMobile()
@@ -37,6 +38,24 @@ async function load() {
   }
 }
 onMounted(load)
+
+/* ===== 详情抽屉：拉该条推送的完整正文快照 ===== */
+const detailOpen = ref(false)
+const detailLoading = ref(false)
+const detail = ref<PushLogDetail | null>(null)
+async function openDetail(row: PushLogRow) {
+  detailOpen.value = true
+  detailLoading.value = true
+  detail.value = null
+  try {
+    detail.value = await getPushLogDetail(row.id)
+  } catch {
+    message.error('推送详情加载失败')
+    detailOpen.value = false
+  } finally {
+    detailLoading.value = false
+  }
+}
 
 /* kind → 中文（标题下的次级说明） */
 const KIND_TXT: Record<string, string> = {
@@ -71,7 +90,8 @@ function kindTxt(k: string) {
             <th style="width: 168px">推送时间</th>
             <th style="width: 84px">状态</th>
             <th>推送内容</th>
-            <th style="width: 30%">失败原因</th>
+            <th style="width: 26%">失败原因</th>
+            <th style="width: 64px">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -82,23 +102,24 @@ function kindTxt(k: string) {
             </td>
             <td>
               <div class="pl-title">{{ r.title }}</div>
-              <span class="pl-sub">{{ kindTxt(r.kind) }}</span>
+              <span class="pl-sub">{{ kindTxt(r.kind) }}<template v-if="r.content"> · {{ r.content }}</template></span>
             </td>
             <td class="small pl-err" :class="r.error ? 'bad-text' : 'muted'">{{ r.error || '—' }}</td>
+            <td><a class="pl-detail" @click="openDetail(r)"><EyeOutlined /> 详情</a></td>
           </tr>
           <tr v-if="!rows.length">
-            <td colspan="4" class="pq-empty">{{ loading ? '加载中…' : '还没有推送记录 · 转存完成或发生告警时这里就有记录' }}</td>
+            <td colspan="5" class="pq-empty">{{ loading ? '加载中…' : '还没有推送记录 · 转存完成或发生告警时这里就有记录' }}</td>
           </tr>
           <tr v-if="rows.length && !rows.some((r) => !fStatus || r.status === fStatus)">
-            <td colspan="4" class="pq-empty">没有符合筛选的推送</td>
+            <td colspan="5" class="pq-empty">没有符合筛选的推送</td>
           </tr>
         </tbody>
       </table>
 
-      <!-- 手机端：一行一条卡片 -->
+      <!-- 手机端：一行一条卡片，点卡片开详情 -->
       <div v-else class="pl-cards">
         <template v-for="r in rows" :key="r.id">
-          <div v-if="!fStatus || r.status === fStatus" class="pl-card">
+          <div v-if="!fStatus || r.status === fStatus" class="pl-card" @click="openDetail(r)">
             <div class="pl-card-top">
               <span class="pl-title">{{ r.title }}</span>
               <span class="tag" :class="r.status === 'success' ? 't-ok' : 't-bad'">{{ r.status === 'success' ? '成功' : '失败' }}</span>
@@ -110,6 +131,30 @@ function kindTxt(k: string) {
         <div v-if="!rows.length" class="pq-empty">{{ loading ? '加载中…' : '还没有推送记录' }}</div>
       </div>
     </div>
+
+    <!-- 详情抽屉：Server酱实际收到的完整正文（Markdown 原样 pre-wrap 展示） -->
+    <a-drawer v-model:open="detailOpen" title="推送详情" :width="isMobile ? '100%' : 560" placement="right">
+      <a-spin :spinning="detailLoading">
+        <template v-if="detail">
+          <div class="pd-meta">
+            <span class="tag" :class="detail.status === 'success' ? 't-ok' : 't-bad'">{{ detail.status === 'success' ? '成功' : '失败' }}</span>
+            <span class="small muted">{{ detail.ts }} · {{ kindTxt(detail.kind) }}</span>
+          </div>
+          <div class="pd-block">
+            <div class="pd-label">标题</div>
+            <div>{{ detail.title }}</div>
+          </div>
+          <div v-if="detail.error" class="pd-block">
+            <div class="pd-label">失败原因</div>
+            <div class="bad-text">{{ detail.error }}</div>
+          </div>
+          <div class="pd-block">
+            <div class="pd-label">推送正文（Server酱实际收到）</div>
+            <pre class="pd-content">{{ detail.content || '（无正文快照——本条产生于详情功能上线前）' }}</pre>
+          </div>
+        </template>
+      </a-spin>
+    </a-drawer>
   </div>
 </template>
 
@@ -130,12 +175,31 @@ function kindTxt(k: string) {
 
 /* 手机卡片 */
 .pl-cards { display: block; }
-.pl-card { padding: 12px 14px; border-bottom: 1px solid var(--split); }
+.pl-card { padding: 12px 14px; border-bottom: 1px solid var(--split); cursor: pointer; }
 .pl-card:last-child { border-bottom: none; }
 .pl-card-top { display: flex; align-items: center; gap: 8px; }
 .pl-card-top .pl-title { flex: 1; min-width: 0; }
 .pl-card-meta { margin-top: 3px; }
 .pl-card .pl-err { margin-top: 5px; }
+
+/* 详情「详情」链接 + 抽屉排版 */
+.pl-detail { font-size: 12.5px; color: var(--primary); white-space: nowrap; }
+.pd-meta { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.pd-block { margin-bottom: 16px; }
+.pd-label { font-size: 12px; color: var(--text3); margin-bottom: 6px; }
+.pd-content {
+  margin: 0;
+  padding: 12px;
+  background: var(--surface-2);
+  border-radius: var(--r-sm);
+  font-size: 12.5px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 60vh;
+  overflow: auto;
+  font-family: inherit;
+}
 
 @media (max-width: 767px) {
   .filterbar { flex-wrap: wrap; }
