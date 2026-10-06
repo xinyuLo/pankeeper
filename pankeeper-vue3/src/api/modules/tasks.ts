@@ -29,6 +29,7 @@ function hydrate(rows: Record<string, unknown>[]): PaTask[] {
       drill: (raw.drill as string[]) || [],
       qms_id: (raw.qms_id as number | null) ?? null,
       strm_id: (raw.strm_id as number | null) ?? null,
+      lp_event: String(raw.lp_event || ''),
     })
   }
   paStore.tasks.splice(0, paStore.tasks.length, ...tasks)
@@ -87,6 +88,7 @@ export async function savePaTask(task: PaTask, extras: PaExtras): Promise<PaTask
     regex_replace: extras.regex?.[0]?.rep || '',
     qms_id: extras.qms_id,
     strm_id: extras.strm_id,
+    lp_event: extras.lp_event || '',
     drill_on: extras.drill_on,
     drill: extras.drill,
   }
@@ -136,16 +138,18 @@ export interface PaExtras {
   drill: string[]
   qms_id: number | null
   strm_id: number | null
+  /** LitePan 事件名（media.backend=litepan 时任务级覆盖；空=按转存配置目录/全局默认） */
+  lp_event: string
 }
 
 const extrasMap = reactive<Record<number, PaExtras>>({})
 
 function cloneExtras(e: PaExtras): PaExtras {
-  return { regex: e.regex.map((r) => ({ ...r })), drill_on: e.drill_on, drill: [...e.drill], qms_id: e.qms_id, strm_id: e.strm_id }
+  return { regex: e.regex.map((r) => ({ ...r })), drill_on: e.drill_on, drill: [...e.drill], qms_id: e.qms_id, strm_id: e.strm_id, lp_event: e.lp_event }
 }
 
 function defaultExtras(): PaExtras {
-  return { regex: [{ pat: '', rep: '' }], drill_on: false, drill: [], qms_id: null, strm_id: null }
+  return { regex: [{ pat: '', rep: '' }], drill_on: false, drill: [], qms_id: null, strm_id: null, lp_event: '' }
 }
 
 /** 读任务的扩展配置（内存 map，直接同步返回；没有则给默认草稿） */

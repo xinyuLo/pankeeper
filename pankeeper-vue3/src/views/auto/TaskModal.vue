@@ -13,6 +13,7 @@ import CronPicker from './CronPicker.vue'
 import { DD_MEDIA, DRIVE_META } from '@/api/mock/meta'
 import { accountStore } from '@/api/mock/accounts'
 import { listDdItems, listQmsPaths, listStrmPaths } from '@/api/modules/dd'
+import { getSettings } from '@/api/modules/settings'
 import {
   cronHuman,
   extractShareCode,
@@ -39,6 +40,11 @@ const comparePath = ref('')
 const includeSub = ref(true)
 const postQms = ref(false) // QMS 联动开关（原「完成后动作 · 触发 QMS 刮削」与其同状态，UI 已合并到这一处）
 const qmsId = ref<number | null>(null)
+// LitePan 联动（media.backend=litepan 时替代 QMS 区块）：开关 + 事件名输入框
+// （先输入框，LitePan 出接口后换下拉——2026-10-06 用户定稿）
+const postLp = ref(false)
+const lpEvent = ref('')
+const mediaBackend = ref<'qms' | 'litepan'>('qms')
 const strmId = ref<number | null>(null)
 const cron = ref('0 3 * * *')
 /* 正则过滤：只做匹配过滤；文件名改名交给 QMS 刮削统一处理（正则改名已砍）。
@@ -131,7 +137,7 @@ watch(
   async (v) => {
     if (!v) return
     const t = props.task
-    const ex: PaExtras = t ? getPaExtras(t.id) : { regex: [{ pat: '', rep: '' }], drill_on: false, drill: [], qms_id: null, strm_id: null }
+    const ex: PaExtras = t ? getPaExtras(t.id) : { regex: [{ pat: '', rep: '' }], drill_on: false, drill: [], qms_id: null, strm_id: null, lp_event: '' }
     accId.value = t?.acc_id ?? pickDefaultAcc()
     name.value = t?.name || ''
     shareUrl.value = t?.share_url || ''
@@ -147,6 +153,9 @@ watch(
     drill.value = [...ex.drill]
     qmsId.value = ex.qms_id
     strmId.value = ex.strm_id
+    postLp.value = Boolean((ex.lp_event || '').trim())  // 有事件名=开（litepan 无独立任务开关列，用事件名有无表达）
+    lpEvent.value = ex.lp_event || ''
+    getSettings().then((d) => (mediaBackend.value = d.media?.backend || 'qms')).catch(() => {})
     // 目录关了 QMS / 所选目录已从 QMS 消失 → 清空选择（用户定稿：等同于"没配"）
     void syncMediaSelection(t)
   },
@@ -247,6 +256,7 @@ async function onSave() {
     drill: [...drill.value],
   qms_id: postQms.value ? qmsId.value ?? null : null,
   strm_id: postQms.value ? strmId.value ?? null : null,
+  lp_event: mediaBackend.value === 'litepan' && postLp.value ? lpEvent.value.trim() : '',
   }
   const saved = await savePaTask(task, extras)
   message.success(`保存成功：${saved.name}`)
@@ -367,8 +377,23 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
             </div>
           </div>
 
-          <!-- QMS 联动：开关默认关，开后展开目录下拉（链路固定：转存→15s→QMS→15s→STRM） -->
-          <div class="mt-form-row" style="align-items: flex-start">
+          <!-- 联动：按「系统设置 → 联动后端」切换 QMS / LitePan 表单（2026-10-06） -->
+          <div v-if="mediaBackend === 'litepan'" class="mt-form-row" style="align-items: flex-start">
+            <label class="mt-label">LitePan 联动</label>
+            <div class="mt-control">
+              <div class="mt-opts">
+                <label class="mt-switch-row">
+                  <label class="mt-switch"><input v-model="postLp" type="checkbox" /><span class="mt-switch-slider"></span></label>
+                  <span class="mt-switch-label">转存完成后推送 LitePan</span>
+                </label>
+              </div>
+              <div v-if="postLp" style="margin-top: 10px">
+                <a-input v-model:value="lpEvent" :maxlength="80" placeholder="LitePan 事件名，留空则按转存配置里配的" />
+                <div class="mt-hint">须与 LitePan 自动化规则里配的事件名一致；留空按转存配置目录的事件（再退全局默认）。</div>
+              </div>
+            </div>
+          </div>
+          <div v-else class="mt-form-row" style="align-items: flex-start">
             <label class="mt-label">QMS 联动</label>
             <div class="mt-control">
               <div class="mt-opts">

@@ -9,6 +9,7 @@ import { pkQueue } from '@/queue/engine'
 import { DRIVE_META, DD_MEDIA } from '@/api/mock/meta'
 import { listDdItems, listQmsPaths } from '@/api/modules/dd'
 import { recognizeShare, type RecognizeCandidate } from '@/api/modules/recognize'
+import { getSettings } from '@/api/modules/settings'
 import { listAccounts } from '@/api/modules/accounts'
 import { ddStore } from '@/api/mock/dd'
 import RecognizePicker from '@/components/RecognizePicker.vue'
@@ -35,6 +36,10 @@ const accNames = ref<Record<string, string>>({})
 const selId = ref<number | null>(null)
 const rename = ref('')
 const renameRef = ref()
+// LitePan 事件名（media.backend=litepan 时显示输入框；空=按转存配置目录/全局默认）。
+// 先用输入框，LitePan 出接口后换下拉（2026-10-06 用户定稿）
+const lpEvent = ref('')
+const mediaBackend = ref<'qms' | 'litepan'>('qms')
 
 /** 该网盘可用的保存位置（按 sort 升序，与转存配置页排序一致） */
 const options = computed<DdItem[]>(() =>
@@ -79,6 +84,8 @@ watch(
   (v) => {
     if (!v) return
     rename.value = ''
+    lpEvent.value = ''
+    getSettings().then((d) => (mediaBackend.value = d.media?.backend || 'qms')).catch(() => {})
     pinDefault() // 用 store 现成数据立即钉默认项，弹窗首帧就是完整表单
     // 后台静默刷新保存位置（写回 ddStore，items 是它的 computed 会自动更新）
     listDdItems().catch(() => {})
@@ -151,6 +158,15 @@ const pv = computed(() => {
   const origin = props.shareName || '分享的目录名'
   // 触发行：跟着所选位置的配置走（qms_on / qms_id / strm_id），没配就明说
   const xrows: { k: string; v: string; on: boolean }[] = []
+  if (mediaBackend.value === 'litepan') {
+    // LitePan 模式：联动行显示目录的 LitePan 配置 + 弹窗覆盖的事件名
+    xrows.push({
+      k: '推送 LitePan',
+      v: it.lp_on ? `事件 ${lpEvent.value.trim() || it.lp_event || '（全局默认）'}` : '不推送（该目录未开 LitePan 联动）',
+      on: it.lp_on,
+    })
+    return { base: it.path, raw, origin, xrows }
+  }
   if (it.qms_on) {
     const q = qmsPaths.value.find((x) => x.id === it.qms_id) || null
     xrows.push({
@@ -185,6 +201,8 @@ function onOk() {
        记录页显示的名字和盘里的文件夹名天然一致 */
     rename: raw,
     with_shell: true,
+    // LitePan 事件名（litepan 后端时弹窗覆盖；qms 后端后端自动忽略此字段）
+    lp_event: mediaBackend.value === 'litepan' ? lpEvent.value.trim() : '',
     // 转存配置条目属于哪个账号就用哪个转（account 是账号 id 字符串）；
     // 空 = 该类型默认账号（后端兜底取 id 最小）
     acc_id: it.account ? Number(it.account) : null,
@@ -242,6 +260,12 @@ function onOk() {
               </a-button>
             </template>
           </a-input>
+        </div>
+
+        <!-- LitePan 事件（联动后端=litepan 时显示）：输入框直填，与 LitePan 规则的事件名一致 -->
+        <div v-if="mediaBackend === 'litepan'" class="dd-field dd-inline">
+          <label class="dd-label" style="margin-bottom: 0">LitePan 事件</label>
+          <a-input v-model:value="lpEvent" :maxlength="80" placeholder="留空则用转存配置里配的事件名" />
         </div>
 
         <!-- 「转存后」预览：三段结构（标题/路径/触发行），防止被拍平回退 -->

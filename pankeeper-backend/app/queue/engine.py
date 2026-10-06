@@ -188,6 +188,8 @@ class QueueEngine:
                 # STRM 不再透传——后端按 QMS 自动配对（2026-10-04 用户定稿）
                 "qmsId": item.get("qms_id"),
                 "mediaOff": bool(item.get("media_off", False)),
+                # LitePan 事件名（弹窗覆盖；空=回退目录/全局默认）。不持久化（同 qmsId 生命周期）
+                "lpEvent": (item.get("lp_event") or item.get("lpEvent") or "").strip(),
             }
             self.state["tasks"].append(t)
             pos = sum(1 for x in self.state["tasks"] if x["status"] in ("wait", "run"))

@@ -108,6 +108,13 @@ def _migrate_columns() -> None:
         "push_logs": [
             ("content", "TEXT DEFAULT ''"),
         ],
+        "dd_items": [
+            ("lp_on", "INTEGER DEFAULT 0"),
+            ("lp_event", "TEXT DEFAULT ''"),
+        ],
+        "pa_tasks": [
+            ("lp_event", "TEXT DEFAULT ''"),
+        ],
     }
     with engine.connect() as conn:
         for table, columns in plan.items():

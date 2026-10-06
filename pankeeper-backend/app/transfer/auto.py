@@ -181,14 +181,20 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
     """触发 QMS / STRM。链接来源：转存配置里 qms_on 的目录（按目标路径前缀匹配）。"""
     from ..services.settings_svc import get_group
     if get_group("media").get("backend", "qms") != "qms":
-        # 联动后端切到 LitePan：推送转存完成消息即收工
+        # 联动后端切到 LitePan：按目录配的 lp_on/lp_event 推 webhook（未配的目录跳过）
         from ..services import litepan
-        lp_res = litepan.notify_transfer_done({
-            "drive": t["type"], "task": name_head, "path": t["path"],
-            "files": [{"name": e.get("name")} for e in result.transferred],
-            "share_url": t.get("shareUrl", ""), "share_code": t.get("shareCode", ""),
-        })
-        _push_log(t, "INFO" if lp_res["ok"] else "WARN", f"联动后端为 LitePan：{lp_res['message']}")
+        lp_link = resolve_litepan_link(t["path"], t.get("paTaskId"))
+        if lp_link is None:
+            _push_log(t, "INFO", "该目录未配置 LitePan 联动（转存配置里没开），跳过推送")
+        else:
+            lp_res = litepan.notify_transfer_done({
+                "drive": t["type"], "task": name_head, "path": t["path"],
+                "files": [{"name": e.get("name")} for e in result.transferred],
+                "share_url": t.get("shareUrl", ""), "share_code": t.get("shareCode", ""),
+                "event": lp_link["event"],
+            })
+            _push_log(t, "INFO" if lp_res["ok"] else "WARN", f"联动后端为 LitePan：{lp_res['message']}")
+        _push_log(t, "STEP", "LitePan 模式独立推送流程已挂后台（自识别 TMDB，不查 LitePan 状态）")
         # LitePan 模式的**独立推送流程**（与 QMS 流程隔离）：PanKeeper 自识别 TMDB 直接推送，
         # 不等不查 LitePan 的刮削状态——它的状态对外不可见
         media_push.watch_and_spawn({
@@ -301,6 +307,32 @@ def resolve_media_link(path: str, task_id: int | None = None) -> dict | None:
         from .qms import strm_id_for_qms
         rs = strm_id_for_qms(rq)
     return {"qms_id": rq, "strm_id": rs}
+
+
+def resolve_litepan_link(path: str, task_id: int | None = None) -> dict | None:
+    """LitePan 联动目标（2026-10-06 用户定稿）：按 save_dir 前缀匹配「转存配置」里
+    lp_on=True 的目录，事件名**按目录配**——不同目录推不同 LitePan 自动化规则
+    （电影/电视剧各一条），全局单一事件名不够用。
+    任务弹窗配的 lp_event **优先**（同 QMS 的任务级优先模式），空则回退目录配置，
+    再空回退设置页全局默认。返回 {'event': 事件名} 或 None（未配）。"""
+    hit: DdItem | None = None
+    with SessionLocal() as s:
+        for d in s.query(DdItem).filter(DdItem.lp_on.is_(True)).all():
+            if path == d.path or path.startswith(d.path.rstrip("/") + "/"):
+                if hit is None or len(d.path) > len(hit.path):
+                    hit = d  # 最长前缀优先
+    task_event = ""
+    if task_id:
+        with SessionLocal() as s:
+            row = s.get(PaTask, task_id)
+            if row is not None:
+                task_event = (row.lp_event or "").strip()
+    if hit is None and not task_event:
+        return None
+    from ..services.settings_svc import get_group
+    dir_event = (hit.lp_event or "").strip() if hit else ""
+    event = task_event or dir_event or (get_group("litepan").get("event") or "").strip()
+    return {"event": event}
 
 
 def _sleep_phase(eng, t: dict, phase: str, seconds: int, log_txt: str) -> None:

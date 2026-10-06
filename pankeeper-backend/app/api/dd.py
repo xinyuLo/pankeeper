@@ -16,6 +16,7 @@ def _row(r: DdItem) -> dict:
         "id": r.id, "type": r.type, "account": r.account, "sort": r.sort,
         "name": r.name, "path": r.path, "is_default": r.is_default,
         "qms_on": r.qms_on, "qms_id": r.qms_id, "strm_id": r.strm_id,
+        "lp_on": r.lp_on, "lp_event": r.lp_event or "",
     }
 
 
@@ -52,6 +53,9 @@ class DdBody(BaseModel):
     qms_on: bool = False
     qms_id: int | None = None
     # strm_id 不再由前端写入（2026-10-04 定稿：STRM 跟随 QMS 自动配对）；列保留为历史值
+    # LitePan 联动（media.backend=litepan 时用）：事件名空 = 用设置页的全局默认
+    lp_on: bool = False
+    lp_event: str = ""
 
 
 @router.post("/dd/items")
