@@ -10,8 +10,9 @@
   命中即入队执行规则动作链（organize → strm → emby refresh…，异步，响应立回）。
 - 响应 data 里带 matched / triggered——能知道有没有规则接住，转存日志如实记录。
 
-设置组 litepan：webhook_url（含 /api/open/automation/events 的完整地址）、
-apikey（Bearer 密钥，加密存储）、event（事件名，须与 LitePan 规则里配的一致）。"""
+设置组 litepan：enabled（总闸，关=全部不推）、webhook_url、apikey（加密存储）。
+事件名不在这里配——按目录/任务配（转存配置 lp_event / 任务弹窗），**没填就不联动**
+（无全局兜底，2026-10-06 用户定稿）。"""
 from __future__ import annotations
 
 import requests
@@ -56,7 +57,13 @@ def notify_transfer_done(payload: dict) -> dict:
     调用方据此写转存日志，别再无脑报「已推送」。"""
     cfg = get_group("litepan")
     url = (cfg.get("webhook_url") or "").strip()
-    event = (payload.get("event") or cfg.get("event") or "").strip() or "transfer.done"
+    # 事件名来源只有调用方（任务级 > 目录级，resolve_litepan_link 已解析好并保证非空）；
+    # 没有全局兜底——没填事件名就不联动（用户 2026-10-06 定稿），这里是防御
+    event = (payload.get("event") or "").strip()
+    if not event:
+        msg = "未配置 LitePan 事件名（转存配置目录/任务弹窗里没填），不推送"
+        print(f"[litepan] {msg}", flush=True)
+        return {"ok": False, "matched": 0, "triggered": [], "message": msg}
     if not url:
         msg = "未配置 LitePan Webhook 地址，跳过推送（设置 → QMS 联动 → LitePan）"
         print(f"[litepan] {msg}", flush=True)

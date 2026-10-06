@@ -58,7 +58,7 @@ const notify = reactive<NotifyCfg>({
   on_cred: true,
 })
 const qms = reactive<QmsCfg>({ enabled: true, url: '', apikey: '', tmdb_api_key: '', tmdb_proxy: '', act_strm: true, act_emby: true })
-const litepan = reactive<LitePanCfg>({ webhook_url: '', apikey: '', event: 'transfer.done' })
+const litepan = reactive<LitePanCfg>({ enabled: false, webhook_url: '', apikey: '' })
 const security = reactive<SecurityCfg>({ username: 'admin', session_days: 7 })
 
 /** 初始数据灌入完成前关闭自动保存：Object.assign 本身会触发 watch，不能让「进页面」变成一次保存 */
@@ -69,7 +69,7 @@ onMounted(async () => {
   Object.assign(search, d.search)
   Object.assign(notify, d.notify)
   Object.assign(qms, d.qms)
-  Object.assign(litepan, d.litepan || { webhook_url: '', apikey: '', event: 'transfer.done' })
+  Object.assign(litepan, d.litepan || { enabled: false, webhook_url: '', apikey: '' })
   Object.assign(security, d.security)
   mediaBackend.value = d.media?.backend || 'qms'
   // QMS 引擎状态胶囊（语义同搜索页的 PanSou 在线/离线）
@@ -191,6 +191,35 @@ function onMediaBackend(v: 'qms' | 'litepan') {
   mediaBackend.value = v
   saveMediaBackend(v)
   message.info(v === 'qms' ? '已切换到 QMS 全流程联动' : '已切换到 LitePan 模式：转存完成后仅 Webhook 通知，QMS/STRM 流程停用')
+}
+
+/** LitePan 启用开关：地址没填不让开；填了要测连通，不通弹回（对齐 QMS 门槛语义） */
+async function onLitePanEnabled(v: unknown) {
+  if (v !== 'on') {
+    litepan.enabled = false
+    return
+  }
+  if (!litepan.webhook_url.trim()) {
+    litepan.enabled = false
+    message.warning('还没填写 Webhook 地址，开启不了联动——先填地址再测连通', 5)
+    return
+  }
+  litepanTesting.value = true
+  try {
+    const r = await testLitePan(litepan.webhook_url, litepan.apikey)
+    if (!r.ok) {
+      litepan.enabled = false
+      message.error(`LitePan 连接不通（${r.message || '检查地址或 API Key'}），未开启联动`, 5)
+      return
+    }
+    litepan.enabled = true
+    message.success('LitePan 连通正常，联动已开启')
+  } catch {
+    litepan.enabled = false
+    message.error('LitePan 连接失败，未开启联动', 5)
+  } finally {
+    litepanTesting.value = false
+  }
 }
 
 const litepanTesting = ref(false)
@@ -437,15 +466,15 @@ async function onRemoveAvatar() {
 
       <!-- ===== tab3 联动后端：顶部选后端，下面按所选显示对应参数 ===== -->
       <div v-show="tab === 'tb3'">
+        <div class="st-mig">
+          目录关联已迁到<b>「转存配置」</b>（每条目录配）与<b>自动转存任务弹窗</b>（每个任务配）两处，
+          这里只保留连接参数与联动总开关。
+        </div>
         <div class="formrow">
           <label>联动后端</label>
           <div class="ctl">
             <a-select :value="mediaBackend" :options="MEDIA_OPTS" style="width: 460px" @change="onMediaBackend" />
           </div>
-        </div>
-        <div class="st-mig">
-          目录关联已迁到<b>「转存配置」</b>（每条目录配）与<b>自动转存任务弹窗</b>（每个任务配）两处，
-          这里只保留连接参数。
         </div>
         <template v-if="mediaBackend === 'qms'">
           <div class="formrow">
@@ -492,6 +521,13 @@ async function onRemoveAvatar() {
         </template>
         <template v-else>
           <div class="formrow">
+            <label>启用联动</label>
+            <div class="ctl">
+              <a-select :value="litepan.enabled ? 'on' : 'off'" :options="ONOFF_OPTS" style="width: 120px" @change="onLitePanEnabled" />
+              <span class="muted small">总闸关闭时所有目录的 LitePan 联动都不推送</span>
+            </div>
+          </div>
+          <div class="formrow">
             <label>Webhook 地址</label>
             <div class="ctl">
               <a-input v-model:value="litepan.webhook_url" style="width: 360px" placeholder="http://LitePan地址:端口/api/open/automation/events" @blur="flushSave('litepan')" />
@@ -506,16 +542,10 @@ async function onRemoveAvatar() {
             </div>
           </div>
           <div class="formrow">
-            <label>事件名</label>
-            <div class="ctl">
-              <a-input v-model:value="litepan.event" style="width: 200px" @blur="flushSave('litepan')" />
-              <span class="muted small">须与 LitePan 自动化规则里配的事件名完全一致</span>
-            </div>
-          </div>
-          <div class="formrow">
             <label></label>
             <div class="muted small" style="line-height: 1.8">
-              转存完成后 PanKeeper 发 Webhook（事件 + 转存目标路径），LitePan 按匹配到的规则自动整理；
+              转存完成后 PanKeeper 发 Webhook（事件 + 转存目标路径），LitePan 按匹配到的规则自动整理。
+              事件名在「转存配置」目录和任务弹窗里按需配，<b>没填事件名就不联动</b>；
               规则的「路径前缀」按转存目标目录配。刮削/STRM 状态由 LitePan 自理，PanKeeper 只推自识别结果。
             </div>
           </div>
