@@ -267,11 +267,6 @@ function onOk() {
     return
   }
   const raw = rename.value.trim()
-  if (!raw) {
-    message.warning('请填写文件夹更名（QMS/LitePan 靠「名称 (年份)」识别）')
-    renameRef.value?.focus?.()
-    return
-  }
   const picked = selPaths.value
   if (isMovieDir.value && !filesFailed.value && fileRows.value.length && !picked.length) {
     message.warning('请至少勾选一个要转存的文件')
@@ -332,14 +327,14 @@ function onOk() {
           />
         </div>
 
-        <!-- 新文件夹名：必填（QMS/LitePan 靠「名称 (年份)」识别）；「识别」= TMDB 识别回填 -->
+        <!-- 新文件夹名：留空 = 用资源名；「识别」= TMDB 识别回填 -->
         <div class="dd-field dd-inline">
-          <label class="dd-label" style="margin-bottom: 0">文件夹更名<i>*</i></label>
+          <label class="dd-label" style="margin-bottom: 0">文件夹更名</label>
           <a-input
             ref="renameRef"
             v-model:value="rename"
             :maxlength="80"
-            placeholder="如 哪吒之魔童闹海 (2025)"
+            placeholder="留空则用资源名新建文件夹"
             @press-enter="onOk"
           >
             <template #suffix>
