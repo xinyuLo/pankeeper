@@ -11,7 +11,6 @@ import { listDdItems, listQmsPaths } from '@/api/modules/dd'
 import { recognizeShare, type RecognizeCandidate } from '@/api/modules/recognize'
 import { getSettings } from '@/api/modules/settings'
 import { listAccounts } from '@/api/modules/accounts'
-import { getSearchShareFiles } from '@/api/modules/search'
 import { ddStore } from '@/api/mock/dd'
 import RecognizePicker from '@/components/RecognizePicker.vue'
 import type { DdItem, DdQmsPath, DriveType, MainDriveType } from '@/types/model'
@@ -37,72 +36,10 @@ const accNames = ref<Record<string, string>>({})
 const selId = ref<number | null>(null)
 const rename = ref('')
 const renameRef = ref()
-
-/* ===== 文件多选（2026-10-06）：QMS/LitePan 都只吃"单文件夹单文件"——
- * 多文件全存会刮削失败。弹窗打开自动拉清单（share_list_cache 联动：点过
- * 查看文件的分享毫秒级），固定高度多选框，默认勾第一个视频文件。 ===== */
-interface FileRow { path: string; name: string; size: number }
-const filesLoading = ref(false)
-const filesFailed = ref(false)
-const fileRows = ref<FileRow[]>([])
-const selPaths = ref<string[]>([])
-const VIDEO_EXT = /\.(mkv|mp4|avi|ts|wmv|flv|iso|m2ts|mov|webm|rmvb)$/i
-
-function fmtSize(n: number): string {
-  if (!n) return '—'
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  let x = n
-  let i = 0
-  while (x >= 1024 && i < units.length - 1) { x /= 1024; i++ }
-  return `${i === 0 || x >= 100 ? Math.round(x) : x.toFixed(1)} ${units[i]}`
-}
-async function loadShareFiles() {
-  filesLoading.value = true
-  filesFailed.value = false
-  fileRows.value = []
-  selPaths.value = []
-  try {
-    const meta = await getSearchShareFiles(props.type || '', props.shareUrl || '', props.shareCode || '')
-    const rows: FileRow[] = (meta.files || [])
-      .filter((f) => !f.is_dir)
-      .map((f) => ({ path: f.path, name: f.name, size: f.size }))
-    fileRows.value = rows
-    // 默认全部选中（左栏勾选、右栏同步展示已选）
-    selPaths.value = rows.map((f) => f.path)
-  } catch {
-    filesFailed.value = true // 清单拉不到：回退"建壳全转"老行为，不挡转存
-  } finally {
-    filesLoading.value = false
-  }
-}
-function toggleAllFiles(e: Event) {
-  selPaths.value = (e.target as HTMLInputElement).checked ? fileRows.value.map((f) => f.path) : []
-}
-function toggleFile(path: string) {
-  selPaths.value = selPaths.value.includes(path)
-    ? selPaths.value.filter((x) => x !== path)
-    : [...selPaths.value, path]
-}
-function removeSel(path: string) {
-  selPaths.value = selPaths.value.filter((x) => x !== path)
-}
-const selectedRows = computed(() => fileRows.value.filter((f) => selPaths.value.includes(f.path)))
 // 联动后端（决定预览行显示 QMS 还是 LitePan）。LitePan 事件名不在这里配——
 // 转存配置目录已配（2026-10-06 用户定稿：快速转存完全跟随目录配置）
 const mediaBackend = ref<'qms' | 'litepan'>('qms')
 
-/** 所选目录的类型：media_type 字段优先，存量老目录按名称推断（含电视/剧 → tv）。
- * 电影目录 + 检测到多文件 → 展示文件多选（单文件刮削）；电视节目目录照旧全转。 */
-function dirMediaType(it: DdItem): 'movie' | 'tv' {
-  if (it.media_type === 'tv' || it.media_type === 'movie') return it.media_type
-  const n = (it.name || '').toLowerCase()
-  return n.includes('电视') || n.includes('剧') ? 'tv' : 'movie'
-}
-/** 当前所选目录是否电影目录（决定文件多选块是否展示） */
-const isMovieDir = computed(() => {
-  const it = currentItem.value
-  return it ? dirMediaType(it) === 'movie' : false
-})
 /** 该网盘可用的保存位置（按 sort 升序，与转存配置页排序一致） */
 const options = computed<DdItem[]>(() =>
   items.value
@@ -146,7 +83,6 @@ watch(
   (v) => {
     if (!v) return
     rename.value = ''
-    if (props.shareUrl) void loadShareFiles() // 文件多选清单（缓存联动，点过查看文件秒开）
     getSettings().then((d) => (mediaBackend.value = d.media?.backend || 'qms')).catch(() => {})
     pinDefault() // 用 store 现成数据立即钉默认项，弹窗首帧就是完整表单
     // 后台静默刷新保存位置（写回 ddStore，items 是它的 computed 会自动更新）
@@ -264,8 +200,7 @@ const pv = computed(() => {
   return { base: it.path, raw, origin, xrows }
 })
 
-/** 确认 = 入队即走，绝不弹进度条。
- * 必填：文件夹更名（建壳名/刮削依据）+ 至少勾一个文件（清单拉取失败时回退全转）。 */
+/** 确认 = 入队即走，绝不弹进度条 */
 function onOk() {
   const it = currentItem.value
   if (!it) {
@@ -273,11 +208,6 @@ function onOk() {
     return
   }
   const raw = rename.value.trim()
-  const picked = selPaths.value
-  if (isMovieDir.value && !filesFailed.value && fileRows.value.length && !picked.length) {
-    message.warning('请至少勾选一个要转存的文件')
-    return
-  }
   const pos = pkQueue.enqueue({
     name: raw || props.shareName || '分享资源',
     type: it.type,
@@ -288,10 +218,7 @@ function onOk() {
     /* 建壳转存：在保存位置下按资源名（或更名值）新建文件夹，分享内容剥壳转入——
        记录页显示的名字和盘里的文件夹名天然一致 */
     rename: raw,
-    /* 电影目录 + 勾了文件 = 建壳后只转勾选的（单文件夹单文件，刮削要求）；
-       电视节目目录 / 清单拉取失败 = 建壳全转 */
-    with_shell: isMovieDir.value ? (filesFailed.value || !fileRows.value.length) : true,
-    file_paths: isMovieDir.value ? picked : [],
+    with_shell: true,
     // 转存配置条目属于哪个账号就用哪个转（account 是账号 id 字符串）；
     // 空 = 该类型默认账号（后端兜底取 id 最小）
     acc_id: it.account ? Number(it.account) : null,
@@ -333,7 +260,7 @@ function onOk() {
           />
         </div>
 
-        <!-- 新文件夹名：留空 = 用资源名；「识别」= TMDB 识别回填 -->
+        <!-- 新文件夹名：label 和输入框同一行，留空 = 用资源名；「识别」= TMDB 识别回填 -->
         <div class="dd-field dd-inline">
           <label class="dd-label" style="margin-bottom: 0">文件夹更名</label>
           <a-input
@@ -349,55 +276,6 @@ function onOk() {
               </a-button>
             </template>
           </a-input>
-        </div>
-
-        <!-- 文件多选（仅电影目录展示）：勾了的才转；电视节目目录照旧全转（多集合理） -->
-        <div v-if="isMovieDir" class="dd-field">
-          <label class="dd-label">选择要转存的文件<i v-if="!filesFailed && fileRows.length">*</i></label>
-          <div v-if="filesLoading" class="qs-files qs-files-loading">
-            <a-spin size="small" />
-            <span class="small muted">正在获取文件清单…（点过「查看文件」的分享秒开）</span>
-          </div>
-          <template v-else-if="fileRows.length">
-            <div class="qs-dual">
-              <div class="qs-dual-col">
-                <div class="qs-dual-hd">
-                  <label class="qs-file">
-                    <input type="checkbox" :checked="selPaths.length === fileRows.length" @change="toggleAllFiles" />
-                    <b>全部文件</b>
-                  </label>
-                  <span class="qs-dual-n">{{ fileRows.length }}</span>
-                </div>
-                <div class="qs-dual-list">
-                  <label v-for="f in fileRows" :key="f.path" class="qs-file" :class="{ on: selPaths.includes(f.path) }">
-                    <input type="checkbox" :checked="selPaths.includes(f.path)" @change="toggleFile(f.path)" />
-                    <span class="qs-file-name" :title="f.name">{{ f.name }}</span>
-                    <span class="qs-file-meta">{{ fmtSize(f.size) }}</span>
-                  </label>
-                </div>
-              </div>
-              <div class="qs-dual-col">
-                <div class="qs-dual-hd">
-                  <b class="qs-dual-t">已选</b>
-                  <span class="qs-dual-n">{{ selPaths.length }}</span>
-                </div>
-                <div class="qs-dual-list">
-                  <div v-for="f in selectedRows" :key="'s-' + f.path" class="qs-file on">
-                    <span class="qs-file-name" :title="f.name">{{ f.name }}</span>
-                    <span class="qs-file-meta">{{ fmtSize(f.size) }}</span>
-                    <a class="qs-file-x" @click.stop="removeSel(f.path)">✕</a>
-                  </div>
-                  <div v-if="!selectedRows.length" class="qs-dual-empty">取消左侧勾选即不转该文件</div>
-                </div>
-              </div>
-            </div>
-            <div class="small muted" style="margin-top: 4px">
-              默认全部选中——去掉不想要的再转存（QMS / LitePan 刮削只认「单文件夹单文件」，多文件会刮削失败）
-            </div>
-          </template>
-          <div v-else class="small muted" style="padding: 8px 0">
-            文件清单获取失败，将按老方式建壳转存全部内容（含更名文件夹）
-          </div>
         </div>
 
         <!-- 「转存后」预览：三段结构（标题/路径/触发行），防止被拍平回退 -->
@@ -470,56 +348,6 @@ function onOk() {
 }
 
 /* ---- 「转存后」结果预览（search-ui 原型样式移植） ---- */
-/* 文件多选：固定高度滚动，选中行高亮 */
-/* 文件双栏：左=全部（默认全选），右=已选（同步联动） */
-.qs-dual { display: flex; gap: 10px; }
-.qs-dual-col {
-  flex: 1;
-  min-width: 0;
-  border: 1px solid var(--split);
-  border-radius: 8px;
-  background: var(--surface-2);
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-.qs-dual-hd {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  border-bottom: 1px solid var(--split);
-  background: rgba(255, 255, 255, 0.03);
-}
-.qs-dual-t { font-size: 12.5px; }
-.qs-dual-n {
-  margin-left: auto;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11px;
-  color: #aebdff;
-  background: rgba(110, 140, 255, 0.12);
-  border-radius: 999px;
-  padding: 0 8px;
-  line-height: 17px;
-}
-.qs-dual-list { height: 172px; overflow: auto; padding: 5px; }
-.qs-dual-empty { padding: 22px 10px; text-align: center; font-size: 12px; color: var(--text3); }
-.qs-file {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 7px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 12.5px;
-}
-.qs-file:hover { background: rgba(22, 119, 255, 0.07); }
-.qs-file.on { background: rgba(22, 119, 255, 0.06); }
-.qs-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.qs-file-meta { flex: none; color: var(--text3); font-size: 11.5px; }
-.qs-file-x { flex: none; color: var(--text3); padding: 0 3px; }
-.qs-file-x:hover { color: var(--error); }
-
 .qs-preview { border: 1px solid var(--split); border-radius: 10px; background: var(--surface-2); overflow: hidden; }
 .qs-pv-hd {
   display: flex; align-items: center; gap: 6px; padding: 8px 12px;
