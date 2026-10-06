@@ -105,6 +105,9 @@ def _migrate_columns() -> None:
             ("exclude_md5_json", "TEXT DEFAULT '[]'"),
             ("regex_pattern", "TEXT DEFAULT ''"),
         ],
+        "push_logs": [
+            ("content", "TEXT DEFAULT ''"),
+        ],
     }
     with engine.connect() as conn:
         for table, columns in plan.items():

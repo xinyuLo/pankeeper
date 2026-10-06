@@ -14,11 +14,10 @@ import re
 import threading
 import time
 
-from . import notify, qms, tmdb
+from . import notify, tmdb
 from .settings_svc import get_group
 
-POLL_INTERVAL = 30        # 轮询间隔（秒）；QMS 刮一部剧通常几分钟
-POLL_TIMEOUT = 30 * 60    # 最长等 30 分钟，超时按已到记录推送
+# 轮询节奏/超时统一由 run_watch._wait 管（媒体推送与结果回填共用一套口径，别再各写一份）
 OVERVIEW_MAX = 200        # 简介截断长度（规范 §6.3）
 
 # qMediaSync 记录的终态：renamed = 整理完成；两种 failed 也算"到了"（失败信息进信息条）
@@ -126,7 +125,6 @@ def _watch(ctx: dict) -> None:
 
         print("[push] 推送线程异常：\n" + traceback.format_exc(), flush=True)
 
-
 def _wait_strm(ctx: dict) -> dict | None:
     """等 STRM 触发结果（run_watch 后台线程完成时登记）。没配 STRM（strm_plan=None）→ None。
 
@@ -150,31 +148,19 @@ def _wait_strm(ctx: dict) -> dict | None:
 
 
 def _wait_records(ctx: dict) -> list[dict]:
-    """轮询 QMS 刮削记录，直到转存文件全部到达终态（renamed/失败态）或超时。
+    """轮询 QMS 刮削记录，等**本次转存的全部文件**出现本次触发产生的新终态记录。
 
-    返回匹配到的记录：失败记录一并返回（信息条展示失败数，正文只用 renamed）。
-    """
-    deadline = time.time() + POLL_TIMEOUT
-    names = set(ctx["names"])
-    while True:
-        # ⚠️ 不按 name= 筛：QMS 的 name 过滤实测会漏记录（2026-10-04：41.4k.mp4 有 scrape_failed
-        # 记录，带 name 查却查不到）——一旦漏掉就会白等 30 分钟后退化成无图纯文字推送。
-        # 改拉最新 500 条按 file_name 精确匹配（记录新→旧，刚转存的必在前排）。
-        rows = qms.scrape_records(page_size=500) or []
-        matched = [r for r in rows if r.get("file_name") in names]
-        hit = {r.get("file_name") for r in matched}
-        missing = names - hit
-        alive = [r for r in matched if r.get("status") not in IGNORE_STATUS]
-        arrived = bool(alive) and all(r.get("status") in TERMINAL_STATUS for r in alive)
-        if arrived or (not missing and not alive):
-            # 全部就绪（含失败态）；或 QMS 里查到的都是 ignore（等于没得等了）
-            return matched
-        if not missing and matched and time.time() > deadline:
-            return matched
-        if time.time() > deadline:
-            print(f"[push] 等 QMS 刮削超时：{len(names) - len(missing)}/{len(names)} 个文件有记录")
-            return matched
-        time.sleep(POLL_INTERVAL)
+    2026-10-06 起委托 run_watch._wait（统一两处实现——此前各自维护，同一个早退 bug
+    连犯两遍：只看"已匹配记录是否终态"、没管还没出现记录的文件，6 个文件只等到 1 个
+    旧记录就推送，标题成了「更新 1 集」）。且**只认本次触发后的新记录**（baseline 指纹，
+    ctx.qms_baseline）：旧记录不算这次的账，同名裸名文件跨剧碰撞（狂飙 17.mp4 撞兰香
+    如故旧记录）不会再把推送标题变成别的剧。
+
+    返回本次的新记录（失败记录一并返回）；没等到的一律不在其中，由 _header/_fallback 如实标注。"""
+    from . import run_watch  # 延迟导入避免循环
+
+    recs, _verdict = run_watch._wait(list(ctx["names"]), ctx.get("qms_baseline") or {})
+    return recs
 
 
 def _header(ctx: dict, records: list[dict], strm_res: dict | None = None) -> str:
@@ -189,14 +175,18 @@ def _header(ctx: dict, records: list[dict], strm_res: dict | None = None) -> str
     if ctx.get("qms_ok") is False:
         stats.append("❌ QMS 触发失败")
     elif ctx.get("qms_ok"):
+        # 未见记录的文件如实点名（2026-10-06：旧版只统计匹配到的记录，缺文件毫无声息）
+        missing = len(ctx["names"]) - len({r.get("file_name") for r in records})
         if records:
             failed = [r for r in records if r.get("status") in FAILED_STATUS]
             if not failed:
-                stats.append("✅ QMS 刮削成功")
+                stats.append("✅ QMS 刮削成功" if not missing else f"✅ QMS 刮削成功（⚠️ {missing} 项未见记录）")
             elif any(r.get("status") == "renamed" for r in records):
                 stats.append(f"⚠️ QMS 失败 {len(failed)}/{len(records)}")
             else:
                 stats.append("❌ QMS 刮削失败")
+        elif missing:
+            stats.append(f"⚠️ QMS {missing} 项未见记录")
         else:
             stats.append("⚠️ QMS 无记录")
     # STRM：自动转存走 strm_res（run_watch 后台线程的真实触发结果）；manual 同步触发走 strm_ok 旧通道
@@ -322,12 +312,17 @@ def _clip(text: str) -> str:
 
 
 def _fallback(ctx: dict, records: list[dict], strm_res: dict | None = None) -> None:
-    """富文本拿不到时的兜底：信息条 + 文件清单（失败的标注原因），通知不丢。"""
+    """富文本拿不到时的兜底：信息条 + 文件清单（失败/未见记录的标注原因），通知不丢。"""
     print("[push] 富文本推送回退纯文字")
     failed = {r.get("file_name"): r.get("failed_reason") or "刮削失败" for r in records if r.get("status") in FAILED_STATUS}
+    seen = {r.get("file_name") for r in records}
     lines = []
     for n in ctx["names"]:
-        mark = f"（{failed[n]}）" if n in failed else ""
-        lines.append(f"- {n}{mark}")
+        if n in failed:
+            lines.append(f"- {n}（{failed[n]}）")
+        elif n not in seen:
+            lines.append(f"- {n}（未见 QMS 刮削记录）")
+        else:
+            lines.append(f"- {n}")
     body = "\n".join(lines)
     notify.push(f"{ctx.get('task', '转存')} · 转存完成", f"{_header(ctx, records, strm_res)}\n\n{body}", kind=f"{ctx.get('source', 'search')}_done")
