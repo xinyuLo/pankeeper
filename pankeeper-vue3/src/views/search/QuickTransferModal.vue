@@ -55,6 +55,14 @@ const isMovieDir = computed(() => {
 })
 /** 展开多选框列表的条件：电影目录 + 检测到多文件（单文件直接转，不用选） */
 const showFilePicker = computed(() => isMovieDir.value && !filesFailed.value && fileRows.value.length > 1)
+/** 内容判断的提示行（始终显示，按状态换文案——别让弹窗内容凭空跳变） */
+const dirCheckTip = computed(() => {
+  if (filesLoading.value) return '正在检测资源…'
+  if (filesFailed.value) return isMovieDir.value ? '文件清单获取失败，按单一资源直接转存' : '电视节目无需确认勾选，转存内容全部转存'
+  if (!isMovieDir.value) return '电视节目无需确认勾选，转存内容全部转存'
+  if (fileRows.value.length <= 1) return '单一资源，无需勾选，直接转存'
+  return `检测到 ${fileRows.value.length} 个文件，勾选要转存的`
+})
 async function loadShareFiles() {
   filesLoading.value = true
   filesFailed.value = false
@@ -317,12 +325,15 @@ function onOk() {
 
         <!-- 电影目录内容判断：多文件 → 展开多选框列表（转存按钮行为待定稿）；
              电视节目目录 / 单文件 / 清单失败 → 不展示，照旧直接转 -->
-        <div v-if="isMovieDir && filesLoading" class="dd-field qs-chk-loading">
-          <a-spin size="small" />
-          <span class="small muted">正在检测文件夹内容…</span>
+        <div class="dd-field">
+          <label class="dd-label">资源检测</label>
+          <div class="qs-chk-tip">
+            <a-spin v-if="filesLoading" size="small" />
+            <span class="small muted">{{ dirCheckTip }}</span>
+          </div>
         </div>
         <div v-if="showFilePicker" class="dd-field">
-          <label class="dd-label">检测到多个文件，勾选要转存的<i>*</i></label>
+          <label class="dd-label">选择要转存的文件<i>*</i></label>
           <div class="qs-chk-list">
             <label v-for="f in fileRows" :key="f.path" class="qs-chk">
               <input type="checkbox" :value="f.path" v-model="selPaths" />
@@ -403,7 +414,15 @@ function onOk() {
 
 /* ---- 「转存后」结果预览（search-ui 原型样式移植） ---- */
 /* 电影目录内容判断：loading 行 + 多选框列表（固定高度滚动） */
-.qs-chk-loading { display: flex; align-items: center; gap: 10px; padding: 10px 0; }
+.qs-chk-tip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--split);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
 .qs-chk-list {
   height: 150px;
   overflow: auto;
