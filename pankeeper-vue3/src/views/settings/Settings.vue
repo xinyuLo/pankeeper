@@ -13,6 +13,7 @@ import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { useAuthStore } from '@/store/auth'
 import {
+  getLitePanHealth,
   getQmsHealth,
   getSettings,
   saveNotify,
@@ -74,6 +75,7 @@ onMounted(async () => {
   mediaBackend.value = d.media?.backend || 'qms'
   // QMS 引擎状态胶囊（语义同搜索页的 PanSou 在线/离线）
   getQmsHealth().then((h) => (qmsHealth.value = h)).catch(() => (qmsHealth.value = { ok: false, message: '检测失败' }))
+  if (mediaBackend.value === 'litepan') refreshLpHealth()
   // watch 回调不是同步执行的（flush: 'pre' 排队等当前同步代码跑完），
   // 必须等这一拍过去再放行，否则灌初值会触发「已自动保存」
   await nextTick()
@@ -222,6 +224,11 @@ async function onLitePanEnabled(v: unknown) {
   }
 }
 
+/** LitePan 在线胶囊（语义同 QMS 引擎胶囊）：进页拉一次，点「测试」后同步 */
+const lpHealth = ref<{ ok: boolean; message?: string } | null>(null)
+function refreshLpHealth() {
+  getLitePanHealth().then((h) => (lpHealth.value = h)).catch(() => (lpHealth.value = { ok: false, message: '检测失败' }))
+}
 const litepanTesting = ref(false)
 async function onTestLitePan() {
   if (!litepan.webhook_url) {
@@ -232,6 +239,7 @@ async function onTestLitePan() {
   try {
     // 传「输入框正在编辑的值」——不等自动保存，点测试就测当前填的；掩码 key 后端自己回落
     const r = await testLitePan(litepan.webhook_url, litepan.apikey)
+    lpHealth.value = { ok: r.ok, message: r.ok ? '在线' : (r.message || '离线') }
     if (r.ok) message.success(r.message || 'LitePan 连通正常')
     else message.error(r.message || 'LitePan 连接失败', 5)
   } catch (e: unknown) {
@@ -524,6 +532,8 @@ async function onRemoveAvatar() {
             <label>启用联动</label>
             <div class="ctl">
               <a-select :value="litepan.enabled ? 'on' : 'off'" :options="ONOFF_OPTS" style="width: 120px" @change="onLitePanEnabled" />
+              <span class="qms-pill" :class="lpHealth?.ok ? 'ok' : 'bad'"><i></i>{{ lpHealth === null ? 'LitePan 状态检测中…' : lpHealth.ok ? 'LitePan 在线' : `LitePan 离线${lpHealth.message ? ' · ' + lpHealth.message : ''}` }}</span>
+              <!-- 说明必须待在 .ctl 里：formrow 是 132px+1fr 两列 grid，塞第三列会被挤成竖排 -->
               <span class="muted small">总闸关闭时所有目录的 LitePan 联动都不推送</span>
             </div>
           </div>

@@ -110,6 +110,12 @@ export function getQmsHealth(): Promise<{ ok: boolean; message?: string }> {
   return get<{ ok: boolean; message?: string }>('/qms/health')
 }
 
+/** LitePan 在线状态胶囊（语义同 QMS）：打 {基地址}/api/health（免认证） */
+export function getLitePanHealth(): Promise<{ ok: boolean; message?: string }> {
+  if (USE_MOCK) return mockDelay({ ok: true, message: '在线' }, 200)
+  return get<{ ok: boolean; message?: string }>('/litepan/health')
+}
+
 /** 推送历史行（push_logs 快照，一次投递一行）。content 只回 200 字预览，完整正文走 getPushLogDetail */
 export interface PushLogRow {
   id: number
