@@ -309,8 +309,8 @@ async function confirmTrig() {
               <th style="width: 28%">资源名称</th>
               <th style="width: 118px">来源</th>
               <th style="width: 170px">目标位置</th>
-              <th style="width: 30%">结果</th>
-              <th style="width: 96px">{{ mediaBackend === 'litepan' ? '整理' : 'QMS 整理' }}</th>
+              <th style="width: 26%">结果</th>
+              <th style="width: 130px">{{ mediaBackend === 'litepan' ? '整理' : 'QMS 整理' }}</th>
               <th style="width: 96px">{{ mediaBackend === 'litepan' ? 'STRM' : 'STRM 生成' }}</th>
               <th style="width: 88px">时间</th>
               <th style="width: 150px">操作</th>
