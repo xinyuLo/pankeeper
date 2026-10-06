@@ -119,41 +119,51 @@ def search_channels(_user=CurrentUser):
 
 @router.post("/check-link")
 def check_link(body: dict, _user=CurrentUser):
-    """转存前死活预检（单条）：① 零延迟路径——分享清单缓存命中且非空（用户点过「查看
-    文件」或刚转过）= 链接有效，直接返回不打 pansou；② 未命中才透传 pansou-web 的
-    `POST /api/check/links`（pansou 侧自带缓存 ok≈24h / bad≈8h / uncertain≈30min）。
+    """转存前死活预检：**用网盘适配器实拉一次清单判定**（与转存/查看文件同链路，最准）。
 
-    返回 {state, summary, from_cache}：ok=有效 / bad=死链 / locked=需提取码 /
-    uncertain=无法判定 / unknown=检测服务不可用——**前端只拦 bad，其余一律放行**
-    （检测器挂了也不能挡转存）。"""
-    import requests as rq
-
+    为什么不用 pansou 的 check/links：百度无提取码的老链它判不了（need verify → uncertain），
+    会把死链当有效放行（2026-10-06 用户实锤：速度与激情10 老链无效却开了弹窗）。
+    适配器实拉结果：
+    - 清单非空 → ok（顺手不写缓存：include_subdirs=False 只列了根层，别污染查看文件的完整树）
+    - 分享不存在/已取消/已过期/内容为空 → bad（前端拦截）
+    - 需要提取码 → locked；凭据过期/网络异常 → unknown（**放行**，别挡转存）"""
     t = (body.get("type") or "").strip()
     url = (body.get("url") or "").strip()
     code = (body.get("share_code") or "").strip()
     if not url:
         return {"state": "unknown", "summary": "无链接"}
-    # ① 清单缓存快路径：毫秒级返回，前端 loading 都不用出
+    # ① 清单缓存快路径：点过「查看文件」/刚转过 → 毫秒级
     from ..services.share_cache import share_key, share_list_cache
 
     hit = share_list_cache.get(share_key(t, url, code))
     if hit and isinstance(hit[0], dict) and (hit[0].get("total") or 0) > 0:
         return {"state": "ok", "summary": "近期查看过文件清单", "from_cache": True}
-    base = _pansou_base()
-    if not base:
-        return {"state": "unknown", "summary": "未配置 PanSou"}
-    # pansou 的盘类型名与 merged_by_type 一致（阿里是 aliyun 不是 ali）
-    disk_type = "aliyun" if t == "ali" else t
-    item = {"disk_type": disk_type, "url": url}
-    if code:
-        item["password"] = code
+
+    # ② 适配器实拉（只列根层够判死活）
+    from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, TaskSpec
+    from ..adapters.factory import make_adapter
+
     try:
-        resp = rq.post(f"{base}/api/check/links", json={"items": [item]}, timeout=30)
-        results = (resp.json() or {}).get("results") or []
-        r0 = results[0] if results else {}
-        return {"state": r0.get("state") or "unknown", "summary": r0.get("summary") or "", "from_cache": bool(r0.get("cache_hit"))}
-    except (rq.RequestException, ValueError):
-        return {"state": "unknown", "summary": "检测服务不可用", "from_cache": False}
+        adapter = make_adapter(t)
+    except AdapterError as e:
+        return {"state": "unknown", "summary": str(e)}
+    DEAD_HINTS = ("不存在", "已取消", "已删除", "过期", "失效", "违规", "敏感")
+    try:
+        files = adapter.list_share(TaskSpec(share_url=url, share_code=code, include_subdirs=False))
+        if not files:
+            return {"state": "bad", "summary": "分享内容为空（可能已失效）"}
+        return {"state": "ok", "summary": f"清单 {len(files)} 项"}
+    except ShareBanned as e:
+        return {"state": "bad", "summary": str(e) or "分享已失效"}
+    except CredentialExpired:
+        return {"state": "unknown", "summary": "网盘凭据已过期"}
+    except AdapterError as e:
+        msg = str(e)
+        if any(k in msg for k in DEAD_HINTS):
+            return {"state": "bad", "summary": msg}
+        return {"state": "uncertain", "summary": msg[:60]}
+    except Exception as e:  # noqa: BLE001 —— 检测是旁路，异常一律放行别挡转存
+        return {"state": "unknown", "summary": str(e)[:60] or "检测异常"}
 
 
 @router.get("/share-files")

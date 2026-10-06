@@ -32,7 +32,7 @@ export function getSearchResults(keyword: string): Promise<SearchResultItem[]> {
   return get<SearchResultItem[]>('/search/results', { params: { kw: keyword } })
 }
 
-/** 链接死活预检结果（pansou /api/check/links 单条透传）。
+/** 链接死活预检结果（后端用网盘适配器实拉清单判定，同转存链路最准）。
  * ok=有效 / bad=死链 / locked=需提取码 / uncertain=无法判定 / unknown=检测不可用 */
 export interface LinkCheckResult {
   state: 'ok' | 'bad' | 'locked' | 'uncertain' | 'unknown'
