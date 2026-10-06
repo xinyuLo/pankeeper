@@ -450,19 +450,12 @@ class Pan115Adapter(CloudAdapter):
         # ① 根层散文件；② "剥原壳"场景（原壳名被新壳替代，原壳 fid 不能收）；
         # ③ 配了 rename_map（自动任务正则改名）——整目录收无法改名，退回逐文件。
         # 壳条目本身（fid=S）绝不能整收——它的名字是新壳替代掉的，收进来就是套娃。
-        # 勾选清单（弹窗多选）：只收勾选的文件——禁用整目录接收（整收会带上没勾的）
-        use_whole_dir = not spec.rename_map and not spec.only_paths
+        use_whole_dir = not spec.rename_map
         top_dirs = [
             f for f in files if f.is_dir and f.fid and "/" not in f.path and f is not shell
         ] if use_whole_dir else []
         loose = [f for f in files if not f.is_dir and f.fid and "/" not in f.path]
         deeper = [f for f in files if not f.is_dir and f.fid and "/" in f.path]
-        if spec.only_paths:
-            def _sel_path(path: str) -> bool:
-                rel = path.strip("/")
-                return any(rel == sel.strip("/") or rel.startswith(sel.strip("/") + "/") for sel in spec.only_paths)
-            loose = [f for f in loose if _sel_path(f.path)]
-            deeper = [f for f in deeper if _sel_path(f.path)]
         if shell is not None:
             deeper = deeper if not use_whole_dir else []  # 单壳：整目录接收已覆盖子树
         else:
