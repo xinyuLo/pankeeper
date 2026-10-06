@@ -16,7 +16,7 @@ export interface TransferTarget {
  * 「保存到我的网盘」目录树选目标位置；选项：包含子目录 / 文件夹更名 /
  * QMS·STRM 显式下拉（默认按目标目录前缀自动带出，可改「不触发」）。
  * 「开始转存」= pkQueue.enqueue 入队即走，绝无内联进度条。 */
-import { computed, provide, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { FolderOutlined } from '@ant-design/icons-vue'
 import PkTree from '@/components/PkTree.vue'
@@ -24,14 +24,14 @@ import LazyDirTree from '@/components/LazyDirTree.vue'
 import { USE_MOCK } from '@/api/http'
 import { getRootDirs } from '@/api/modules/accounts'
 import { listDdItems, listQmsPaths } from '@/api/modules/dd'
+import { getSearchShareFiles } from '@/api/modules/search'
 import { recognizeShare, type RecognizeCandidate } from '@/api/modules/recognize'
 import { getSettings } from '@/api/modules/settings'
 import { ddStore } from '@/api/mock/dd'
-import ShareTree from './ShareTree.vue'
 import RecognizePicker from '@/components/RecognizePicker.vue'
 import { pkQueue } from '@/queue/engine'
 import { DRIVE_META } from '@/api/mock/meta'
-import { SHARE_TREE, MINE_TREE } from '@/api/mock/tree'
+import { MINE_TREE } from '@/api/mock/tree'
 import type { DdItem, DdQmsPath, MainDriveType, TreeNode } from '@/types/model'
 
 const props = defineProps<{ open: boolean; target: TransferTarget | null }>()
@@ -117,64 +117,52 @@ function onPickCandidate(c: RecognizeCandidate) {
   renameInput.value = c.year ? `${c.title} (${c.year})` : c.title
 }
 
-/* ---- 分享树（勾选） ---- */
-const checked = ref(new Set<string>())
+/* ---- 分享文件多选（左栏，必选）：真实清单（share_list_cache 联动，点过查看文件秒开） ---- */
+interface FileRow { path: string; name: string; size: number }
+const filesLoading = ref(false)
+const filesFailed = ref(false)
+const fileRows = ref<FileRow[]>([])
+const selPaths = ref<string[]>([])
 
-/** key = 父链 + 节点名：同名文件在不同目录不串 */
-function keyOf(base: string, node: TreeNode): string {
-  return base + '/' + node.name
+function fmtSize(n: number): string {
+  if (!n) return '—'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let x = n
+  let i = 0
+  while (x >= 1024 && i < units.length - 1) { x /= 1024; i++ }
+  return `${i === 0 || x >= 100 ? Math.round(x) : x.toFixed(1)} ${units[i]}`
 }
-function collectKeys(node: TreeNode, base: string): string[] {
-  const k = keyOf(base, node)
-  const out = [k]
-  for (const c of node.kids || []) out.push(...collectKeys(c, k))
-  return out
-}
-provide('shareCheck', {
-  checked,
-  keyOf,
-  collectKeys,
-  toggle(keys: string[], val: boolean) {
-    const s = new Set(checked.value)
-    for (const k of keys) (val ? s.add(k) : s.delete(k))
-    checked.value = s
-  },
-})
-
-/** 分享树 mock：结构取 SHARE_TREE，顶层名换成当前资源（原型 buildShareData 行为） */
-const shareData = computed<TreeNode[]>(() => {
-  const clone = JSON.parse(JSON.stringify(SHARE_TREE)) as TreeNode[]
-  if (clone[0] && props.target) clone[0].name = props.target.name
-  return clone
-})
-
-/** 勾选的叶子文件数（0 = 全部内容） */
-const checkedFiles = computed(() => {
-  let n = 0
-  const walk = (nodes: TreeNode[], base: string) => {
-    for (const nd of nodes) {
-      const k = keyOf(base, nd)
-      if (nd.kids?.length) walk(nd.kids, k)
-      else if (checked.value.has(k)) n++
-    }
+async function loadShareFiles() {
+  filesLoading.value = true
+  filesFailed.value = false
+  fileRows.value = []
+  selPaths.value = []
+  try {
+    const meta = await getSearchShareFiles(props.target!.type, props.target!.url || '', props.target!.share_code || '')
+    fileRows.value = (meta.files || [])
+      .filter((f) => !f.is_dir)
+      .map((f) => ({ path: f.path, name: f.name, size: f.size }))
+  } catch {
+    filesFailed.value = true // 清单拉不到：回退"全转"老行为，不挡转存
+  } finally {
+    filesLoading.value = false
   }
-  walk(shareData.value, '')
-  return n
-})
-
-const shareOpen = ref(false)
+}
+function toggleAllFiles(e: Event) {
+  selPaths.value = (e.target as HTMLInputElement).checked ? fileRows.value.map((f) => f.path) : []
+}
+function toggleFile(path: string) {
+  selPaths.value = selPaths.value.includes(path)
+    ? selPaths.value.filter((x) => x !== path)
+    : [...selPaths.value, path]
+}
+const allSelected = computed(() => fileRows.value.length > 0 && selPaths.value.length === fileRows.value.length)
 
 /* ---- 目标目录树 ---- */
 const selectedDir = ref(DEFAULT_DIR)
 function onPick(node: TreeNode) {
   // 只认有 path 的节点（分享树式节点没有 path，这里树里都有）
   if (node.path) selectedDir.value = node.path
-}
-
-function mkfolder() {
-  // 原型行为：prompt 输入名字 → toast 反馈（真实版换成后端 mkdir）
-  const n = window.prompt('新文件夹名称：', '庆余年2')
-  if (n) message.info(`将在 ${selectedDir.value} 下创建 ${n}`)
 }
 
 /* ---- 选项（手动转存没有 Server 酱推送，别加回来） ---- */
@@ -236,9 +224,9 @@ watch(selectedDir, () => {
   () => props.open,
   async (v) => {
     if (!v) return
-    checked.value = new Set()
-    shareOpen.value = false
+    selPaths.value = []
     renameInput.value = ''
+    if (props.target?.url) void loadShareFiles() // 左栏文件清单（缓存联动秒开）
     // 打开即选中锁定根（默认根目录）；没配置就回退原来的默认
     if (!USE_MOCK) rootDirs.value = await getRootDirs().catch(() => ({}))
     rootDir.value = rootDirs.value[props.target?.type || ''] || ''
@@ -261,15 +249,33 @@ watch(selectedDir, () => {
   },
 )
 
+/** 清单不可用时的老语义兜底：无勾选 → 建壳全转 */
+function checkedFilesFallback(): boolean {
+  return filesFailed.value || !fileRows.value.length ? false : true
+}
+
 function close() {
   emit('update:open', false)
 }
 
-/** 入队即走：toast 报位次、弹窗立即关闭 */
+/** 入队即走：toast 报位次、弹窗立即关闭。
+ * 必选：左栏至少勾一个文件（清单可用时）+ 右栏目标位置。
+ * 填了更名 = 建壳承接、只转勾选文件（单文件夹单/少文件，正合刮削要求）；
+ * 没填更名 = 按勾选路径直接转（子目录结构保留）。清单失败回退"全转"老行为。 */
 function start() {
   const t = props.target
   if (!t) return
-  const files = parseInt((sumMeta.value.match(/(\d+)\s*项/) || [])[1] || '', 10) || 12
+  if (!selectedDir.value) {
+    message.warning('请先在右侧选择目标位置')
+    return
+  }
+  const picked = selPaths.value
+  if (!filesFailed.value && fileRows.value.length && !picked.length) {
+    message.warning('请先在左侧勾选要转存的文件')
+    return
+  }
+  const rename = renameInput.value.trim()
+  const files = fileRows.value.length || parseInt((sumMeta.value.match(/(\d+)\s*项/) || [])[1] || '', 10) || 12
   const pos = pkQueue.enqueue({
     name: t.name,
     type: t.type,
@@ -278,9 +284,12 @@ function start() {
     size: t.size,
     share_url: t.url,
     share_code: t.share_code,
-    /* 建壳转存：没勾选具体内容时按默认名/更名值新建文件夹、剥壳转入（勾选了就走原平铺逻辑） */
-    rename: renameInput.value.trim(),
-    with_shell: checkedFiles.value === 0,
+    /* 更名填了 = 建壳承接（更名文件夹 + 只转勾选文件）；没填 = 按勾选路径直接转 */
+    rename,
+    with_shell: filesFailed.value || !fileRows.value.length ? checkedFilesFallback() : !!rename,
+    file_paths: picked,
+    /* 勾选了嵌套路径时必须带子目录列举，否则 only_paths 找不到文件 */
+    include_subdirs: includeSub.value || picked.some((x) => x.includes('/')),
     /* 联动：开关关 = 明确不触发；开 = 用下拉选的 QMS（默认按目标位置自动带出）。
        STRM 不传——后端与 QMS 自动配对，刮削成功才生成。
        LitePan 模式：lp_event 带弹窗填的事件名（后端按 media.backend 分流，qms 时忽略） */
@@ -321,10 +330,6 @@ function start() {
           <b :title="target.name">{{ target.name }}</b>
           <span>{{ sumMeta }}</span>
         </div>
-        <a-button size="small" @click="shareOpen = !shareOpen">{{ shareOpen ? '收起' : '查看' }}</a-button>
-      </div>
-      <div v-show="shareOpen" class="share-tree-wrap">
-        <ShareTree :nodes="shareData" base-key="" />
       </div>
 
       <!-- 文件夹更名：分享摘要下方整行（留空 = 用默认名在目标位置新建文件夹）；「识别」= TMDB 回填 -->
@@ -397,40 +402,62 @@ function start() {
         </template>
       </div>
 
-      <!-- 我的网盘：唯一可操作区（选目标位置） -->
-      <div class="pane" style="margin-top: 16px">
-        <div class="pane-hd">
-          <span>保存到我的网盘</span>
-          <span style="display: flex; gap: 6px">
-            <!-- 绕过后端目录缓存直连重拉：网盘侧刚建/删了文件夹时用 -->
-            <a-button size="small" :loading="treeRefreshing" @click="onRefreshTree">刷新</a-button>
-            <a-button size="small" @click="mkfolder">新建文件夹</a-button>
-          </span>
-        </div>
-        <div class="pane-bd">
-          <LazyDirTree
-            v-if="!USE_MOCK && isMainDrive"
-            ref="mineTree"
-            :type="target!.type as MainDriveType"
-            :root-path="rootDir"
-            @select="(p: string) => (selectedDir = p)"
-          />
-          <div v-else-if="!USE_MOCK" class="small" style="color: var(--text3); padding: 12px 0">
-            该网盘的目录浏览暂未支持，可直接开始转存（目标目录不存在时会自动创建）。
+      <!-- 双栏：左=分享文件多选（必选）/ 右=目标位置目录树（必选，无新建文件夹） -->
+      <div class="tm-split">
+        <div class="tm-col">
+          <div class="tm-col-hd">
+            <span class="tm-col-t">分享内容</span>
+            <span class="tm-col-n" :class="{ ok: allSelected }">{{ selPaths.length }}/{{ fileRows.length }}</span>
           </div>
-          <PkTree v-else :nodes="MINE_TREE" selectable :default-expand-depth="2" @select="onPick" />
+          <div class="tm-col-list">
+            <div v-if="filesLoading" class="tm-col-loading">
+              <a-spin size="small" />
+              <span class="small muted">正在获取文件清单…（点过「查看文件」的分享秒开）</span>
+            </div>
+            <template v-else-if="fileRows.length">
+              <label class="tm-file tm-file-all">
+                <input type="checkbox" :checked="allSelected" @change="toggleAllFiles" />
+                <b>全选</b>
+              </label>
+              <label v-for="f in fileRows" :key="f.path" class="tm-file" :class="{ on: selPaths.includes(f.path) }">
+                <input type="checkbox" :checked="selPaths.includes(f.path)" @change="toggleFile(f.path)" />
+                <span class="tm-file-name" :title="f.name">{{ f.name }}</span>
+                <span class="tm-file-size">{{ fmtSize(f.size) }}</span>
+              </label>
+            </template>
+            <div v-else class="tm-col-loading">
+              <span class="small muted">文件清单获取失败——将按资源名整包转存（含子目录设置）</span>
+            </div>
+          </div>
         </div>
-      </div>
-      <div class="bcrumb">
-        <span class="muted" style="color: var(--text3)">目标位置</span>
-        <span>{{ selectedDir }}</span>
+        <div class="tm-col">
+          <div class="tm-col-hd">
+            <span class="tm-col-t">目标位置</span>
+            <span class="tm-col-path" :title="selectedDir">{{ selectedDir }}</span>
+            <a-button size="small" :loading="treeRefreshing" @click="onRefreshTree">刷新</a-button>
+          </div>
+          <div class="tm-col-list">
+            <LazyDirTree
+              v-if="!USE_MOCK && isMainDrive"
+              ref="mineTree"
+              :type="target!.type as MainDriveType"
+              :root-path="rootDir"
+              :manageable="false"
+              @select="(p: string) => (selectedDir = p)"
+            />
+            <div v-else-if="!USE_MOCK" class="small" style="color: var(--text3); padding: 12px 0">
+              该网盘的目录浏览暂未支持，可直接开始转存（目标目录不存在时会自动创建）。
+            </div>
+            <PkTree v-else :nodes="MINE_TREE" selectable :default-expand-depth="2" @select="onPick" />
+          </div>
+        </div>
       </div>
 
     </div>
 
     <div class="tm-foot">
       <span class="small muted">
-        {{ checkedFiles > 0 ? `已勾选 ${checkedFiles} 个文件 · 只转存勾选内容` : '选中分享内的子文件夹可只转存部分内容' }}
+        {{ filesFailed ? '清单不可用 · 将按资源名整包转存' : `已选 ${selPaths.length}/${fileRows.length} 个文件 · 只转存勾选内容` }}
       </span>
       <span style="flex: 1"></span>
       <a-button @click="close">取消</a-button>
@@ -445,7 +472,41 @@ function start() {
 <style scoped>
 .tm-head { display: flex; align-items: center; gap: 9px; font-size: 16px; font-weight: 600; }
 .tm-chip { width: 24px; height: 24px; border-radius: 6px; font-size: 11px; }
-.tm-body { max-height: 62vh; overflow: auto; padding: 4px 2px; }
+.tm-body { max-height: 68vh; overflow: auto; padding: 4px 2px; }
+/* 双栏：左=分享文件多选（必选）/ 右=目标位置目录树（必选） */
+.tm-split { display: flex; gap: 12px; margin-top: 14px; }
+.tm-col { flex: 1; min-width: 0; border: 1px solid var(--split); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
+.tm-col-hd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--split);
+  background: var(--surface-2);
+}
+.tm-col-t { font-weight: 600; font-size: 13px; }
+.tm-col-n { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; color: var(--primary); background: rgba(22, 119, 255, 0.1); border-radius: 999px; padding: 0 8px; line-height: 17px; }
+.tm-col-n.ok { color: #237804; background: rgba(82, 196, 26, 0.12); }
+.tm-col-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text2); }
+.tm-col-list { height: 220px; overflow: auto; padding: 6px; }
+.tm-col-loading { display: flex; align-items: center; gap: 10px; justify-content: center; padding: 24px 0; }
+.tm-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+.tm-file:hover { background: rgba(22, 119, 255, 0.07); }
+.tm-file.on { background: rgba(22, 119, 255, 0.06); }
+.tm-file-all { border-bottom: 1px dashed var(--split); border-radius: 0; margin-bottom: 4px; }
+.tm-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tm-file-size { flex: none; color: var(--text3); font-size: 11.5px; }
+@media (max-width: 767px) {
+  .tm-split { flex-direction: column; }
+}
 .tm-foot {
   display: flex;
   align-items: center;
