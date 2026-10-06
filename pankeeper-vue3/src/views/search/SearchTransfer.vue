@@ -13,7 +13,7 @@ import QuickTransferModal from './QuickTransferModal.vue'
 import TransferModal, { type TransferTarget } from './TransferModal.vue'
 import ShareFilesModal from '@/views/auto/ShareFilesModal.vue'
 import { useIsMobile } from '@/composables/useIsMobile'
-import { checkShareLink, getInitialResults, getPanSouAddr, getSearchChannels, getSearchResults, getSearchShareFiles, type SearchChannel, getEngineHealth, getEngineHealthCached } from '@/api/modules/search'
+import { checkShareLink, getInitialResults, getPanSouAddr, getRecentKeywords, getSearchChannels, getSearchResults, getSearchShareFiles, type SearchChannel, getEngineHealth, getEngineHealthCached } from '@/api/modules/search'
 import { getSettings, saveSearchSrc } from '@/api/modules/settings'
 import { listDdItems } from '@/api/modules/dd'
 import { ddStore } from '@/api/mock/dd'
@@ -32,8 +32,9 @@ const DRIVE_ORDER: DriveType[] = ['baidu', 'quark', '115', 'magnet', '123', 'ali
 /* ===== 静态文案 ===== */
 const T_NO_CRED = '请先到「网盘连接」页配置该网盘凭据'
 
-/** 空态示例词：点击直接发起检索（2026-10-06 空态改版：装饰变入口） */
-const SAMPLE_WORDS = ['狂飙', '哪吒2', 'F1：狂飙飞车', '兰香如故', '飞驰人生2']
+/** 空态胶囊：优先真实最近搜索（去重前 5），没历史才回落这些示例词。点击直接发起检索 */
+const FALLBACK_WORDS = ['狂飙', '哪吒2', 'F1：狂飙飞车', '兰香如故', '飞驰人生2']
+const sampleWords = ref<string[]>(FALLBACK_WORDS)
 function searchSample(word: string) {
   if (busy.value) return
   kw.value = word
@@ -104,6 +105,12 @@ onMounted(async () => {
     results.value = cachedSearch.results
   }
   renderStats()
+  // 空态胶囊：优先真实搜索历史（没历史回落示例词）
+  getRecentKeywords(5)
+    .then((words) => {
+      if (words.length) sampleWords.value = words
+    })
+    .catch(() => {})
   // 首屏数据（地址/缓存结果）落定后才允许渲染空态卡——否则进页一瞬间会闪
   // 「暂无搜索结果 / 去配置引导」，数据到了又跳变
   booted.value = true
@@ -573,9 +580,8 @@ onUnmounted(() => {
             <div class="pk-es-ico st-es-core"><SearchOutlined /></div>
           </div>
           <div class="pk-es-title">输入片名，全网资源一站直达</div>
-          <div class="pk-es-sub">支持百度 / 夸克 / 115 等七种网盘，找到后一键转存自动整理入库</div>
           <div class="st-es-samples">
-            <span class="st-es-sample" v-for="w in SAMPLE_WORDS" :key="w" @click="searchSample(w)">{{ w }}</span>
+            <span class="st-es-sample" v-for="w in sampleWords" :key="w" @click="searchSample(w)">{{ w }}</span>
           </div>
         </template>
       </div>
