@@ -181,6 +181,12 @@ const qmsSel = ref<number | null>(null)
 const lpOn = ref(true)
 const lpEvent = ref('')
 const mediaBackend = ref<'qms' | 'litepan'>('qms')
+/** 转存路径 = 目标位置 + 壳名（更名值优先，回落资源名） */
+const savePath = computed(() => {
+  const dir = (selectedDir.value || '').replace(/\/+$/, '')
+  const shell = renameInput.value.trim() || props.target?.name || ''
+  return `${dir}/${shell}`
+})
 const qmsPaths = ref<DdQmsPath[]>([])
 const pathsLoading = ref(false)
 const mediaTouched = ref(false)
@@ -327,16 +333,13 @@ function start() {
     </template>
 
     <div v-if="target" class="tm-body">
-      <!-- 分享内容：总结一行，「查看」展开树（宽度不变） -->
-      <div class="share-sum">
-        <span class="share-sum-ic"><FolderOutlined /></span>
-        <div class="share-sum-main">
-          <b :title="target.name">{{ target.name }}</b>
-          <span>{{ sumMeta }}</span>
-        </div>
+      <!-- 转存路径：目标位置 + 壳名（更名值/资源名），随选择实时更新 -->
+      <div class="tm-savepath">
+        <span class="tm-savepath-label">转存路径</span>
+        <span class="tm-savepath-val" :title="savePath">{{ savePath }}</span>
       </div>
 
-      <!-- 文件夹更名：分享摘要下方整行（留空 = 用默认名在目标位置新建文件夹）；「识别」= TMDB 回填 -->
+      <!-- 文件夹更名（留空 = 用资源名在目标位置新建文件夹）；「识别」= TMDB 回填 -->
       <div class="tm-rename">
         <label>文件夹更名</label>
         <a-input v-model:value="renameInput" :maxlength="80" placeholder="留空则用资源名新建文件夹" allow-clear>
@@ -477,6 +480,28 @@ function start() {
 .tm-head { display: flex; align-items: center; gap: 9px; font-size: 16px; font-weight: 600; }
 .tm-chip { width: 24px; height: 24px; border-radius: 6px; font-size: 11px; }
 .tm-body { max-height: 68vh; overflow: auto; padding: 4px 2px; }
+/* 转存路径行：目标位置 + 壳名实时拼接 */
+.tm-savepath {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid rgba(22, 119, 255, 0.25);
+  border-radius: 8px;
+  background: rgba(22, 119, 255, 0.05);
+  margin-bottom: 12px;
+}
+.tm-savepath-label { flex: none; font-size: 12px; color: var(--text3); }
+.tm-savepath-val {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--text2);
+}
 /* 双栏：左=分享文件多选（必选）/ 右=目标位置目录树（必选） */
 .tm-split { display: flex; gap: 12px; margin-top: 14px; }
 .tm-col { flex: 1; min-width: 0; border: 1px solid var(--split); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
