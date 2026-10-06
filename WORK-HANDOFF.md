@@ -1,9 +1,11 @@
-# PanKeeper 工作交接（2026-10-04 晚更新）
+# PanKeeper 工作交接（2026-10-06 更新）
 
 > 交接范围：本地开发（Windows，`D:\zcodeWork\pankeeper\pankeeper`）+ NAS 部署（192.168.2.77 / 外网 100.66.1.1）。  
-> 本文档上一版为 2026-10-03 凌晨版（f4818f4），本次全天内容重写，历史版本在 git 里。
+> 本文档上一版为 2026-10-04 晚版（b9dda21），本次 LitePan 对接批次增量更新，历史版本在 git 里。
 
 ## 0. 一句话状态
+
+**10-06 批次：LitePan 对接落地**——外层 LitePan Go 源码通读定稿协议（**HTTP Webhook**，非此前猜测的 WS：`POST /api/open/automation/events`，体 `{event,source,path}`，Bearer API Key，规则异步执行响应带 matched/triggered）→ `services/litepan.py` 真实现（notify_transfer_done + test_webhook，失败分支如实报）→ 设置组 litepan（webhook_url/apikey 加密/event）+ 设置页 tab3 恢复后端切换下拉（顺修 onMediaBackend 不回写本地值的潜伏 bug）+ LitePan 参数表单与测试按钮。**真连 LitePan 实测未做**（NAS 尚无实例），部署后点「测试」即可验。详见 `工作日志/2026-10-06-PanKeeper-LitePan对接落地.md`。
 
 **10-05 深夜批次已收口并部署 NAS（6df209e）**：**TMDB 自识别器**（`media_recognize.py`，±1 年容错+存疑标记，推送不再依赖后端刮削记录）+ **LitePan 独立推送流程**（`media.backend` 分流，两套日志互不掺和）+ **转存弹窗识别按钮**（回填按 QMS 规则「标题 (年份)」，年份以 TMDB 为准）+ **STRM 日志口径如实**（定向=临时任务，整路径=触发同步目录）+ **Emby 刷新修复**（QMS emby-config 套层解析）——**转存→刮削→定向同步→Emby 刷库全链闭合**。详见 `工作日志/2026-10-05-PanKeeper-TMDB自识别与联动收尾.md`。
 
@@ -116,8 +118,8 @@ QMS 自动配对**（刮削 dest_path ↔ 同步 remote_path，转存配置不�
 - 115 adapter 目录浏览/管理补齐（接口口子已留，后端统一 400 提示）。
 - 下钻勾选（drill_json）功能实现（字段保留、短期不实现的约定 2026-10-03 定）。
 - 分享清单预热与转存配置联动细化、Server酱推送时机完善。
-- **LitePan 对接**（联动后端已预留）：设置组 `media.backend` 切 litepan 后转存完成只推消息；
-  WS 协议定稿后在 `services/litepan.py::notify_transfer_done` 补实现，设置页下拉模板恢复见
-  Settings.vue 注释标记（UI 当前隐藏、恒 qms）。
+- **LitePan 对接已落地（2026-10-06）**：协议=HTTP Webhook（`POST /api/open/automation/events`），
+  设置页 tab3 配 webhook_url/apikey/event。剩余动作：NAS 部署 LitePan 实例后建 webhook 规则
+  （事件名对齐设置页、路径前缀按转存目标目录配），点「测试」验通，再实测一次真转存链路。
 - 115：观察 2s 限速下的风控表现；容量接口 get_storage_info 仅 web Cookie 版可用。
 - 观察几天百度限速的风控表现。

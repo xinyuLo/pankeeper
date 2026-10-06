@@ -46,9 +46,11 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "security": {"username": "admin", "session_days": 7},
     },
     # 联动后端选择：qms = 现行 QMS 全流程（刮削/STRM/PanKeeper 管理）；
-    # litepan = 转存完成后推送消息给 LitePan，后续整理由 LitePan 自理（预留，WS 对接待定稿）
+    # litepan = 转存完成后 Webhook 推给 LitePan，后续整理由 LitePan 自动化规则自理
     "media": {"backend": "qms"},
-    "litepan": {"ws_url": ""},
+    # LitePan 对接参数（HTTP Webhook，协议定稿见 services/litepan.py 模块注释）。
+    # event 是 LitePan 侧自动化规则匹配用的事件名，须与规则里配的完全一致。
+    "litepan": {"webhook_url": "", "apikey": "", "event": "transfer.done"},
     "queue_cfg": {"threads": 1, "gap": 5, "qms": 10, "strm": 10},
     # 网盘凭据每日探活（M3）：默认每天 10:00 跑一次。
     # 时间特意放在上午而不是凌晨——半夜探出失效也没人看，通知等于白发；
@@ -112,11 +114,20 @@ def get_group(key: str) -> dict[str, Any]:
     if key == "settings":
         _decrypt(data.get("notify", {}))
         _decrypt(data.get("qms", {}))
+    elif key == "litepan":
+        _decrypt(data)
     return data
 
 
 def save_group(key: str, value: dict[str, Any]) -> None:
     """保存分组：敏感字段值以 **** 开头视为「前端没改」，保留库里旧值。"""
+
+    def _encrypt(group: dict) -> None:
+        for f in _SENSITIVE_FIELDS:
+            v = group.get(f)
+            if isinstance(v, str) and v and not v.startswith("fernet:"):
+                group[f] = "fernet:" + encrypt_credential(v)
+
     if key == "settings":
         old = get_group(key)
         for group in ("notify", "qms"):
@@ -125,14 +136,14 @@ def save_group(key: str, value: dict[str, Any]) -> None:
                 if isinstance(new_val, str) and new_val.startswith("****"):
                     value.setdefault(group, {})[field] = old.get(group, {}).get(field, "")
 
-        def _encrypt(group: dict) -> None:
-            for f in _SENSITIVE_FIELDS:
-                v = group.get(f)
-                if isinstance(v, str) and v and not v.startswith("fernet:"):
-                    group[f] = "fernet:" + encrypt_credential(v)
-
         _encrypt(value.get("notify", {}))
         _encrypt(value.get("qms", {}))
+    elif key == "litepan":
+        old = get_group(key)
+        new_val = value.get("apikey", "")
+        if isinstance(new_val, str) and new_val.startswith("****"):
+            value["apikey"] = old.get("apikey", "")
+        _encrypt(value)
     with SessionLocal() as s:
         row = s.get(Setting, key)
         if row:

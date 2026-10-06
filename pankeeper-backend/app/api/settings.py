@@ -29,6 +29,10 @@ def get_settings(_user=CurrentUser):
     if data["qms"].get("tmdb_api_key"):
         data["qms"]["tmdb_api_key"] = "****" + data["qms"]["tmdb_api_key"][-4:]
     data["media"] = get_group("media")  # 联动后端选择（qms/litepan）
+    litepan = get_group("litepan")  # LitePan 对接参数（联动后端=litepan 时用）
+    if litepan.get("apikey"):
+        litepan["apikey"] = "****" + litepan["apikey"][-4:]
+    data["litepan"] = litepan
     return data
 
 
@@ -137,6 +141,32 @@ def put_media_backend(body: dict, _user=CurrentUser):
         raise HTTPException(status_code=400, detail="未知联动后端")
     save_group("media", {"backend": backend})
     return {"ok": True}
+
+
+@router.put("/settings/litepan")
+def put_litepan(body: dict, _user=CurrentUser):
+    """LitePan 对接参数（HTTP Webhook）：独立顶层配置组（同 media），别并进 settings 子组。
+    掩码 apikey 由 save_group 的 litepan 分支保留旧值。"""
+    body = body or {}
+    save_group("litepan", {
+        "webhook_url": (body.get("webhook_url") or "").strip(),
+        "apikey": (body.get("apikey") or "").strip(),
+        "event": (body.get("event") or "").strip(),
+    })
+    return {"ok": True}
+
+
+@router.post("/settings/litepan/test")
+def test_litepan(body: dict, _user=CurrentUser):
+    """打一次真实 webhook 验证地址+密钥+连通（测试事件不会命中正常规则）。
+    掩码 apikey（****开头）= 没改 → 用库里已保存的密钥，别把掩码当真 key 发。"""
+    from ..services import litepan
+
+    body = body or {}
+    apikey = (body.get("apikey") or "").strip()
+    if apikey.startswith("****"):
+        apikey = get_group("litepan").get("apikey") or ""
+    return litepan.test_webhook(body.get("webhook_url") or "", apikey)
 
 
 @router.put("/settings/{group}")

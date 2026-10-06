@@ -48,6 +48,16 @@ export interface QmsCfg {
   act_emby: boolean
 }
 
+/** ===== tab3 LitePan 对接（联动后端=litepan 时生效：HTTP Webhook 推转存完成消息） ===== */
+export interface LitePanCfg {
+  /** 完整 Webhook 地址（LitePan 地址 + /api/open/automation/events） */
+  webhook_url: string
+  /** LitePan API Key（真实系统加密存储、接口只回掩码） */
+  apikey: string
+  /** 事件名：须与 LitePan 自动化规则里配的完全一致 */
+  event: string
+}
+
 /** ===== tab4 账号安全 ===== */
 export interface SecurityCfg {
   username: string
@@ -59,8 +69,9 @@ export interface SettingsData {
   search: SearchSrcCfg
   notify: NotifyCfg
   qms: QmsCfg
+  litepan: LitePanCfg
   security: SecurityCfg
-  /** 联动后端：qms = QMS 全流程 / litepan = 推送消息给 LitePan（预留） */
+  /** 联动后端：qms = QMS 全流程 / litepan = 转存完 Webhook 推给 LitePan，整理由其自理 */
   media: { backend: 'qms' | 'litepan' }
 }
 
@@ -87,6 +98,11 @@ export const settingsStore = reactive<SettingsData>({
     tmdb_proxy: '',
     act_strm: true,
     act_emby: true,
+  },
+  litepan: {
+    webhook_url: 'http://192.168.2.77:8030/api/open/automation/events',
+    apikey: '****-****-****',
+    event: 'transfer.done',
   },
   security: {
     username: 'admin',

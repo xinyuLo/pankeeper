@@ -152,13 +152,13 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
     if get_group("media").get("backend", "qms") != "qms":
         # 联动后端切到 LitePan：推送转存完成消息即收工，QMS/STRM 全流程跳过
         from ..services import litepan
-        litepan.notify_transfer_done({
+        t["_media"] = {"qms_id": None, "strm_id": None}
+        lp_res = litepan.notify_transfer_done({
             "drive": t["type"], "task": name_head, "path": t["path"],
             "files": [{"name": e.get("name")} for e in result.transferred],
             "share_url": t.get("shareUrl", ""), "share_code": t.get("shareCode", ""),
         })
-        t["_media"] = {"qms_id": None, "strm_id": None}
-        _push_log(t, "INFO", "联动后端为 LitePan：转存完成消息已推送，后续整理由 LitePan 处理")
+        _push_log(t, "INFO" if lp_res["ok"] else "WARN", f"联动后端为 LitePan：{lp_res['message']}")
         # LitePan 模式的**独立推送流程**：自识别 TMDB 直接推送（与 QMS 流程隔离）
         media_push.watch_and_spawn({
             "drive": t["type"], "task": name_head,
