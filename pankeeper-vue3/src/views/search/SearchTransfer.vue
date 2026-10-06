@@ -341,16 +341,27 @@ async function aliveOrBlock(r: SearchResultItem): Promise<boolean> {
   const key = rowKeyOf(r)
   if (checkingRows.value.has(key)) return false
   checkingRows.value = new Set(checkingRows.value).add(key)
+  // 检测可能打 pansou 真探测（秒级）：300ms 还没回来就提示"正在检测"，别让用户以为卡死；
+  // 缓存命中（点过查看文件）毫秒级返回，提示根本不会出现
+  let tipShown = false
+  const tipTimer = window.setTimeout(() => {
+    tipShown = true
+    message.loading({ content: '正在检测链接有效性…', key: 'linkcheck', duration: 0 })
+  }, 300)
   try {
     const res = await checkShareLink(r.t, r.url, r.share_code || '')
     if (res.state === 'bad') {
-      message.warning(`分享已失效（${res.summary || '链接检测未通过'}），不转了`, 5)
+      if (tipShown) message.warning({ content: `分享已失效（${res.summary || '链接检测未通过'}），不转了`, key: 'linkcheck', duration: 5 })
+      else message.warning(`分享已失效（${res.summary || '链接检测未通过'}），不转了`, 5)
       return false
     }
+    if (tipShown) message.success({ content: '链接有效', key: 'linkcheck', duration: 1 })
     return true
   } catch {
     return true // 检测挂了/超时：放行，别挡转存
   } finally {
+    window.clearTimeout(tipTimer)
+    if (!tipShown) message.destroy('linkcheck')
     const next = new Set(checkingRows.value)
     next.delete(key)
     checkingRows.value = next
