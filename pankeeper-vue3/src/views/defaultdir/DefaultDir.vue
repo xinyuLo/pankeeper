@@ -15,6 +15,7 @@ import { DD_MEDIA, MAIN_ORDER, DRIVE_META } from '@/api/mock/meta'
 import { accountStore } from '@/api/mock/accounts'
 import { getRootDirs } from '@/api/modules/accounts'
 import { saveDdItem, deleteDdItem, setDefaultDir, listDdItems, listQmsPaths } from '@/api/modules/dd'
+import { getSettings } from '@/api/modules/settings'
 import type { DdItem, DdQmsPath, MainDriveType } from '@/types/model'
 
 /* ===== 列表态 ===== */
@@ -73,6 +74,12 @@ const fPath = ref('')
 const fSort = ref(1)
 const fQmsOn = ref(false)
 const fQmsId = ref<number | undefined>(undefined)
+// LitePan 联动（media.backend=litepan 时替代 QMS 表单）：开关 + 事件名（输入框，等
+// LitePan 出接口后换下拉——2026-10-06 用户定稿）
+const fLpOn = ref(false)
+const fLpEvent = ref('')
+/** 当前联动后端：qms 显示 QMS 表单，litepan 显示 LitePan 表单（进页面拉一次） */
+const mediaBackend = ref<'qms' | 'litepan'>('qms')
 
 const typeOptions = MAIN_ORDER.map((k) => ({ value: k, label: DRIVE_META[k].full }))
 /** 所属账号：真实账号列表（网盘连接页配的），不是 mock 的假号 */
@@ -150,6 +157,8 @@ function openEditor(id: number | null) {
     : ddStore.items.filter((x) => x.type === fType.value).reduce((m, x) => Math.max(m, x.sort || 0), 0) + 1
   fQmsOn.value = it ? !!it.qms_on : false
   fQmsId.value = it?.qms_id ?? undefined
+  fLpOn.value = it ? !!it.lp_on : false
+  fLpEvent.value = it?.lp_event || ''
   bdPath.value = fPath.value
   modalOpen.value = true
   loadQmsStrmPaths()
@@ -176,6 +185,8 @@ onMounted(async () => {
   await listDdItems().catch(() => {})
   rootDirs.value = await getRootDirs().catch(() => ({}))
   loadQmsStrmPaths()
+  // 联动后端决定弹窗里显示 QMS 还是 LitePan 表单（qms_on/lp_on 两套字段各自保存互不覆盖）
+  getSettings().then((d) => (mediaBackend.value = d.media?.backend || 'qms')).catch(() => {})
 })
 
 /* ===== 保存（校验全部不关弹窗，重名只在同网盘 + 同账号内拦截） ===== */
@@ -208,10 +219,17 @@ async function confirmEditor() {
     message.error('联动 QMS 需选择整理目录')
     return
   }
+  if (fLpOn.value && !fLpEvent.value.trim()) {
+    message.error('LitePan 联动需填写事件名（与 LitePan 自动化规则里配的一致）')
+    return
+  }
   const qmsFields = {
     qms_on: fQmsOn.value,
     qms_id: fQmsOn.value && fQmsId.value != null ? fQmsId.value : null,
     strm_id: null, // 此表单只管 QMS；STRM 目录在任务弹窗里配（DdItemDraft 要求字段存在）
+    // LitePan 联动字段与 QMS 独立保存（切后端时另一套不丢配置）
+    lp_on: fLpOn.value,
+    lp_event: fLpOn.value ? fLpEvent.value.trim() : fLpEvent.value.trim(),
   }
   // 目标账号下（排除自己）已有多少条 —— 新增时第一条自动成为该账号默认
   const beforeCount = ddStore.items.filter(
@@ -405,7 +423,9 @@ async function confirmEditor() {
       <div class="dd-tip">数字越小越靠前，「快速转存」的下拉框按这个顺序排。</div>
     </div>
 
-    <div class="dd-field">
+    <!-- 联动区块按「系统设置 → 联动后端」切换：qms = QMS 表单，litepan = LitePan 表单。
+         两套字段（qms_on/lp_on）各自独立保存，切后端不丢另一套的配置。 -->
+    <div v-if="mediaBackend === 'qms'" class="dd-field">
       <div class="dd-qmsline">
         <a-switch v-model:checked="fQmsOn" />
         <span class="dd-qmslabel">联动 QMS</span>
@@ -421,6 +441,19 @@ async function confirmEditor() {
         />
         <div class="dd-tip">自动转存完成后触发 QMS 整理。</div>
         <div class="dd-tip dd-mt12">QMS 整理成功后会自动按整理结果生成 STRM，失败不生成（无需配置）。</div>
+      </div>
+    </div>
+    <div v-else class="dd-field">
+      <div class="dd-qmsline">
+        <a-switch v-model:checked="fLpOn" />
+        <span class="dd-qmslabel">联动 LitePan</span>
+      </div>
+      <div class="dd-tip">开启后，转到此目录的资源完成时会推 Webhook 给 LitePan（事件按下面配的）。</div>
+      <div v-if="fLpOn" class="dd-qmsbody">
+        <label class="dd-label">LitePan 事件名<i>*</i></label>
+        <a-input v-model:value="fLpEvent" class="dd-sel" placeholder="如 transfer.movie.done" />
+        <div class="dd-tip">须与 LitePan 自动化规则里配的事件名完全一致；不同目录可配不同事件（电影/电视剧各推各的规则）。</div>
+        <div class="dd-tip dd-mt12">LitePan 收到后按匹配的规则自动整理；刮削/STRM 状态由 LitePan 自理，PanKeeper 只推自识别结果。</div>
       </div>
     </div>
 

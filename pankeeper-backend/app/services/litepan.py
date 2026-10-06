@@ -50,11 +50,13 @@ def _post(url: str, body: dict, apikey: str) -> dict:
 
 
 def notify_transfer_done(payload: dict) -> dict:
-    """转存完成通知。payload：{drive, task, path, files, share_url, share_code}。
-    返回 {ok, matched, triggered, message}——调用方据此写转存日志，别再无脑报「已推送」。"""
+    """转存完成通知。payload：{drive, task, path, files, share_url, share_code, event?}。
+    event：转存配置按目录配的事件名（2026-10-06 定稿：不同目录推不同规则），
+    没带就回落设置页的全局事件名。返回 {ok, matched, triggered, message}——
+    调用方据此写转存日志，别再无脑报「已推送」。"""
     cfg = get_group("litepan")
     url = (cfg.get("webhook_url") or "").strip()
-    event = (cfg.get("event") or "").strip() or "transfer.done"
+    event = (payload.get("event") or cfg.get("event") or "").strip() or "transfer.done"
     if not url:
         msg = "未配置 LitePan Webhook 地址，跳过推送（设置 → QMS 联动 → LitePan）"
         print(f"[litepan] {msg}", flush=True)

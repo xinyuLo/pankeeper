@@ -110,6 +110,9 @@ export interface DdItem {
   qms_id: number | null
   /** → STRM 同步目录 id（null = 不生成） */
   strm_id: number | null
+  /** LitePan 联动（media.backend=litepan 时用）：事件按目录配，空 = 全局默认 */
+  lp_on: boolean
+  lp_event: string
 }
 
 /** 保存载荷：新建时 id 传 null（后端自增分配），更新时带已入库的正数 id。

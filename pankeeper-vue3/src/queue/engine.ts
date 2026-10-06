@@ -278,6 +278,8 @@ export const pkQueue = {
     qms_id?: number | null
     /* 明确关闭联动（开关关掉）：连目录前缀匹配都不做 */
     media_off?: boolean
+    /** LitePan 事件名（media.backend=litepan 时弹窗覆盖；空=按转存配置/全局默认） */
+    lp_event?: string
   }): number {
     if (USE_MOCK) {
       const s = stateMock()
