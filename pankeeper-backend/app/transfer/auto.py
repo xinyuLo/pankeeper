@@ -183,9 +183,9 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
     if get_group("media").get("backend", "qms") != "qms":
         # 联动后端切到 LitePan：按目录配的 lp_on/lp_event 推 webhook（未配的目录跳过）
         from ..services import litepan
-        lp_link = resolve_litepan_link(t["path"], t.get("paTaskId"))
+        lp_link = resolve_litepan_link(t["path"], t.get("paTaskId"), require_lp_on=False)
         if lp_link is None:
-            _push_log(t, "INFO", "该目录未配置 LitePan 联动（转存配置里没开），跳过推送")
+            _push_log(t, "INFO", "未配置 LitePan 事件名（任务弹窗/转存配置目录都没填），跳过推送")
         else:
             lp_res = litepan.notify_transfer_done({
                 "drive": t["type"], "task": name_head, "path": t["path"],
@@ -309,33 +309,34 @@ def resolve_media_link(path: str, task_id: int | None = None) -> dict | None:
     return {"qms_id": rq, "strm_id": rs}
 
 
-def resolve_litepan_link(path: str, task_id: int | None = None) -> dict | None:
-    """LitePan 联动目标（2026-10-06 用户定稿）：按 save_dir 前缀匹配「转存配置」里
-    lp_on=True 的目录，事件名**按目录配**——不同目录推不同 LitePan 自动化规则
-    （电影/电视剧各一条），全局单一事件名不够用。
+def resolve_litepan_link(path: str, task_id: int | None = None, require_lp_on: bool = True) -> dict | None:
+    """LitePan 联动目标解析。
 
-    **三道闸**（2026-10-06 用户逐步定稿）：
-    ① 设置页 LitePan「启用联动」关 → 全部不推；
-    ② save_dir 没命中任何 lp_on 目录 → 一律 None（任务/弹窗事件全部作废，没配就不让选）；
+    闸门（2026-10-07 用户定稿更新）：
+    ① 设置页 LitePan「启用联动」总闸关 → 全部不推；
+    ② **自动转存（require_lp_on=False）不再要求转存配置目录开 lp_on**——系统设置选了
+       litepan，自动转存就直接走 LitePan；搜索转存（require_lp_on=True）仍按目录
+       lp_on 匹配（没配 → None，弹窗/日志如实说明）；
     ③ **事件名没填就不联动**（无全局兜底）：任务弹窗和目录配置都没填事件 → None。
-    事件名优先级：任务弹窗 > 目录配置。"""
+    事件名优先级：任务弹窗 > 目录配置（按 save_dir 前缀最长匹配，不再要求 lp_on）。"""
     if not get_group("litepan").get("enabled"):
         return None
     hit: DdItem | None = None
     with SessionLocal() as s:
-        for d in s.query(DdItem).filter(DdItem.lp_on.is_(True)).all():
+        query = s.query(DdItem)
+        if require_lp_on:
+            query = query.filter(DdItem.lp_on.is_(True))
+        for d in query.all():
             if path == d.path or path.startswith(d.path.rstrip("/") + "/"):
                 if hit is None or len(d.path) > len(hit.path):
                     hit = d  # 最长前缀优先
-    if hit is None:
-        return None
     task_event = ""
     if task_id:
         with SessionLocal() as s:
             row = s.get(PaTask, task_id)
             if row is not None:
                 task_event = (row.lp_event or "").strip()
-    dir_event = (hit.lp_event or "").strip()
+    dir_event = (hit.lp_event or "").strip() if hit else ""
     event = task_event or dir_event
     if not event:
         return None  # 事件名没填 = 不联动（无兜底）
