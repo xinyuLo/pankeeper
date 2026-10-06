@@ -51,3 +51,16 @@
 - 磁力行**不能转存**：快速转存/转存/跳转/查看文件全部不渲染，只留「复制磁力」+ 复制图标
   （openQuick/openTransfer 双保险 guard，magnet 永远进不了转存链路）。
 - 实测：搜"狂飙"出 201 条磁力，Tab/统计卡/行操作渲染正确；typecheck 过。
+
+## 四、转存前死活预检（用户 2026-10-06 拍板：不做全页标记，点了先探，死了不让过）
+
+- 新盘搜（pansou-web 分支）自带 `POST /api/check/links`（检测分享链接死活，服务端缓存
+  ok≈24h/bad≈8h/uncertain≈30min）。PanKeeper 加 `POST /search/check-link` 单条透传
+  （`ali`→`aliyun` 映射；检测服务不可用回 unknown，**前端只拦 bad，其余放行**——
+  检测器挂了不能把转存也挡死）。
+- 状态语义（实测）：ok=有效 / bad=死链（分享不存在/好友已取消） / locked=需提取码（115）/
+  uncertain=无法判定（百度无提取码 need verify 等）。
+- 前端：`openQuick`/`openTransfer` 点击时先 `aliveOrBlock(r)`——bad → toast
+  「分享已失效（原因），不转了」直接返回，弹窗不开；检测中该行按钮禁用防连点；
+  检测挂了放行。PC 表格与手机卡片同 handler 一并生效。
+- 实测：活链点击→检测通过→弹窗打开；真死链（好友已取消分享）经代理返回 bad ✓。

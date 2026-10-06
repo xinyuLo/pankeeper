@@ -3,7 +3,7 @@
  * 真实模式：后端代理 pansou（前端不直连，频道配置与地址不暴露）。
  * 真实结果行带 url/share_code/source（入队真实转存的必要字段）。
  */
-import { get, mockDelay, USE_MOCK } from '../http'
+import { get, mockDelay, post, USE_MOCK } from '../http'
 import { searchStore, searchStoreChannels, PANSOU_ADDR, type SearchChannel } from '../mock/search'
 import type { SearchResultItem } from '@/types/model'
 import type { ShareFilesMeta } from './tasks'
@@ -30,6 +30,19 @@ export function getSearchResults(keyword: string): Promise<SearchResultItem[]> {
     return mockDelay(mockRows(), dur)
   }
   return get<SearchResultItem[]>('/search/results', { params: { kw: keyword } })
+}
+
+/** 链接死活预检结果（pansou /api/check/links 单条透传）。
+ * ok=有效 / bad=死链 / locked=需提取码 / uncertain=无法判定 / unknown=检测不可用 */
+export interface LinkCheckResult {
+  state: 'ok' | 'bad' | 'locked' | 'uncertain' | 'unknown'
+  summary: string
+}
+
+/** 转存前死活预检（pansou 侧自带缓存；检测不可用时后端回 unknown，调用方放行别挡转存） */
+export function checkShareLink(type: string, url: string, shareCode = ''): Promise<LinkCheckResult> {
+  if (USE_MOCK) return mockDelay({ state: 'ok', summary: '（mock）链接有效' })
+  return post<LinkCheckResult>('/search/check-link', { type, url, share_code: shareCode })
 }
 
 /** 首屏结果集：mock 直接给缓存结果；真实模式返回 []（等用户搜索） */
