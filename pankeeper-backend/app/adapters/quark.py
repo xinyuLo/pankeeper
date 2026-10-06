@@ -351,17 +351,15 @@ class QuarkAdapter(CloudAdapter):
         return result
 
     def _save_with_shell(self, spec: TaskSpec, shell: ShareFile | None, files: list[ShareFile], result: TransferResult, on_progress, on_log) -> TransferResult:
-        """带壳转存（搜索转存快速弹窗，spec.with_shell）——**建壳承接**（2026-10-04 用户定稿，同 baidu）：
+        """带壳转存（搜索转存快速弹窗，spec.with_shell）——**建壳承接 + 全平铺**（2026-10-06 用户定稿，同 baidu）：
 
-        不整壳转、也不转完再改名：直接在 save_dir 下按「更名值或资源名」新建文件夹当壳，
-        分享内容剥壳转进去。搜索源给的名字是资源名而非分享真实目录名，整壳转过来名字
-        对不上；rename 事后改实测不可靠；整壳转的 transferred 只有壳一条，run_watch 回填
-        拿壳名查 QMS 逐文件记录永远查不到。建壳后三者的名字天然一致。
-        - 单壳（`_root_shell`）：清单本就以壳内为根，直接按相对路径转入新壳；
-        - 非单壳：根层 = 1 文件夹 + 散文件时剥原壳进新壳（防同名套娃）；其余连原目录
-          结构一起进新壳。
-        去重口径：目标已有同名文件夹 → 整单跳过。目录缓存不打补丁（_patch_target_cache 只认
-        文件条目）——树展开时按需回源即可。
+        直接在 save_dir 下按「更名值或资源名」新建文件夹当壳，分享内容**剥掉所有文件夹
+        层级**平铺转进去（用户实锤：壳里套壳的多层文件夹 QMS 识别不出来，一层都不能留）。
+        搜索源给的名字是资源名而非分享真实目录名，整壳转过来名字对不上；rename 事后改
+        实测不可靠。建壳后资源名/更名值/QMS 记录文件名三者天然一致。
+        - 不同子目录的同名文件自动改名（父目录名前缀）防同名覆盖丢文件，日志如实记录；
+        - 去重口径：目标已有同名文件夹 → 整单跳过。目录缓存不打补丁（_patch_target_cache 只认
+          文件条目）——树展开时按需回源即可。
         """
         rename = (spec.folder_rename or "").strip()
         shell_name = (
@@ -379,31 +377,35 @@ class QuarkAdapter(CloudAdapter):
         if shell is None:
             roots_dirs = [f for f in files if f.is_dir and f.fid and f.path.count("/") <= 1]
             if len(roots_dirs) == 1:
-                # 根层 = 1 个文件夹 + N 散文件：剥原壳——内容按相对路径直接进新壳，
-                # 新壳名替代原壳名（原壳文件夹再整转进新壳 = 双层同名套娃）。
-                prefix = roots_dirs[0].path + "/"
-                for f in files:
-                    if not f.is_dir and f.fid and f.path.startswith(prefix):
-                        f.path = f.path[len(prefix):]
                 on_log(f"分享根层为「{roots_dirs[0].name}」+散文件：剥原壳，内容进新壳「{shell_name}」")
             else:
                 on_log(f"分享无根文件夹（或多文件夹混杂），已建壳「{shell_name}」承接全部内容")
         on_log(f"在 {spec.save_dir.rstrip('/')} 下新建文件夹「{shell_name}」，剥壳转存分享内容")
-        # 全部按**文件条目**转（文件夹条目跳过，目录靠 ensure_dir 重建）——
-        # 文件夹整体转 + 其子文件再转 = 重复转存，别混两种方式
+        # 全部按**文件条目**转（文件夹条目跳过）——
+        # —— 全平铺：壳内所有子文件夹层级都不留（多层结构 QMS 识别不出，2026-10-06 用户实锤）。
+        # 不同子目录的同名文件自动改名（父目录名前缀）防同名覆盖丢文件，日志留痕。
         inner = [f for f in files if f.fid and f.fid_token and not f.is_dir]
-        by_dir: dict[str, list[ShareFile]] = {}
+        used: set[str] = set()
         for f in inner:
-            rel = f.path.lstrip("/").rsplit("/", 1)[0] if "/" in f.path.strip("/") else ""
-            by_dir.setdefault(rel, []).append(f)
+            base = f.target_name or f.name
+            key = base.lower()
+            if key in used:
+                parts = f.path.strip("/").rsplit("/", 1)
+                parent = parts[0].rsplit("/", 1)[-1] if len(parts) == 2 and parts[0] else ""
+                cand = f"{parent}_{base}" if parent else base
+                n = 1
+                while cand.lower() in used:
+                    cand = f"{parent}_{n}_{base}" if parent else f"{n}_{base}"
+                    n += 1
+                f.target_name = cand
+                on_log(f"平铺重名：「{f.path}」→「{cand}」")
+                used.add(cand.lower())
+            else:
+                used.add(key)
         target = spec.save_dir.rstrip("/") + "/" + shell_name
-        target_fid = self.ensure_dir(target)  # 壳：根层散文件（剥前缀后 rel 为空）也必须落进壳里
-        for rel, group in by_dir.items():
-            # rel 是壳内相对路径（剥壳/单壳清单都不含壳名），子目录一律建在新壳内——
-            # 建到 save_dir 下就成了壳外散目录（桩测 2026-10-04 抓的原真 bug）
-            tgt_fid = self.ensure_dir(target.rstrip("/") + "/" + rel) if rel else target_fid
-            for i in range(0, len(group), BATCH):
-                self._save_batch(group[i : i + BATCH], tgt_fid, spec, result, on_log)
+        target_fid = self.ensure_dir(target)  # 壳：全部文件平铺进这一层
+        for i in range(0, len(inner), BATCH):
+            self._save_batch(inner[i : i + BATCH], target_fid, spec, result, on_log)
         on_progress(100)
         return result
 
