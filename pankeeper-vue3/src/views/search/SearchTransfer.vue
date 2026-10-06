@@ -566,7 +566,12 @@ onUnmounted(() => {
           <a-button type="primary" class="pk-es-btn" @click="goPansouCfg">去「系统设置 → 搜索源」配置</a-button>
         </template>
         <template v-else>
-          <div class="pk-es-ico st-es-brand"><SearchOutlined /></div>
+          <div class="st-es-orbit">
+            <span class="st-es-pulse"></span>
+            <span class="st-es-pulse is-delay"></span>
+            <span class="st-es-sweep"></span>
+            <div class="pk-es-ico st-es-core"><SearchOutlined /></div>
+          </div>
           <div class="pk-es-title">输入片名，全网资源一站直达</div>
           <div class="pk-es-sub">支持百度 / 夸克 / 115 等七种网盘，找到后一键转存自动整理入库</div>
           <div class="st-es-samples">
@@ -959,15 +964,45 @@ table.st-table { table-layout: fixed; }
 .st-card-date { margin-left: auto; }
 .st-card-ops { justify-content: flex-end; }
 
-/* ===== 空态品牌渐变图标（替代 emoji）：与 logo/头像同一套靛蓝渐变 ===== */
-.pk-empty-state .pk-es-ico.st-es-brand {
-  width: 84px;
-  height: 84px;
-  border-radius: 24px;
-  font-size: 34px;
+/* ===== 空态雷达扫描图标：中心放大镜 + 旋转扫描弧 + 脉冲涟漪（"全网检索"的动感隐喻） ===== */
+.st-es-orbit { position: relative; width: 132px; height: 132px; margin-bottom: 16px; display: flex; align-items: center; justify-content: center; }
+.pk-empty-state .pk-es-ico.st-es-core {
+  width: 68px;
+  height: 68px;
+  border-radius: 20px;
+  font-size: 30px;
   color: #fff;
   background: linear-gradient(135deg, #7c5cf6, #3b6ef6 55%, #1d3ad8);
-  box-shadow: 0 10px 26px rgba(59, 110, 246, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  box-shadow: 0 10px 26px rgba(59, 110, 246, 0.4), 0 0 30px rgba(99, 120, 255, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  z-index: 2;
+}
+/* 扫描弧：conic 渐变亮尾 + 圆环 mask，绕中心匀速转 */
+.st-es-sweep {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, rgba(99, 120, 255, 0), rgba(99, 120, 255, 0) 290deg, rgba(124, 92, 246, 0.55) 350deg, rgba(59, 110, 246, 0.9) 360deg);
+  -webkit-mask: radial-gradient(closest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
+  mask: radial-gradient(closest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
+  animation: stEsSweep 3.2s linear infinite;
+}
+@keyframes stEsSweep { to { transform: rotate(360deg); } }
+/* 脉冲涟漪：两道错相扩散，扫描"发出去了"的观感 */
+.st-es-pulse {
+  position: absolute;
+  inset: 10px;
+  border-radius: 50%;
+  border: 1px solid rgba(99, 120, 255, 0.5);
+  animation: stEsPulse 3.2s ease-out infinite;
+}
+.st-es-pulse.is-delay { animation-delay: 1.6s; }
+@keyframes stEsPulse {
+  0% { transform: scale(0.82); opacity: 0.7; }
+  100% { transform: scale(1.18); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .st-es-sweep, .st-es-pulse { animation: none; }
+  .st-es-pulse.is-delay { display: none; }
 }
 /* 示例词 chips：空态从纯装饰变成可点入口 */
 .st-es-samples { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 18px; }
