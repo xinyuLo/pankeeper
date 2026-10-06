@@ -179,15 +179,33 @@ const mediaTouched = ref(false)
 
 const qmsOpts = computed(() => qmsPaths.value.map((p) => ({ value: p.id, label: `#${p.id} · ${p.source_path}` })))
 
+/** 目标目录命中的转存配置（最长前缀优先，对齐后端 _match_dd_link 语义） */
+function hitDd(pred: (d: DdItem) => boolean): DdItem | null {
+  const t = props.target
+  if (!t) return null
+  const dir = selectedDir.value
+  return (
+    (ddStore.items as DdItem[])
+      .filter((d) => d.type === t.type && pred(d) && (dir === d.path || dir.startsWith((d.path || '').replace(/\/+$/, '') + '/')))
+      .sort((a, b) => b.path.length - a.path.length)[0] || null
+  )
+}
+/** 联动可用性（总闸，2026-10-06 用户定稿：什么都没联动就什么都不让选）：
+ * 保存位置没命中任何开了联动的目录 → 开关禁用+自动关，QMS/LitePan 同规则。 */
+const qmsHit = computed(() => hitDd((d) => !!d.qms_on && !!d.qms_id))
+const lpHit = computed(() => hitDd((d) => !!d.lp_on))
+const qmsDisabled = computed(() => mediaBackend.value === 'qms' && !qmsHit.value)
+const lpDisabled = computed(() => mediaBackend.value === 'litepan' && !lpHit.value)
+watch(qmsDisabled, (v) => {
+  if (v) mediaOn.value = false
+})
+watch(lpDisabled, (v) => {
+  if (v) lpOn.value = false
+})
+
 /** 按目标目录前缀自动带出联动目标（对齐后端 _match_dd_link 语义） */
 function autoMatchMedia() {
-  const t = props.target
-  if (!t) return
-  const dir = selectedDir.value
-  const hit = (ddStore.items as DdItem[]).find(
-    (d) => d.type === t.type && d.qms_on && d.qms_id && (dir === d.path || dir.startsWith((d.path || '').replace(/\/+$/, '') + '/')),
-  )
-  qmsSel.value = hit?.qms_id ?? null
+  qmsSel.value = qmsHit.value?.qms_id ?? null
 }
 watch(selectedDir, () => {
   if (!mediaTouched.value) autoMatchMedia()
@@ -311,14 +329,18 @@ function start() {
         </div>
       </div>
 
-      <!-- 联动：按「系统设置 → 联动后端」切换 QMS / LitePan 表单 -->
+      <!-- 联动：按「系统设置 → 联动后端」切换 QMS / LitePan 表单。
+           总闸：保存位置没命中任何开了联动的目录 → 开关禁用+自动关（什么都不让选） -->
       <div class="tm-media">
         <template v-if="mediaBackend === 'qms'">
           <label class="tm-media-switch">
-            <a-switch v-model:checked="mediaOn" size="small" />
+            <a-switch v-model:checked="mediaOn" size="small" :disabled="qmsDisabled" />
             <span>转存完成后联动 QMS 整理</span>
           </label>
-          <template v-if="mediaOn">
+          <div v-if="qmsDisabled" class="tm-hint">
+            该保存位置未配置 QMS 联动——先到「转存配置」给目录开启后才能在这里联动。
+          </div>
+          <template v-else-if="mediaOn">
             <a-select
               v-model:value="qmsSel"
               :options="qmsOpts"
@@ -335,10 +357,13 @@ function start() {
         </template>
         <template v-else>
           <label class="tm-media-switch">
-            <a-switch v-model:checked="lpOn" size="small" />
+            <a-switch v-model:checked="lpOn" size="small" :disabled="lpDisabled" />
             <span>转存完成后推送 LitePan</span>
           </label>
-          <template v-if="lpOn">
+          <div v-if="lpDisabled" class="tm-hint">
+            该保存位置未配置 LitePan 联动——先到「转存配置」给目录开启后才能在这里推送。
+          </div>
+          <template v-else-if="lpOn">
             <a-input
               v-model:value="lpEvent"
               style="width: 100%; margin-top: 10px"
