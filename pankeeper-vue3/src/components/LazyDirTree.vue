@@ -33,6 +33,8 @@ const props = defineProps<{
   initialPath?: string
   /** 根路径锁定：配置后树只展示该目录的子目录（以默认目标目录为根）；空=从网盘真根浏览 */
   rootPath?: string
+  /** 是否显示目录管理工具条（新建/重命名/删除，默认 true）；转存弹窗里关掉 */
+  manageable?: boolean
 }>()
 
 const emit = defineEmits<{ (e: 'select', path: string, fid: string): void }>()
@@ -375,7 +377,7 @@ watch(
 
   <!-- 根模式：自己拉根一层；限高滚动，防止目录太长把弹窗底部按钮顶出屏幕 -->
   <template v-else>
-    <div class="ldt-toolbar">
+    <div v-if="manageable !== false" class="ldt-toolbar">
       <a-button size="small" type="primary" @click="startCreate"><PlusOutlined />新建</a-button>
       <a-button size="small" type="primary" ghost :disabled="!selNode" @click="startRename"><EditOutlined />重命名</a-button>
       <a-popconfirm title="删除该文件夹及其全部内容？" ok-text="删除" cancel-text="取消" :disabled="!selNode" @confirm="doDelete">
