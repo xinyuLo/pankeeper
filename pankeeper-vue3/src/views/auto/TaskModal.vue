@@ -45,6 +45,24 @@ const qmsId = ref<number | null>(null)
 const postLp = ref(false)
 const lpEvent = ref('')
 const mediaBackend = ref<'qms' | 'litepan'>('qms')
+/** LitePan 总闸（2026-10-06 用户定稿"没配联动就什么都不让选"）：保存目录没命中任何
+ *  开了 LitePan 联动的转存配置 → 开关弹回不让开（后端 resolve_litepan_link 同款语义）。 */
+watch(postLp, async (on) => {
+  if (!on) return
+  const dir = (saveDir.value || '').replace(/\/+$/, '')
+  try {
+    const items = await listDdItems()
+    const hit = items.some(
+      (d) => d.type === props.type && d.lp_on && dir && (dir === d.path || dir.startsWith(d.path.replace(/\/+$/, '') + '/')),
+    )
+    if (!hit) {
+      postLp.value = false
+      message.warning('该保存目录还没在「转存配置」里开启 LitePan 联动，先去目录上开启后再联动', 5)
+    }
+  } catch {
+    /* 拉不到配置就不拦（与 QMS 同款宽容） */
+  }
+})
 const strmId = ref<number | null>(null)
 const cron = ref('0 3 * * *')
 /* 正则过滤：只做匹配过滤；文件名改名交给 QMS 刮削统一处理（正则改名已砍）。
