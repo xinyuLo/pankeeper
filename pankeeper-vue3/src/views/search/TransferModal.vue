@@ -265,6 +265,10 @@ function close() {
 function start() {
   const t = props.target
   if (!t) return
+  if (filesLoading.value) {
+    message.warning('正在检测资源，请稍候…')
+    return
+  }
   if (!selectedDir.value) {
     message.warning('请先在右侧选择目标位置')
     return
@@ -461,7 +465,7 @@ function start() {
       </span>
       <span style="flex: 1"></span>
       <a-button @click="close">取消</a-button>
-      <a-button type="primary" @click="start">开始转存</a-button>
+      <a-button type="primary" :disabled="filesLoading" :title="filesLoading ? '正在检测资源，请稍候…' : undefined" @click="start">开始转存</a-button>
     </div>
 
     <!-- 识别歧义候选（同名剧/电影时让用户挑，回填「文件夹更名」） -->

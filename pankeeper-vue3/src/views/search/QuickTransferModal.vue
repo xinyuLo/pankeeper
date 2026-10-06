@@ -245,8 +245,12 @@ const pv = computed(() => {
   return { base: it.path, raw, origin, xrows }
 })
 
-/** 确认 = 入队即走，绝不弹进度条 */
+/** 确认 = 入队即走，绝不弹进度条。资源检测中（清单未回）不允许提交 */
 function onOk() {
+  if (filesLoading.value) {
+    message.warning('正在检测资源，请稍候…')
+    return
+  }
   const it = currentItem.value
   if (!it) {
     message.warning('请先选择保存位置')
