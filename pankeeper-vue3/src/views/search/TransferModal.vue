@@ -622,12 +622,6 @@ function start() {
   padding-bottom: 8px;
   margin-bottom: 4px;
 }
-@media (max-width: 767px) {
-  .tm-split { flex-direction: column; }
-  .tm-rename-row { flex-direction: column; align-items: flex-start; gap: 10px; }
-  .tm-rename { flex: 1 1 100%; width: 100%; }
-  .tm-sub { padding-bottom: 0; }
-}
 .tm-foot {
   display: flex;
   align-items: center;
@@ -731,9 +725,16 @@ function start() {
 .tm-media-switch { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text2); cursor: pointer; margin-right: 24px; }
 .tm-hint { margin-top: 8px; font-size: 12px; color: var(--text3); line-height: 1.65; }
 
-/* 移动端（<768px）：底部操作区改两行（说明一行 + 按钮铺满） */
+/* 移动端（<768px）：⚠️ 本块必须排在所有桌面规则之后——同优先级下后写的赢，
+   之前排前面被 tm-rename/tm-media 的桌面规则覆盖，手机上更名列被 flex-basis
+   撑出 240px 空洞、子目录被推到右边（2026-10-08 实锤） */
 @media (max-width: 767px) {
   .tm-body { max-height: 56dvh; }
+  .tm-split { flex-direction: column; }
+  .tm-rename-row { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .tm-rename { flex: 0 0 auto; width: 100%; }
+  .tm-sub { height: 28px; padding: 0 10px; }
+  .tm-media { min-height: 0; }
   .tm-foot { flex-wrap: wrap; }
   .tm-foot .small { flex: 1 1 100%; margin-bottom: 2px; }
   .tm-foot :deep(.ant-btn) { flex: 1; }
