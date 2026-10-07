@@ -8,6 +8,7 @@ import { CopyOutlined, FolderOpenOutlined } from '@ant-design/icons-vue'
 import PkPager from '@/components/PkPager.vue'
 import LogBox from '@/components/LogBox.vue'
 import { useBackGuard } from '@/composables/useBackGuard'
+import ClearHistoryButton, { type ClearRange } from '@/components/ClearHistoryButton.vue'
 import ShareFilesModal from '@/views/auto/ShareFilesModal.vue'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { DD_MEDIA, DRIVE_META, MAIN_ORDER } from '@/api/mock/meta'
@@ -16,7 +17,7 @@ import type { RecordRow } from '@/api/mock/records'
 import { listQmsPaths, listStrmPaths } from '@/api/modules/dd'
 import { getSettings } from '@/api/modules/settings'
 import {
-  clearRecords3MonthsAgo,
+  clearRecords,
   deleteRecord,
   getRecordLog,
   getRecordShareFiles,
@@ -117,15 +118,17 @@ async function onCopy(r: RecordRow) {
   }
 }
 
-/* ===== 清空三月前记录 ===== */
-async function onClearOld() {
-  const n = await clearRecords3MonthsAgo()
-  if (n > 0) {
-    message.success(`已清空 ${n} 条三月前记录`)
-    await reload()
-  } else {
-    message.info('没有三个月前的记录')
+/** 清空记录（下拉选范围）：搜索历史只清 source=search 的手动转存记录 */
+async function onClear(range: ClearRange) {
+  let before = ''
+  if (range !== 'all') {
+    const d = new Date()
+    d.setMonth(d.getMonth() - { '1m': 1, '3m': 3, '6m': 6 }[range])
+    before = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} 00:00`
   }
+  const n = await clearRecords(before)
+  message.success(n > 0 ? `已清空 ${n} 条记录` : '没有符合条件的记录')
+  await reload()
 }
 
 /* ===== 详情抽屉 ===== */
@@ -307,7 +310,7 @@ async function confirmTrig() {
           <a-input v-model:value="kw" placeholder="资源名称" style="width: 200px" allow-clear />
           <span class="rk-flex1"></span>
           <a-button v-if="mediaBackend === 'qms'" type="primary" ghost @click="openTrig">触发 QMS / STRM</a-button>
-          <a-button danger ghost @click="onClearOld">清空三月前记录</a-button>
+          <ClearHistoryButton @clear="onClear" />
         </div>
         <table v-if="!isMobile" class="rk-table">
           <thead>

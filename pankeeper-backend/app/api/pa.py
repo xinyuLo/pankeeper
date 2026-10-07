@@ -377,6 +377,18 @@ def toggle_task(task_id: int, _user=CurrentUser):
         return {"enabled": t.enabled}
 
 
+@router.delete("/runs")
+def clear_runs(before: str = "", _user=CurrentUser):
+    """清空转存历史（RunHistory）。before = 'YYYY-MM-DD HH:MM:SS'（与 started 同格式），空 = 全部。"""
+    with SessionLocal() as db:
+        q = db.query(RunHistory)
+        if before:
+            q = q.filter(RunHistory.started < before)
+        n = q.delete(synchronize_session=False)
+        db.commit()
+    return {"count": n}
+
+
 @router.get("/runs")
 def all_runs(
     task_id: int | None = None,

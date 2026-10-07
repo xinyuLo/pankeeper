@@ -241,6 +241,18 @@ def test_qms(body: dict, _user=CurrentUser):
     return {"ok": ok, "message": msg}
 
 
+@router.delete("/notify/history")
+def clear_push_history(before: str = "", _user=CurrentUser):
+    """清空推送历史（push_logs）。before = 'YYYY-MM-DD HH:MM:SS'（与 ts 同格式），空 = 全部。"""
+    with SessionLocal() as db:
+        q = db.query(PushLog)
+        if before:
+            q = q.filter(PushLog.ts < before)
+        n = q.delete(synchronize_session=False)
+        db.commit()
+    return {"count": n}
+
+
 @router.get("/notify/history")
 def push_history(limit: int = 50, _user=CurrentUser):
     """推送历史明细（推送历史页数据源）：时间/标题/成败/失败原因，按时间倒序。
