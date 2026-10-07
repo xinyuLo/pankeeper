@@ -38,23 +38,29 @@ export async function deleteRecord(id: number): Promise<void> {
 }
 
 /** 清空三月前记录，返回清掉的条数（0 = 没有三月前数据，页面据此提示） */
-export async function clearRecords3MonthsAgo(): Promise<number> {
+/** 清空搜索历史记录：before = 'MM-DD HH:MM'（该时刻之前），空串 = 全部。返回清除条数。 */
+export async function clearRecords(before: string): Promise<number> {
   if (USE_MOCK) {
-    const cutoff = Date.now() - 90 * 24 * 3600 * 1000
-    const y = new Date().getFullYear()
-    const keep: RecordRow[] = []
     let removed = 0
-    for (const r of recordsStore.items) {
-      const m = /^(\d{2})-(\d{2}) (\d{2}):(\d{2})$/.exec(r.tm)
-      const t = m ? new Date(y, Number(m[1]) - 1, Number(m[2]), Number(m[3]), Number(m[4])).getTime() : 0
-      if (t && t < cutoff) removed++
-      else keep.push(r)
+    if (!before) {
+      removed = recordsStore.items.length
+      recordsStore.items = []
+    } else {
+      const y = new Date().getFullYear()
+      const keep: RecordRow[] = []
+      for (const r of recordsStore.items) {
+        const t = new Date(`${y}-${before.replace(' ', 'T')}`).getTime()
+        const m = /^(\d{2})-(\d{2}) (\d{2}):(\d{2})$/.exec(r.tm)
+        const rt = m ? new Date(y, Number(m[1]) - 1, Number(m[2]), Number(m[3]), Number(m[4])).getTime() : 0
+        if (rt && rt < t) removed++
+        else keep.push(r)
+      }
+      recordsStore.items = keep
     }
-    recordsStore.items = keep
     return mockDelay(removed)
   }
-  const before = new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString()
-  const { count } = await del<{ count: number }>('/records', { params: { before } })
+  const { count } = await del<{ count: number }>(`/records?before=${encodeURIComponent(before)}`)
+  recordsStore.items = recordsStore.items.filter((x) => (before ? x.tm < before : false))
   await listRecords() // 回读对齐 store
   return count
 }

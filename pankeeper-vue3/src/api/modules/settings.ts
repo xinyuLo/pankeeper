@@ -2,7 +2,7 @@
  * 系统设置领域 API —— 双模式。
  * 注意：SendKey/API Key 加密存储、接口只回掩码；前端回传 `****` 开头的值时后端保留旧值。
  */
-import { get, mockDelay, post, put, USE_MOCK } from '../http'
+import { del, get, mockDelay, post, put, USE_MOCK } from '../http'
 import { settingsStore, type SettingsData, type SessionDays } from '../mock/settings'
 
 /** 读取全部设置（四个 tab 一把抓，表单值少没必要拆接口） */
@@ -162,4 +162,11 @@ export async function saveSecurity(payload: {
     new_password: payload.new_password,
     session_days: payload.session_days,
   })
+}
+
+/** 清空推送历史：before = 'YYYY-MM-DD HH:MM:SS'（该时刻之前），空串 = 全部。返回清除条数。 */
+export async function clearPushLogs(before: string): Promise<number> {
+  if (USE_MOCK) return mockDelay(0)
+  const { count } = await del<{ count: number }>(`/notify/history?before=${encodeURIComponent(before)}`)
+  return count
 }
