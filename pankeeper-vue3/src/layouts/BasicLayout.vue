@@ -142,33 +142,75 @@ function logout() {
  * PC 上这两个组件 display:none，桌面布局一根毛都不动。
  * 高频页（首页/搜索/记录/自动）进底栏，低频页收进「更多」底部面板。 */
 const moreOpen = ref(false)
+interface TabSub {
+  label: string
+  icon: any
+  to: string
+}
 interface TabItem {
   key: string
   label: string
   icon: any
   to?: string
+  /** 子菜单（2026-10-08 用户定稿）：点击弹出多项选择，而不是直接跳单页 */
+  sub?: TabSub[]
 }
 const tabs: TabItem[] = [
   { key: 'dashboard', label: '首页', icon: HomeOutlined, to: '/dashboard' },
   { key: 'search', label: '搜索', icon: SearchOutlined, to: '/search' },
-  { key: 'records', label: '记录', icon: FileTextOutlined, to: '/records' },
-  // 自动转存三网盘共用一个 tab：落到 /auto/baidu，另外两家从「更多」进
-  { key: 'auto', label: '自动', icon: ClockCircleOutlined, to: '/auto/baidu' },
+  {
+    key: 'records',
+    label: '记录',
+    icon: FileTextOutlined,
+    sub: [
+      { label: '搜索历史', icon: FileTextOutlined, to: '/records' },
+      { label: '转存历史', icon: HistoryOutlined, to: '/auto/history' },
+      { label: '推送历史', icon: NotificationOutlined, to: '/push-logs' },
+    ],
+  },
+  {
+    key: 'auto',
+    label: '自动',
+    icon: ClockCircleOutlined,
+    sub: [
+      { label: '百度网盘', icon: CloudOutlined, to: '/auto/baidu' },
+      { label: '夸克网盘', icon: CloudOutlined, to: '/auto/quark' },
+      { label: '115 网盘', icon: CloudOutlined, to: '/auto/115' },
+    ],
+  },
   { key: 'more', label: '更多', icon: AppstoreOutlined },
 ]
 const activeTab = computed(() => {
   if (moreOpen.value) return 'more'
+  // 子菜单型 tab：当前路由落在它的子项里就点亮它（如 /push-logs 点亮「记录」）
+  const withSub = tabs.find((x) => x.sub?.some((sub) => sub.to === route.path))
+  if (withSub) return withSub.key
   if (route.name === 'auto') return 'auto'
   return (route.name as string) || 'dashboard'
 })
 
+/** 子菜单展开中的 tab key（点同 tab 收起；点其他 tab 切走） */
+const subOpen = ref('')
+
 function tapTab(t: TabItem) {
   if (t.key === 'more') {
     moreOpen.value = !moreOpen.value
+    subOpen.value = ''
     return
   }
   moreOpen.value = false
+  if (t.sub) {
+    subOpen.value = subOpen.value === t.key ? '' : t.key
+    return
+  }
+  subOpen.value = ''
   if (route.name !== t.key) router.push(t.to!)
+}
+
+function goSub(sub: TabSub) {
+  subOpen.value = ''
+  moreOpen.value = false
+  router.push(sub.to)
 }
 
 /* 「更多」面板只收底栏没有的入口（转存配置/三网盘自动/系统管理四页），跳转复用 go() */
@@ -281,17 +323,32 @@ watch(
 
     <!-- ===== 以下为移动端专用（<768px 才显示，PC display:none） ===== -->
     <nav class="m-tabbar">
-      <button
-        v-for="t in tabs"
-        :key="t.key"
-        type="button"
-        class="m-tab"
-        :class="{ on: activeTab === t.key }"
-        @click="tapTab(t)"
-      >
-        <component :is="t.icon" class="m-tab-ico" />
-        <span>{{ t.label }}</span>
-      </button>
+      <div v-for="t in tabs" :key="t.key" class="m-tab-wrap">
+        <Transition name="msheet">
+          <div v-if="t.sub && subOpen === t.key" class="m-submenu">
+            <button
+              v-for="sub in t.sub"
+              :key="sub.to"
+              type="button"
+              class="m-submenu-item"
+              :class="{ on: route.path === sub.to }"
+              @click="goSub(sub)"
+            >
+              <component :is="sub.icon" class="m-submenu-ico" />
+              <span>{{ sub.label }}</span>
+            </button>
+          </div>
+        </Transition>
+        <button
+          type="button"
+          class="m-tab"
+          :class="{ on: activeTab === t.key }"
+          @click="tapTab(t)"
+        >
+          <component :is="t.icon" class="m-tab-ico" />
+          <span>{{ t.label }}</span>
+        </button>
+      </div>
     </nav>
 
     <Transition name="msheet">
@@ -621,6 +678,45 @@ html[data-theme='dark'] .sidebar {
   }
   .m-tab .m-tab-ico { font-size: 20px; line-height: 1; }
   .m-tab.on { color: var(--primary); font-weight: 500; }
+  .m-tab-wrap { flex: 1; position: relative; display: flex; }
+  .m-tab-wrap .m-tab { flex: 1; }
+  /* tab 子菜单浮层：竖排小卡（记录=三个历史 / 自动=三网盘） */
+  .m-submenu {
+    position: absolute;
+    bottom: calc(100% + 10px);
+    left: 50%;
+    transform: translateX(-50%);
+    min-width: 132px;
+    padding: 4px;
+    border-radius: 12px;
+    background: var(--card);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.16);
+    border: 1px solid var(--split);
+    display: flex;
+    flex-direction: column;
+    z-index: 90;
+  }
+  html[data-theme='dark'] .m-submenu { background: #1d212b; }
+  .m-submenu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 12px;
+    border: none;
+    background: none;
+    border-radius: 8px;
+    font-size: 13px;
+    font-family: inherit;
+    color: var(--text);
+    cursor: pointer;
+    white-space: nowrap;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .m-submenu-item + .m-submenu-item { margin-top: 2px; }
+  .m-submenu-item .m-submenu-ico { font-size: 14px; color: var(--text3); }
+  .m-submenu-item.on { color: var(--primary); background: var(--primary-bg); font-weight: 500; }
+  .m-submenu-item.on .m-submenu-ico { color: var(--primary); }
+  .m-submenu-item:active { background: var(--surface-3); }
 
   /* ---- 「更多」底部面板 ---- */
   .m-mask {
