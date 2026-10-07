@@ -44,7 +44,7 @@ onMounted(load)
 /* ===== 详情抽屉：拉该条推送的完整正文快照 ===== */
 const detailOpen = ref(false)
 useBackGuard(detailOpen)
-const md = new MarkdownIt({ breaks: true })
+const md = new MarkdownIt({ breaks: true, linkify: true })
 /** 正文按 Markdown 渲染（与 Server酱展示同观感：标题/加粗/图片/段落） */
 const detailHtml = computed(() => (detail.value?.content ? md.render(detail.value.content) : ''))
 const detailLoading = ref(false)
@@ -207,8 +207,13 @@ function kindTxt(k: string) {
 @media (max-width: 767px) {
   .filterbar { flex-wrap: wrap; }
 }
-/* Markdown 正文（Server酱同观感）：标题/加粗/图片/段落间距 */
+/* Markdown 正文（Server酱同观感）：固定高度浅灰框，内部滚动 */
 .md-body {
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border-radius: var(--r-sm, 8px);
   font-size: 13.5px;
   line-height: 1.8;
   color: var(--text);
