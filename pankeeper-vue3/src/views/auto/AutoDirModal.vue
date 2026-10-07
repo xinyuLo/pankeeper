@@ -9,8 +9,10 @@ import { DRIVE_META } from '@/api/mock/meta'
 import { getRootDirs } from '@/api/modules/accounts'
 import type { MainDriveType } from '@/types/model'
 
+import { useBackGuard } from '@/composables/useBackGuard'
 const props = defineProps<{ open: boolean; type: MainDriveType; initial: string; accId?: number | null }>()
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void; (e: 'picked', path: string): void }>()
+useBackGuard(() => props.open, () => emit('update:open', false))
 
 const meta = computed(() => DRIVE_META[props.type])
 

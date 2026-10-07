@@ -24,8 +24,10 @@ import {
 } from '@/api/modules/tasks'
 import type { DdQmsPath, DdStrmPath, MainDriveType, PaTask } from '@/types/model'
 
+import { useBackGuard } from '@/composables/useBackGuard'
 const props = defineProps<{ open: boolean; type: MainDriveType; task: PaTask | null; suspended?: boolean }>()
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void; (e: 'saved', task: PaTask): void }>()
+useBackGuard(() => props.open, () => emit('update:open', false))
 
 const meta = computed(() => DRIVE_META[props.type])
 const editing = computed(() => !!(props.task && props.task.id))

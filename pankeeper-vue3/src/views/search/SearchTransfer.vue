@@ -5,6 +5,7 @@
  * 检索动效：顶部不确定进度条 → 扫源计数 → 骨架屏 → 结果替换 + 数字滚动。
  * 转存动作一律入队即走（队列引擎在弹窗内调用），本页只负责打开弹窗并保持互斥。 */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useBackGuard } from '@/composables/useBackGuard'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { CopyOutlined, FolderOpenOutlined, SearchOutlined } from '@ant-design/icons-vue'
@@ -392,11 +393,13 @@ function quickTitle(r: SearchResultItem) {
 
 /* ===== 两个弹窗：互斥（同一时刻只开一个），Esc 由 antd Modal 自带 ===== */
 const qsOpen = ref(false)
+useBackGuard(qsOpen)
 const qsType = ref<DriveType | null>(null)
 const qsName = ref('')
 const qsUrl = ref('')
 const qsCode = ref('')
 const tmOpen = ref(false)
+useBackGuard(tmOpen)
 const tmTarget = ref<TransferTarget | null>(null)
 
 async function openQuick(r: SearchResultItem) {

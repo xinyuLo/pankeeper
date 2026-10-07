@@ -17,6 +17,7 @@ import { ddStore } from '@/api/mock/dd'
 import RecognizePicker from '@/components/RecognizePicker.vue'
 import type { DdItem, DdQmsPath, DriveType, MainDriveType } from '@/types/model'
 
+import { useBackGuard } from '@/composables/useBackGuard'
 const props = defineProps<{
   open: boolean
   /** 目标网盘类型（只有配过转存配置的网盘才进得来） */
@@ -28,6 +29,7 @@ const props = defineProps<{
   }>()
 
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>()
+useBackGuard(() => props.open, () => emit('update:open', false))
 
 /** 保存位置候选：直接读 ddStore（reactive）—— 搜索页进入时已加载过，
  *  所以打开弹窗的瞬间就有数据，不必等网络，也就不会先闪一下「还没配置转存目录」的空态。 */

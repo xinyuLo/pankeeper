@@ -6,6 +6,7 @@
  * 增删改走 api/modules/dd.ts（mockDelay 包一层，后端就绪后只换实现）。
  * ===================================================================== */
 import { computed, onMounted, ref, watch } from 'vue'
+import { useBackGuard } from '@/composables/useBackGuard'
 import { message } from 'ant-design-vue'
 import LazyDirTree from '@/components/LazyDirTree.vue'
 import PkPager from '@/components/PkPager.vue'
@@ -66,6 +67,7 @@ async function doDelete(it: DdItem) {
 
 /* ===== 新增 / 编辑弹窗 ===== */
 const modalOpen = ref(false)
+useBackGuard(modalOpen)
 const editingId = ref<number | null>(null) // null = 新增
 const fName = ref('')
 /** 目录类型（电影/电视节目）：**必填**——新建初始未选（淡红提醒），不选不能保存；
@@ -116,6 +118,7 @@ async function loadQmsStrmPaths() {
 
 /* ===== 目录选择弹窗（与网盘连接页/任务弹窗统一）：LazyDirTree 真实目录，只显示文件夹 ===== */
 const bdOpen = ref(false)
+useBackGuard(bdOpen)
 const bdPath = ref('')
 const bdTree = ref<InstanceType<typeof LazyDirTree> | null>(null)
 const bdRefreshing = ref(false)
