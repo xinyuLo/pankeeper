@@ -190,6 +190,9 @@ class QueueEngine:
                 "mediaOff": bool(item.get("media_off", False)),
                 # LitePan 事件名（弹窗覆盖；空=回退目录/全局默认）。不持久化（同 qmsId 生命周期）
                 "lpEvent": (item.get("lp_event") or item.get("lpEvent") or "").strip(),
+                # 过滤其他文件（普通转存弹窗开关）：None=弹窗没带（快速转存/自动任务）→ 按目录配置；
+                # 显式 True/False = 以弹窗为准。不持久化（同 qmsId 生命周期）
+                "onlyVideo": item.get("only_video"),
             }
             self.state["tasks"].append(t)
             pos = sum(1 for x in self.state["tasks"] if x["status"] in ("wait", "run"))

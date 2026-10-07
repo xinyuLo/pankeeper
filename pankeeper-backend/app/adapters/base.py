@@ -9,6 +9,35 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 
+# 视频扩展名白名单：目录「过滤其他文件」开关与 QMS 等待/未见统计共用这一份口径
+# （QMS 只整理视频；nfo/海报图片/字幕等杂件会被它过滤、永不建刮削记录——
+# 2026-10-07 实锤：杂件被算进等待清单 → 推送干等 30 分钟超时，Server酱静默）
+VIDEO_EXTS = {
+    ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".3gp", ".ts",
+    ".iso",  # 蓝光/DVD 原盘镜像（用户点名：iso 也是视频）
+}
+
+
+def is_video_file(name: str) -> bool:
+    """按扩展名判断是否视频文件（无扩展名一律不算）。"""
+    dot = name.rfind(".")
+    if dot < 0:
+        return False
+    return name[dot:].lower() in VIDEO_EXTS
+
+
+def split_video_files(files: list["ShareFile"]) -> tuple[list["ShareFile"], list[str]]:
+    """把分享清单拆成 (保留, 剔除文件名)。目录条目永远保留——子目录里的视频还要靠它进入。"""
+    kept: list[ShareFile] = []
+    dropped: list[str] = []
+    for f in files:
+        if f.is_dir or is_video_file(f.name):
+            kept.append(f)
+        else:
+            dropped.append(f.name)
+    return kept, dropped
+
+
 class ShareBanned(Exception):
     """分享失效/被取消：调用方应熔断标记，不再对死链接发请求。"""
 
@@ -19,6 +48,14 @@ class CredentialExpired(Exception):
 
 class AdapterError(Exception):
     """一般转存失败。"""
+
+
+class RiskControlError(AdapterError):
+    """网盘风控/限频（115 的 302 跳风控页、406 限频、验证码告警）。
+
+    这是账号级临时封禁：任何自动重试都是拿账号往枪口上撞（越打封越久，
+    2026-10-07 用户实锤目录浏览触发风控）。后端据此回 HTTP 429，前端见到
+    429 一次都不重打。"""
 
 
 @dataclass
@@ -91,6 +128,14 @@ class CloudAdapter(ABC):
     @abstractmethod
     def list_share(self, spec: TaskSpec) -> list[ShareFile]:
         """解析分享并列出文件清单（已按 include_subdirs / 排除清单 / 自动下钻处理）。"""
+
+    def probe_share(self, spec: TaskSpec) -> list[ShareFile] | None:
+        """死活预检的轻量探针：只拉**第一页小分页**，非空即有效（判死活不需要整个根层）。
+
+        默认不实现（返回 None → 调用方回落 list_share）；115/夸克各实现一份——
+        它们的根层翻页是大头：夸克每页 50 条、500 文件根层要 10 连发，115 一次
+        limit=1000 的大 JSON（2026-10-08 用户实锤"检测有效链太慢"）。"""
+        return None
 
     @abstractmethod
     def list_dir_names(self, dir_path: str) -> set[str]:

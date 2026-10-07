@@ -184,10 +184,15 @@ class QuarkAdapter(CloudAdapter):
             ]
         return files
 
-    def _walk_share(self, stoken: str, pwd_id: str, pdir_fid: str, include_subdirs: bool, depth: int, base: str = "/") -> list[ShareFile]:
+    def probe_share(self, spec: TaskSpec) -> list[ShareFile]:
+        """死活探针：prepare + 根层第一页 10 条（翻完整根层是有效链检测慢的主因）。"""
+        parsed = self.prepare(spec)
+        return self._walk_share(self._stoken, parsed["pwd_id"], parsed["pdir_fid"], False, depth=0, base="/", max_pages=1, page_size=10)
+
+    def _walk_share(self, stoken: str, pwd_id: str, pdir_fid: str, include_subdirs: bool, depth: int, base: str = "/", max_pages: int | None = None, page_size: int = 50) -> list[ShareFile]:
         out: list[ShareFile] = []
         page = 1
-        while True:
+        while max_pages is None or page <= max_pages:
             data = self._req(
                 "GET",
                 "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/detail",
@@ -196,7 +201,7 @@ class QuarkAdapter(CloudAdapter):
                     "stoken": stoken,
                     "pdir_fid": pdir_fid,
                     "_page": page,
-                    "_size": 50,
+                    "_size": page_size,
                     "_fetch_total": 1,
                     "ver": 2,
                 },
@@ -216,7 +221,7 @@ class QuarkAdapter(CloudAdapter):
                     )
                 )
             total = (d.get("metadata") or {}).get("_total")
-            if not items or (total is not None and len(out) >= int(total)) or len(items) < 50:
+            if not items or (total is not None and len(out) >= int(total)) or len(items) < page_size:
                 break
             page += 1
         if include_subdirs and depth < 8:
@@ -316,9 +321,10 @@ class QuarkAdapter(CloudAdapter):
         # ⚠️ 与百度同款，此前漏了会全量转（115 侧 2026-10-04 实锤后同修）
         if spec.only_paths:
             def _kept(f: ShareFile) -> bool:
+                rel = f.path.strip("/")  # 两侧同口径剥斜杠——只剥 sel 会让顶层文件永远比不中（2026-10-08 实锤全跳过）
                 for sel in spec.only_paths or set():
                     sel = sel.strip("/")
-                    if sel and (f.path == sel or f.path.startswith(sel + "/")):
+                    if sel and (rel == sel or rel.startswith(sel + "/")):
                         return True
                 return False
             before = len(save_list)

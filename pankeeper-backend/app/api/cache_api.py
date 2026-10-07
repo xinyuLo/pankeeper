@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 
 from fastapi import APIRouter, HTTPException
 
+from ..adapters.base import AdapterError, CredentialExpired, RiskControlError
 from ..db import SessionLocal
 from ..deps import CurrentUser, make_adapter_for
-from ..models import DirPathCache
+from ..models import Account, DirPathCache
 from ..services.dircache import dir_cache
 from ..services.settings_svc import get_group, save_group
 
@@ -61,20 +63,43 @@ def list_cache_trees(_user=CurrentUser):
 
 @router.post("/cache/trees/{key:path}/refresh")
 def refresh_tree(key: str, _user=CurrentUser):
-    """key 形如 "quark/main/0"（type/account/cid）。
+    """行内「刷新」：**强制实拉网盘并回写缓存**（不是只失效——失效=下次浏览才重拉，
+    那是「清除」的语义，两者此前共用一个函数，刷新成了换皮的清除，2026-10-08 用户发现）。
 
+    key 形如 "quark/main/0"（type/account/cid）。
     ⚠️ 必须用 :path 转换器——key 本身含斜杠，默认 {key} 只匹配单段，
     "baidu/main/0" 一律 404（行内刷新/清除点了没反应的根因，2026-10-04）。"""
     parts = key.split("/", 2)
     if len(parts) != 3:
         raise HTTPException(status_code=400, detail="key 格式应为 type/account/cid")
-    dir_cache.invalidate((parts[0], parts[1], parts[2]))
+    type_, acc, cid = parts
+    acc_id = int(acc) if acc.isdigit() else None  # "main" = 该类型默认账号
+    # 键形状分两种（与 list_files 的落键一致）：根层键是**路径**（/1.影视、/），子层键是 fid——
+    # 路径键必须走 parent='0'+path 的解析分支，fid 键走 parent 直列，拿错分支实拉必报错
+    parent, path = ("0", cid) if cid.startswith("/") else (cid, "")
+    try:
+        dir_cache.get_or_load(
+            (type_, acc, cid),
+            lambda: _load_dir_payload(type_, acc_id, parent, path),
+            force=True,
+        )
+    except RiskControlError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except CredentialExpired as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except AdapterError as e:
+        raise HTTPException(status_code=502, detail=str(e))
     return {"ok": True}
 
 
 @router.delete("/cache/trees/{key:path}")
 def clear_tree(key: str, _user=CurrentUser):
-    return refresh_tree(key, _user)
+    """行内「清除」：只把缓存条目丢掉（下次浏览该目录时才实拉），不主动打网盘。"""
+    parts = key.split("/", 2)
+    if len(parts) != 3:
+        raise HTTPException(status_code=400, detail="key 格式应为 type/account/cid")
+    dir_cache.invalidate((parts[0], parts[1], parts[2]))
+    return {"ok": True}
 
 
 @router.delete("/cache/trees")
@@ -99,12 +124,20 @@ def list_files(type: str = "quark", parent: str = "0", path: str = "", force_ref
     # 之前用 "p:"+path 当键，初始化浏览与子层展开互不命中，同一目录缓存了两份还各自 miss。
     key_id = path if (path and parent in ("0", "")) else parent
     flag: dict = {}
-    items = dir_cache.get_or_load(
-        (type, acc_key, key_id),
-        lambda: _load_dir_payload(type, acc_id, parent, path),
-        force=force_refresh,
-        flag=flag,
-    )
+    try:
+        items = dir_cache.get_or_load(
+            (type, acc_key, key_id),
+            lambda: _load_dir_payload(type, acc_id, parent, path),
+            force=force_refresh,
+            flag=flag,
+        )
+    except RiskControlError as e:
+        # 风控/限频回 429：前端见到 429 一次都不重试（盲目重试=越打封越久，2026-10-07 实锤）
+        raise HTTPException(status_code=429, detail=str(e))
+    except CredentialExpired as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except AdapterError as e:
+        raise HTTPException(status_code=502, detail=str(e))
     # cached=False = 这层真打了网盘（前端据此决定下一次列目录前是否要风控节流）
     return {"cached": bool(flag.get("cached")), "items": items}
 
@@ -166,24 +199,26 @@ def _load_dir_payload(type: str, acc_id: int | None, parent: str, path: str):
     raise HTTPException(status_code=400, detail=f"网盘 {type} 适配器尚未实现")
 
 
-# ===== 全树预热：保存 Cookie 验证通过后一次性把目录树灌进缓存 =====
+# ===== 全树预热：把目录树灌进缓存。**全局单工队列** =====
 # 上限防失控：目录数/深度到顶就停，剩余的浏览时按需缓存
 WARM_MAX_DIRS = 300
 WARM_MAX_DEPTH = 5
-_WARM_JOBS: dict[str, dict] = {}
+# 任务键 (type, acc_key)；**只有一个 worker 线程按序消费**——同网盘多账号并行预热
+# 就是拿几个账号同时撞同一家风控（2026-10-07 用户定稿：进队列串行跑）
+_WARM_JOBS: dict[tuple, dict] = {}
+_WARM_QUEUE: deque = deque()
 _WARM_LOCK = threading.Lock()
+_WARM_WORKER: threading.Thread | None = None
+WARM_TYPES = ("baidu", "quark", "115")
 
 
-def _warm_walk(type: str) -> None:
-    from collections import deque
-
-    job = _WARM_JOBS[type]
-    job.update(status="running", done=0, total=1, message="")
+def _warm_walk(type: str, acc_id: int | None, job: dict) -> None:
+    job["status"] = "running"
+    root = "0" if type in ("quark", "115") else "/"
+    queue: deque = deque([(root, 0)])
+    seen: set[str] = set()
+    acc_key = str(acc_id) if acc_id else "main"
     try:
-        # 根节点：quark 用 fid，baidu 用路径（fid 即完整路径）
-        root = "0" if type == "quark" else "/"
-        queue: deque[tuple[str, int]] = deque([(root, 0)])
-        seen: set[str] = set()
         while queue:
             key_id, depth = queue.popleft()
             if key_id in seen:
@@ -192,7 +227,10 @@ def _warm_walk(type: str) -> None:
             if job["done"] >= WARM_MAX_DIRS or depth > WARM_MAX_DEPTH:
                 job["message"] = f"已达上限（{WARM_MAX_DIRS} 个目录 / {WARM_MAX_DEPTH} 层），其余浏览时按需缓存"
                 break
-            payload = dir_cache.get_or_load((type, "main", key_id), lambda: _load_dir_payload(type, None, key_id, ""))
+            payload = dir_cache.get_or_load(
+                (type, acc_key, key_id),
+                lambda: _load_dir_payload(type, acc_id, key_id, ""),
+            )
             job["done"] += 1
             job["total"] = max(job["total"], job["done"])
             for it in payload:
@@ -205,25 +243,99 @@ def _warm_walk(type: str) -> None:
         job["message"] = str(e)
 
 
+def _warm_worker() -> None:
+    """单工消费线程：一次只跑一个预热任务，跑完才取下一个（跨网盘也串行——
+    不同的盘并行虽不共享风控，但没必要赶时间，慢即是稳）。"""
+    global _WARM_WORKER
+    while True:
+        with _WARM_LOCK:
+            if not _WARM_QUEUE:
+                _WARM_WORKER = None
+                return
+            key = _WARM_QUEUE.popleft()
+            job = _WARM_JOBS.get(key)
+            if job is None:
+                continue
+        _warm_walk(key[0], job.get("acc_id"), job)
+
+
+def _acc_name(type: str, acc_id: int | None) -> str:
+    """账号展示名（预热进度里说清当前在跑谁）：别名 > 昵称 > 类型#id。"""
+    if acc_id is None:
+        return f"{type} 默认账号"
+    try:
+        with SessionLocal() as db:
+            acc = db.get(Account, int(acc_id))
+    except Exception:  # noqa: BLE001
+        return f"{type}#{acc_id}"
+    if acc is None:
+        return f"{type}#{acc_id}"
+    return acc.alias or acc.nickname or f"{type}#{acc_id}"
+
+
+def _enqueue_warm(type: str, acc_id: int | None) -> dict:
+    """入队一个预热任务；同 (type, 账号) 已在排队/在跑则直接回现状（不重复排）。"""
+    acc_key = str(acc_id) if acc_id else "main"
+    key = (type, acc_key)
+    global _WARM_WORKER
+    with _WARM_LOCK:
+        job = _WARM_JOBS.get(key)
+        if job and job["status"] in ("queued", "running"):
+            return job
+        _WARM_JOBS[key] = {
+            "type": type, "acc_id": acc_id, "acc_key": acc_key, "acc_name": _acc_name(type, acc_id),
+            "status": "queued", "done": 0, "total": 1, "message": "",
+        }
+        _WARM_QUEUE.append(key)
+        if _WARM_WORKER is None or not _WARM_WORKER.is_alive():
+            _WARM_WORKER = threading.Thread(target=_warm_worker, daemon=True, name="warm-worker")
+            _WARM_WORKER.start()
+        return _WARM_JOBS[key]
+
+
 @router.post("/cache/trees/warm")
 def warm_trees(body: dict, _user=CurrentUser):
-    """后台启动某网盘的全树预热，立即返回。重复调用时若已在跑则直接回当前进度。"""
+    """后台入队某网盘的全树预热（acc_id 空 = 该类型默认账号），立即返回。
+    重复调用时若同账号已在排队/在跑则直接回当前进度。"""
     type = body.get("type") or ""
-    if type not in ("baidu", "quark"):
+    if type not in WARM_TYPES:
         raise HTTPException(status_code=400, detail=f"网盘 {type} 暂不支持目录预热")
-    with _WARM_LOCK:
-        job = _WARM_JOBS.get(type)
-        if job and job["status"] == "running":
-            return {"type": type, **job}
-        _WARM_JOBS[type] = {"status": "queued", "done": 0, "total": 1, "message": ""}
-    threading.Thread(target=_warm_walk, args=(type,), daemon=True).start()
-    return {"type": type, **_WARM_JOBS[type]}
+    acc_id = body.get("acc_id")
+    job = _enqueue_warm(type, int(acc_id) if acc_id else None)
+    return {**job}
 
 
 @router.get("/cache/trees/warm/status")
-def warm_status(type: str, _user=CurrentUser):
-    job = _WARM_JOBS.get(type) or {"status": "idle", "done": 0, "total": 0, "message": ""}
-    return {"type": type, **job}
+def warm_status(type: str, acc_id: int | None = None, _user=CurrentUser):
+    acc_key = str(acc_id) if acc_id else "main"
+    job = _WARM_JOBS.get((type, acc_key))
+    return {**job} if job else {"type": type, "status": "idle", "done": 0, "total": 0, "message": ""}
+
+
+@router.post("/cache/trees/warm-all")
+def warm_all(_user=CurrentUser):
+    """全部已连接账号入队预热（单工队列串行跑，同网盘多账号绝不并行——防风控）。"""
+    with SessionLocal() as db:
+        rows = db.query(Account).filter(Account.status == "connected").order_by(Account.id).all()
+        targets = [(r.type, r.id) for r in rows if r.type in WARM_TYPES]
+    for type, acc_id in targets:
+        _enqueue_warm(type, acc_id)
+    return {"count": len(targets)}
+
+
+@router.get("/cache/trees/warm-all/status")
+def warm_all_status(_user=CurrentUser):
+    """预热队列总览：排队数 / 在跑的当前任务 / 已完成任务数（缓存配置页轮询用）。"""
+    with _WARM_LOCK:
+        jobs = [dict(v) for v in _WARM_JOBS.values()]
+    return {
+        "total_jobs": len(jobs),
+        "done_jobs": sum(1 for j in jobs if j["status"] in ("done", "error")),
+        "failed_jobs": sum(1 for j in jobs if j["status"] == "error"),
+        "queued": sum(1 for j in jobs if j["status"] == "queued"),
+        "current": next((j for j in jobs if j["status"] == "running"), None),
+        "jobs": jobs,
+    }
 
 
 def _resolve_path(adapter, path: str) -> str:

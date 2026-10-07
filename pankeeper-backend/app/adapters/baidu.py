@@ -692,11 +692,12 @@ class BaiduClient(CloudAdapter):
         # 勾了目录=该目录整棵子树（按分享内相对路径前缀匹配）
         if spec.only_paths:
             def _kept(f: ShareFile) -> bool:
+                rel = f.path.strip("/")  # 两侧同口径剥斜杠（同 quark 2026-10-08 修复）
                 for sel in spec.only_paths or set():
                     sel = sel.strip("/")
                     if not sel:
                         continue
-                    if f.path == sel or f.path.startswith(sel + "/"):
+                    if rel == sel or rel.startswith(sel + "/"):
                         return True
                 return False
             before = len(save_list)

@@ -366,8 +366,8 @@ async function aliveOrBlock(r: SearchResultItem): Promise<boolean> {
   try {
     const res = await checkShareLink(r.t, r.url, r.share_code || '')
     if (res.state === 'bad') {
-      if (tipShown) message.warning({ content: `分享已失效（${res.summary || '链接检测未通过'}），不转了`, key: 'linkcheck', duration: 5 })
-      else message.warning(`分享已失效（${res.summary || '链接检测未通过'}），不转了`, 5)
+      if (tipShown) message.warning({ content: `分享已失效（${res.summary || '链接检测未通过'}）`, key: 'linkcheck', duration: 5 })
+      else message.warning(`分享已失效（${res.summary || '链接检测未通过'}）`, 5)
       return false
     }
     if (tipShown) message.success({ content: '链接有效', key: 'linkcheck', duration: 1 })

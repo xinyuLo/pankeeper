@@ -6,18 +6,21 @@
  * 配置改完即静默写回 mock store（原型如此）；刷新=重置过期时间，清除=删行。
  * 水位条颜色随实际占用变化：<75 绿 / 75-85 黄 / >85 红。
  * ===================================================================== */
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
-import { message } from 'ant-design-vue'
-import { LoadingOutlined } from '@ant-design/icons-vue'
+import { computed, createVNode, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { message, Modal } from 'ant-design-vue'
+import { ExclamationCircleOutlined, LoadingOutlined } from '@ant-design/icons-vue'
 import { DRIVE_META } from '@/api/mock/meta'
+import { getRootDirs } from '@/api/modules/accounts'
 import {
   clearAllCacheTrees,
   clearCacheTree,
   getCacheConfig,
   listCacheTrees,
-  refreshAllCacheTrees,
   refreshCacheTree,
   saveCacheConfig,
+  warmAllAccounts,
+  warmAllStatus,
+  type WarmAllStatus,
 } from '@/api/modules/cache'
 import type { CacheCfg, CacheTree, MemUsage } from '@/api/mock/cache'
 
@@ -35,6 +38,8 @@ const cfg = reactive<CacheCfg>({
 /* 后端没响应时保持 0 占用，别拿 mock 假值糊弄人 */
 const mem = ref<MemUsage>({ pct: 0, usedMb: 0, totalMb: 200 })
 const trees = ref<CacheTree[]>([])
+/** 各网盘默认根目录（行内刷新只刷这一层；空 = 刷真根） */
+const rootDirs = ref<Record<string, string>>({})
 
 let loaded = false // 首次装载期间不回写（否则 onMounted 的赋值会触发一轮保存）
 onMounted(async () => {
@@ -42,6 +47,7 @@ onMounted(async () => {
   Object.assign(cfg, r.cfg)
   mem.value = r.mem
   trees.value = await listCacheTrees()
+  rootDirs.value = await getRootDirs().catch(() => ({}))
   // watch 回调不是同步跑的（flush:'pre' 排队），等这一拍过去再放行
   await nextTick()
   loaded = true
@@ -194,13 +200,21 @@ async function onRefreshRow(row: AccRow) {
   window.clearTimeout(flashTimers[row.key])
   delete flash[row.key]
   try {
-    for (const id of row.ids) await refreshCacheTree(id)
+    // 只刷**默认根层**（2026-10-08 用户定稿）：深层不跟着实拉——几百层逐层打网盘又慢又
+    // 容易撞限速，深层的更新交给 TTL 过期或下次浏览时的懒加载
+    const rootPath = rootDirs.value[row.type] || ''
+    const acc = String(row.ids[0] ?? '').split('/')[1] || 'main'
+    const rootKey = `${row.type}/${acc}/${rootPath || (row.type === 'baidu' ? '/' : '0')}`
+    await refreshCacheTree(rootKey)
     await reload()
     const done = accRows.value.find((r) => r.key === row.key)
     flash[row.key] = `已刷新 · ${done?.entries ?? 0} 条`
     window.clearTimeout(flashTimers[row.key])
     flashTimers[row.key] = window.setTimeout(() => delete flash[row.key], 4000)
-    message.success(`已刷新「${row.accName}」的缓存`)
+    message.success(`已刷新「${row.accName}」的默认根层${rootPath ? `（${rootPath}）` : ''}`)
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(`刷新失败：${detail || '网盘拉取失败'}`, 5)
   } finally {
     refreshing[row.key] = false
   }
@@ -210,16 +224,79 @@ async function onClearRow(row: AccRow) {
   message.success(`已清除「${row.accName}」的缓存`)
   await reload()
 }
-async function onRefreshAll() {
-  await refreshAllCacheTrees()
-  message.success('已刷新全部缓存')
-  await reload()
-}
 async function onClearAll() {
   await clearAllCacheTrees()
   message.success('缓存已清空，下次打开转存弹窗会重新拉取')
   await reload()
 }
+
+/* ===== 缓存预热：全部已连接账号入队，后端单工队列串行跑（同网盘多账号绝不并行——防风控） ===== */
+const warmRunning = ref(false)
+const warmInfo = ref('') // 按钮旁的实时进度行
+let warmPollTimer: number | undefined
+
+function warmLine(st: WarmAllStatus): string {
+  const cur = st.current
+  const curTxt = cur
+    ? `当前：${DRIVE_META[cur.type as 'baidu']?.name || cur.type}${cur.acc_name ? ' · ' + cur.acc_name : ''}（${cur.done} 个文件夹）`
+    : ''
+  const base = `预热中 ${st.done_jobs}/${st.total_jobs} 个账号`
+  return curTxt ? `${base} · ${curTxt}` : `${base}（排队 ${st.queued}）`
+}
+
+function onWarmAll() {
+  Modal.confirm({
+    title: '重新缓存全部网盘？',
+    content: '将把所有已连接账号的目录树逐个排队预热（串行跑，同网盘多账号也不会并行，避免触发风控）。大网盘可能需要几分钟到十几分钟。',
+    okText: '开始预热',
+    cancelText: '取消',
+    onOk: () => startWarmAll(),
+  })
+}
+
+async function startWarmAll() {
+  try {
+    const { count } = await warmAllAccounts()
+    if (!count) {
+      message.info('没有已连接的账号，无从预热')
+      return
+    }
+    warmRunning.value = true
+    warmInfo.value = `已入队 ${count} 个账号，等待预热…`
+    pollWarm()
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(`预热入队失败：${detail || '请求失败'}`, 5)
+  }
+}
+
+/** 轮询队列总览：全部落定（无排队无在跑）→ 汇报结果并停表 */
+function pollWarm() {
+  window.clearTimeout(warmPollTimer)
+  warmPollTimer = window.setTimeout(async () => {
+    try {
+      const st = await warmAllStatus()
+      const active = st.queued > 0 || !!st.current
+      if (!active) {
+        warmRunning.value = false
+        warmInfo.value = ''
+        if (st.total_jobs === 0) return // 队列空转一拍（后端重启过）：静默收场
+        if (st.failed_jobs > 0) message.warning(`预热完成：${st.done_jobs - st.failed_jobs} 成功 / ${st.failed_jobs} 失败（失败账号可稍后重试）`, 6)
+        else message.success(`预热完成 · 共 ${st.done_jobs} 个账号`, 4)
+        await reload()
+        return
+      }
+      warmInfo.value = warmLine(st)
+      pollWarm()
+    } catch {
+      warmRunning.value = false
+      warmInfo.value = ''
+      message.error('预热进度查询失败，已停止跟踪（后台仍在跑）', 5)
+    }
+  }, 3000)
+}
+
+onUnmounted(() => window.clearTimeout(warmPollTimer))
 </script>
 
 <template>
@@ -235,11 +312,16 @@ async function onClearAll() {
           </div>
         </div>
         <div class="cc-headact">
-          <a-button type="primary" @click="onRefreshAll">立即刷新全部</a-button>
+          <a-button type="primary" @click="onWarmAll">缓存预热</a-button>
           <a-popconfirm title="清空全部目录树缓存？" ok-text="清空" cancel-text="取消" @confirm="onClearAll">
             <a-button>清空缓存</a-button>
           </a-popconfirm>
         </div>
+      </div>
+      <!-- 预热进行中：按钮下方一条实时进度（当前跑哪个账号、已缓存多少文件夹） -->
+      <div v-if="warmRunning && warmInfo" class="cc-warmline">
+        <LoadingOutlined spin />
+        <span>{{ warmInfo }}</span>
       </div>
 
       <!-- ===== 段一：缓存策略 ===== -->
@@ -398,6 +480,18 @@ async function onClearAll() {
   display: flex;
   gap: 10px;
   padding-top: 2px;
+}
+/* 预热进度行：卡头下方一条安静的实时状态（排队/在跑哪个账号/已缓存文件夹数） */
+.cc-warmline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 22px 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(22, 119, 255, 0.07);
+  color: var(--primary);
+  font-size: 12.5px;
 }
 
 /* 段标题：主色小竖条 + 提示（原型 cc-sect::before） */

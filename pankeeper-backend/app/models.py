@@ -109,6 +109,10 @@ class DdItem(Base):
     # 目录类型（movie/tv）：快速转存电影目录且检测到多文件时展示文件多选（单文件刮削）；
     # 电视节目目录照旧全转（多集合理）。空 = 按名称推断（含电视/剧 → tv）
     media_type: Mapped[str] = mapped_column(Text, default="")
+    # 过滤其他文件：开启后转到此目录只保存视频文件（mkv/mp4/iso 等，口径见
+    # adapters.base.VIDEO_EXTS），nfo/海报图片等杂件在转存环节直接剔除
+    # （QMS 只整理视频，杂件转过去也是垃圾，2026-10-07 定稿）
+    only_video: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class QmsPath(Base):

@@ -115,6 +115,8 @@ export interface DdItem {
   lp_event: string
   /** 目录类型：快速转存电影目录+多文件时展示文件多选（单文件刮削） */
   media_type: 'movie' | 'tv' | ''
+  /** 过滤其他文件：开启后转到此目录只保存视频文件（mkv/mp4/iso 等），nfo/图片等杂件转存时剔除 */
+  only_video: boolean
 }
 
 /** 保存载荷：新建时 id 传 null（后端自增分配），更新时带已入库的正数 id。
@@ -163,6 +165,8 @@ export interface RecordItem {
   tm: string
   qms: RecordTag
   strm: RecordTag
+  /** 该次转存当时的联动后端（qms/litepan）：整理/STRM 列按它逐行显示；老记录空值回落当前设置 */
+  backend?: string
   files?: RecordFileSnap[]
 }
 

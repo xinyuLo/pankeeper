@@ -18,6 +18,7 @@ def _row(r: DdItem) -> dict:
         "qms_on": r.qms_on, "qms_id": r.qms_id, "strm_id": r.strm_id,
         "lp_on": r.lp_on, "lp_event": r.lp_event or "",
         "media_type": r.media_type or "",
+        "only_video": bool(r.only_video),
     }
 
 
@@ -59,6 +60,8 @@ class DdBody(BaseModel):
     lp_event: str = ""
     # 目录类型 movie/tv：快速转存电影目录+多文件时展示文件多选（单文件刮削）
     media_type: str = ""
+    # 过滤其他文件：默认开启，转到此目录只保存视频文件（mkv/mp4/iso 等），杂件转存时剔除
+    only_video: bool = True
 
 
 @router.post("/dd/items")

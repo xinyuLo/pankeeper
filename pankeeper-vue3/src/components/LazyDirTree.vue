@@ -1,3 +1,16 @@
+<script lang="ts">
+/* 节流状态必须放在模块级：<script setup> 里声明是每个组件实例一份——转存弹窗、
+ * 目录选择弹窗同屏多棵树时各排各的队，等于没有节流（2026-10-07 实锤多路连打撞 115 风控） */
+let cooldownUntil = 0
+async function paceIfHot() {
+  const wait = cooldownUntil - Date.now()
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait))
+}
+function noteCache(cached: boolean) {
+  cooldownUntil = cached ? 0 : Date.now() + 600
+}
+</script>
+
 <script setup lang="ts">
 /* 懒加载目录树（真实网盘目录）：
  * - 根模式：不传 nodes，挂载即拉根一层；选中目录按需拉子层；
@@ -33,8 +46,11 @@ const props = defineProps<{
   initialPath?: string
   /** 根路径锁定：配置后树只展示该目录的子目录（以默认目标目录为根）；空=从网盘真根浏览 */
   rootPath?: string
-  /** 是否显示目录管理工具条（新建/重命名/删除，默认 true）；转存弹窗里关掉 */
-  manageable?: boolean
+  /** 隐藏目录管理工具条（新建/重命名/删除）。不传 = 显示。
+   *  ⚠️ 别用「manageable?: boolean 默认 true」这种写法——Vue 3.5 起 absent 的
+   *  Boolean prop 会被强转成 false，导致"默认 true"永远不成立（2026-10-08 实锤）。
+   *  要隐藏的调用方显式传 hide-toolbar 即可。 */
+  hideToolbar?: boolean
 }>()
 
 const emit = defineEmits<{ (e: 'select', path: string, fid: string): void }>()
@@ -97,20 +113,10 @@ const sel = ref('')
 /** 选中态只在根实例维护：递归实例沿 props 透传，否则每层各记一份，整条链都会「亮着」 */
 const currentSel = computed(() => (props.nodes ? props.selected ?? '' : sel.value))
 
-/* 风控冷却：只有某层**真打了网盘**（后端回 cached=false）才设 600ms 冷却；
-   命中后端缓存的层不用等——防止对百度密集连打（-7/-9 实测） */
-let cooldownUntil = 0
-async function paceIfHot() {
-  const wait = cooldownUntil - Date.now()
-  if (wait > 0) await new Promise((r) => setTimeout(r, wait))
-}
-function noteCache(cached: boolean) {
-  cooldownUntil = cached ? 0 : Date.now() + 600
-}
-
-/** 列目录统一入口：风控节流 + 失败自动重试三次（每 2 秒一次）——根层/子层/初始加载全走这里，
- * 任何一处都不允许单发请求直撞百度风控（-7/-9 偶发，重试即过）。
- * onStatus：重试期间回报状态文案（"目录加载失败，正在重试 N 次 …"），成功/终败清空 */
+/** 列目录统一入口：风控节流 + 抖动重试一次——根层/子层/初始加载全走这里。
+ * 重试纪律（2026-10-07 收紧，115 越打封越久实锤）：
+ * - HTTP 429（后端标记的风控/限频）**一次都不重试**，立即把人话报给树；
+ * - 其余失败（网络抖动/5xx）最多补 1 发，不再 3 连发。 */
 async function fetchDir(
   fid: string,
   path = '',
@@ -118,7 +124,7 @@ async function fetchDir(
   onStatus?: (txt: string) => void,
 ): Promise<{ cached: boolean; items: DirItem[] }> {
   let lastErr: unknown = null
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 2; i++) {
     try {
       await paceIfHot()
       const meta = await getFilesListMeta(props.type, fid, path, force, props.accId ?? null)
@@ -128,8 +134,10 @@ async function fetchDir(
     } catch (e) {
       lastErr = e
       noteCache(false) // 请求都没成功，按真打了网盘算，冷却照设
-      if (i < 3) {
-        onStatus?.(`目录加载失败，正在重试 ${i + 1} 次 …`)
+      // 429 = 网盘风控中（115 302/406/验证码），重试只会延长封禁——直接放弃
+      if ((e as { response?: { status?: number } })?.response?.status === 429) break
+      if (i < 1) {
+        onStatus?.('目录加载失败，正在重试 1 次 …')
         await new Promise((r) => setTimeout(r, 2000))
       }
     }
@@ -351,6 +359,19 @@ watch(
     init()
   },
 )
+
+/* 根路径锁定（rootPath）晚到也要生效：转存弹窗开树时 rootDirs 还没拉回来，
+ * 组件先按"无锁定"挂载、真根都列出来了，等 /1.影视 到了却没人理（2026-10-08 实锤：
+ * 夸克配了默认根目录，弹窗树却从网盘真根开始）。rootPath 变化 → 整树按新锁重载。 */
+watch(
+  () => props.rootPath,
+  (v, old) => {
+    if (props.nodes || v === old) return
+    sel.value = ''
+    root.items = []
+    init()
+  },
+)
 </script>
 
 <template>
@@ -377,11 +398,11 @@ watch(
 
   <!-- 根模式：自己拉根一层；限高滚动，防止目录太长把弹窗底部按钮顶出屏幕 -->
   <template v-else>
-    <div v-if="manageable !== false" class="ldt-toolbar">
-      <a-button size="small" type="primary" @click="startCreate"><PlusOutlined />新建</a-button>
-      <a-button size="small" type="primary" ghost :disabled="!selNode" @click="startRename"><EditOutlined />重命名</a-button>
+    <div v-if="!hideToolbar" class="ldt-toolbar">
+      <a-button class="ldt-btn ldt-btn-new" @click="startCreate"><PlusOutlined />新建</a-button>
+      <a-button class="ldt-btn ldt-btn-ren" :disabled="!selNode" @click="startRename"><EditOutlined />重命名</a-button>
       <a-popconfirm title="删除该文件夹及其全部内容？" ok-text="删除" cancel-text="取消" :disabled="!selNode" @confirm="doDelete">
-        <a-button size="small" type="primary" danger ghost :disabled="!selNode"><DeleteOutlined />删除</a-button>
+        <a-button class="ldt-btn ldt-btn-del" :disabled="!selNode"><DeleteOutlined />删除</a-button>
       </a-popconfirm>
       <span class="ldt-toolbar-tip">针对选中的目录</span>
     </div>
@@ -432,6 +453,47 @@ watch(
 .ldt { font-size: 13px; }
 .ldt-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .ldt-toolbar-tip { font-size: 12px; color: var(--text3); }
+/* 工具条按钮：紧凑文字级描边小按钮（字号=目录名 13px，高 24px），三色系：
+   新建=主题蓝 / 重命名=橙 / 删除=红；平时淡色，悬停加深 */
+.ldt-btn {
+  height: 24px;
+  padding: 0 8px;
+  font-size: 13px;
+  line-height: 1;
+  border-radius: 6px;
+  background: transparent;
+  box-shadow: none;
+}
+.ldt-btn .anticon { font-size: 12px; }
+.ldt-btn-new {
+  color: var(--primary);
+  border-color: color-mix(in srgb, var(--primary) 35%, var(--border));
+}
+.ldt-btn-new:hover, .ldt-btn-new:focus-visible {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+}
+.ldt-btn-ren {
+  color: #fa8c16;
+  border-color: color-mix(in srgb, #fa8c16 35%, var(--border));
+}
+.ldt-btn-ren:hover, .ldt-btn-ren:focus-visible {
+  border-color: #fa8c16;
+  background: color-mix(in srgb, #fa8c16 8%, transparent);
+}
+.ldt-btn-del {
+  color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 30%, var(--border));
+}
+.ldt-btn-del:hover, .ldt-btn-del:focus-visible {
+  border-color: var(--error);
+  background: color-mix(in srgb, var(--error) 7%, transparent);
+}
+.ldt-btn:disabled {
+  color: var(--text4);
+  border-color: var(--split);
+  background: transparent;
+}
 /* 限高滚动：目录树过长时内部滚动，弹窗标题/底部按钮始终可见 */
 .ldt-scroll { max-height: min(55vh, 480px); overflow-y: auto; overscroll-behavior: contain; }
 .ldt-tip { padding: 18px 0; text-align: center; color: var(--text3); }

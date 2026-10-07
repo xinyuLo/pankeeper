@@ -130,7 +130,8 @@ async function onAddSave() {
       verifyingId.value = fresh.id
       await loadSummary(fresh.id)
     }
-    await warmAll(type) // 验证通过即全树预热，后续选目录全吃缓存
+    verifyingId.value = null // 验证已完成：卡片先进「正在预热」，别卡在「正在验证 Cookie…」
+    await warmAll(type, fresh?.id ?? null) // 验证通过即全树预热（预热刚验证的这个账号），后续选目录全吃缓存
   } catch (e: unknown) {
     const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
     message.error(detail || '添加失败')
@@ -201,30 +202,43 @@ async function warmDirCache(type: MainDriveType, fid: string, path: string) {
   await getFilesList(type, fid || '0', fid ? '' : path)
 }
 
-/** 全树预热：后台跑（受网盘限速，可能要几分钟），这里轮询进度并用 message 汇报。
- *  保存 Cookie 验证通过后调用——之后所有选目录/转存的地方都吃缓存。 */
-async function warmAll(type: MainDriveType) {
-  const hide = message.loading('正在缓存文件夹…', 0)
+/** 全树预热进度：按网盘类型记，账号卡片按钮区实时显示「正在预热 N 个文件夹…」。
+ *  文案空串 = 没在预热（卡片显示正常按钮）。 */
+const warmState = ref<Partial<Record<MainDriveType, string>>>({})
+function warmOf(type: MainDriveType): string {
+  return warmState.value[type] || ''
+}
+
+/** 全树预热：后台跑（受网盘限速，可能要几分钟），轮询进度刷新到卡片上。
+ *  保存 Cookie 验证通过后调用——之后所有选目录/转存的地方都吃缓存。
+ *  不再用全局顶部 loading（2026-10-07 用户要求：进度上卡片，别占页面顶）。 */
+async function warmAll(type: MainDriveType, accId?: number | null) {
   try {
-    await warmTrees(type)
+    await warmTrees(type, accId)
     for (let i = 0; i < 600; i++) { // 上限 10 分钟，正常几十秒
-      const st = await warmStatus(type)
+      const st = await warmStatus(type, accId)
       if (st.status === 'done') {
-        message.success(st.message ? `缓存成功（${st.done} 个文件夹，${st.message}）` : `缓存成功（${st.done} 个文件夹）`, 4)
+        warmState.value[type] = `预热完成 · ${st.done} 个文件夹`
+        message.success(st.message ? `预热完成（${st.done} 个文件夹，${st.message}）` : `预热完成（${st.done} 个文件夹）`, 4)
+        setTimeout(() => {
+          if (warmState.value[type]?.startsWith('预热完成')) warmState.value[type] = ''
+        }, 6000) // 完成态在卡片上停留 6 秒再让按钮回来
         return
       }
       if (st.status === 'error') {
-        message.error(`缓存失败：${st.message || '未知错误'}`, 5)
+        warmState.value[type] = ''
+        message.error(`预热失败：${st.message || '未知错误'}`, 5)
         return
       }
-      await new Promise((r) => setTimeout(r, 3000)) // 3s 一次：进度不刷屏，后端本就 1s 限速
+      warmState.value[type] = `正在预热 ${st.done} 个文件夹…`
+      await new Promise((r) => setTimeout(r, 3000)) // 3s 一次：进度不刷屏，后端有限速闸
     }
-    message.warning('缓存还在后台跑，已转入静默；可稍后在「网盘日志 → 缓存」查看', 5)
+    warmState.value[type] = ''
+    message.warning('预热还在后台跑，已转入静默；可稍后在「网盘日志 → 缓存」查看', 5)
   } catch (e: unknown) {
+    warmState.value[type] = ''
     const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-    message.error(`缓存失败：${detail || '请求失败'}`, 5)
-  } finally {
-    hide()
+    message.error(`预热失败：${detail || '请求失败'}`, 5)
   }
 }
 
@@ -360,7 +374,8 @@ async function onCredSave() {
     credCookies.value = ''
     message.success(`凭据已保存并验证通过（${nickname}）`)
     await loadSummary(acc.id)
-    await warmAll(acc.type) // 验证通过即全树预热，后续选目录全吃缓存
+    verifyingId.value = null // 验证已完成：卡片先进「正在预热」，别卡在「正在验证 Cookie…」
+    await warmAll(acc.type, acc.id) // 验证通过即全树预热（预热刚验证的这个账号），后续选目录全吃缓存
   } catch (e: unknown) {
     const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
     message.error(detail || '凭据验证失败')
@@ -462,6 +477,9 @@ async function onClear(a: AccountRow) {
         <div class="accbtns">
           <template v-if="verifyingId === a.id">
             <span class="acc-checking"><a-spin size="small" />正在验证 Cookie…</span>
+          </template>
+          <template v-else-if="warmOf(a.type)">
+            <span class="acc-checking"><a-spin size="small" />{{ warmOf(a.type) }}</span>
           </template>
           <template v-else>
             <a-button type="primary" size="small" @click="onConfig(a)">配置凭据</a-button>

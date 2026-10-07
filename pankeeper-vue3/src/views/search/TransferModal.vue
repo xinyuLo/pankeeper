@@ -1,4 +1,14 @@
 <script lang="ts">
+/* 视频扩展名（与后端 adapters/base.VIDEO_EXTS 同口径）：左栏清单禁选非视频文件用 */
+const VIDEO_EXTS = new Set([
+  '.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ts',
+  '.iso', // 蓝光/DVD 原盘镜像（用户点名：iso 也是视频）
+])
+function isVideoFile(name: string): boolean {
+  const dot = name.lastIndexOf('.')
+  return dot >= 0 && VIDEO_EXTS.has(name.slice(dot).toLowerCase())
+}
+
 /** 由搜索页行按钮带入的目标（网盘类型 + 资源名 + 体积）；供主页面拼参数用 */
 export interface TransferTarget {
   type: 'baidu' | 'quark' | '115' | '123' | 'ali' | 'xunlei' | 'uc'
@@ -18,7 +28,7 @@ export interface TransferTarget {
  * 「开始转存」= pkQueue.enqueue 入队即走，绝无内联进度条。 */
 import { computed, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import { FolderOutlined } from '@ant-design/icons-vue'
+import { FolderOutlined, ThunderboltOutlined } from '@ant-design/icons-vue'
 import PkTree from '@/components/PkTree.vue'
 import LazyDirTree from '@/components/LazyDirTree.vue'
 import { USE_MOCK } from '@/api/http'
@@ -42,6 +52,8 @@ const DEFAULT_DIR = USE_MOCK ? '/我的资源/影视/电视剧/国产剧' : '/'
 /** 真实模式的目录树落点：网盘连接页配置了「默认根目录」就以它为根，只显示其子目录 */
 const rootDir = ref('')
 const rootDirs = ref<Record<string, string>>({})
+/** 本次打开的根目录配置是否已就绪：没就绪先不渲染树（不然按真根白列一轮，等锁定了又重列） */
+const rootReady = ref(false)
 /** 只有三大盘支持真实目录浏览；其余盘允许直接转存（目标目录自动创建） */
 const isMainDrive = computed(() => !!props.target && (['baidu', 'quark', '115'] as string[]).includes(props.target.type))
 
@@ -117,12 +129,17 @@ function onPickCandidate(c: RecognizeCandidate) {
   renameInput.value = c.year ? `${c.title} (${c.year})` : c.title
 }
 
-/* ---- 分享文件多选（左栏，必选）：真实清单（share_list_cache 联动，点过查看文件秒开） ---- */
+/* ---- 分享文件多选（左栏，必选）：真实清单（share_list_cache 联动，点过查看文件秒开）。
+ * 文件检测是**最终守门**（2026-10-08 用户定稿）：没过（拉取失败/清单为空=坏链）→
+ * 开始转存一直灰，不许再"整包转存"兜底。 ---- */
 interface FileRow { path: string; name: string; size: number }
 const filesLoading = ref(false)
 const filesFailed = ref(false)
 const fileRows = ref<FileRow[]>([])
 const selPaths = ref<string[]>([])
+/** 检测已完成且未通过：清单拉取失败，或成功但 0 个文件（空分享=坏链） */
+const detectDone = ref(false)
+const detectBad = computed(() => detectDone.value && (filesFailed.value || fileRows.value.length === 0))
 
 function fmtSize(n: number): string {
   if (!n) return '—'
@@ -135,6 +152,7 @@ function fmtSize(n: number): string {
 async function loadShareFiles() {
   filesLoading.value = true
   filesFailed.value = false
+  detectDone.value = false
   fileRows.value = []
   selPaths.value = []
   try {
@@ -143,20 +161,29 @@ async function loadShareFiles() {
       .filter((f) => !f.is_dir)
       .map((f) => ({ path: f.path, name: f.name, size: f.size }))
   } catch {
-    filesFailed.value = true // 清单拉不到：回退"全转"老行为，不挡转存
+    filesFailed.value = true // 清单拉不到 = 检测未通过：开始转存保持灰，不许转
   } finally {
     filesLoading.value = false
+    detectDone.value = true
   }
 }
+/** 可勾选的文件：过滤其他文件开着时只放行视频（非视频行禁用） */
+const selectableRows = computed(() => (onlyVideo.value ? fileRows.value.filter((f) => isVideoFile(f.name)) : fileRows.value))
 function toggleAllFiles(e: Event) {
-  selPaths.value = (e.target as HTMLInputElement).checked ? fileRows.value.map((f) => f.path) : []
+  selPaths.value = (e.target as HTMLInputElement).checked ? selectableRows.value.map((f) => f.path) : []
 }
 function toggleFile(path: string) {
   selPaths.value = selPaths.value.includes(path)
     ? selPaths.value.filter((x) => x !== path)
     : [...selPaths.value, path]
 }
-const allSelected = computed(() => fileRows.value.length > 0 && selPaths.value.length === fileRows.value.length)
+const allSelected = computed(() => selectableRows.value.length > 0 && selPaths.value.length === selectableRows.value.length)
+/** 已选文件总大小：勾了算勾选的；一个没勾按整包算（参考值） */
+const selTotal = computed(() => {
+  const m = new Map(fileRows.value.map((f) => [f.path, f.size]))
+  const picked = selPaths.value.length ? selPaths.value : fileRows.value.map((f) => f.path)
+  return picked.reduce((s, p) => s + (m.get(p) || 0), 0)
+})
 
 /* ---- 目标目录树 ---- */
 const selectedDir = ref(DEFAULT_DIR)
@@ -177,6 +204,12 @@ const renameInput = ref('')
  *  开关关 = 明确不联动（media_off，连目录匹配都不做）。 ---- */
 const mediaOn = ref(true)
 const qmsSel = ref<number | null>(null)
+/** 过滤其他文件：默认开——本次转存只保存视频文件（mkv/mp4/iso 等），nfo/图片等杂件直接跳过 */
+const onlyVideo = ref(true)
+// 开「过滤其他文件」的瞬间：把已勾选的非视频路径剔掉（否则禁选行还挂着勾、计数也错）
+watch(onlyVideo, (v) => {
+  if (v) selPaths.value = selPaths.value.filter((p) => fileRows.value.some((f) => f.path === p && isVideoFile(f.name)))
+})
 // LitePan 模式：联动行换成「推 LitePan」开关 + 事件名输入框（空=按转存配置目录/全局默认）
 const lpOn = ref(true)
 const lpEvent = ref('')
@@ -204,25 +237,38 @@ function hitDd(pred: (d: DdItem) => boolean): DdItem | null {
       .sort((a, b) => b.path.length - a.path.length)[0] || null
   )
 }
-/** 联动可用性（总闸，2026-10-06 用户定稿：什么都没联动就什么都不让选）：
- * 保存位置没命中任何开了联动的目录 → 开关禁用+自动关，QMS/LitePan 同规则。 */
+/** 目录配置命中（用于**初始状态**：目标目录开了联动 → 开关默认开、带出目录配的目标；
+ *  之后用户随便切——2026-10-07 用户定稿：弹窗里永远可选，不再因「没配目录」禁用。
+ *  QMS 下拉显式选了就直传后端；LitePan 输入框填了事件名 = 一次性联动，不要求目录配过）。 */
 const qmsHit = computed(() => hitDd((d) => !!d.qms_on && !!d.qms_id))
 const lpHit = computed(() => hitDd((d) => !!d.lp_on))
-const qmsDisabled = computed(() => mediaBackend.value === 'qms' && !qmsHit.value)
-const lpDisabled = computed(() => mediaBackend.value === 'litepan' && !lpHit.value)
-watch(qmsDisabled, (v) => {
-  if (v) mediaOn.value = false
-})
-watch(lpDisabled, (v) => {
-  if (v) lpOn.value = false
-})
 
-/** 按目标目录前缀自动带出联动目标（对齐后端 _match_dd_link 语义） */
-function autoMatchMedia() {
+/** 打开弹窗：重置为「联动开 + 目录默认值」（2026-10-08 用户定稿：默认打开） */
+function resetMedia() {
+  mediaOn.value = true
+  lpOn.value = true
   qmsSel.value = qmsHit.value?.qms_id ?? null
+  lpEvent.value = lpHit.value?.lp_event || ''
+}
+/** 点目录跟随带出联动目标（对齐后端 _match_dd_link 语义）。
+ *  ⚠️ 联动开关**关着时什么都不动**——用户关了就是关了，点目录不许重新打开/覆盖
+ *  （2026-10-08 用户实锤）；开着才跟随目录切换带出该目录配的默认值。 */
+function autoMatchMedia() {
+  if (mediaBackend.value === 'qms') {
+    if (mediaOn.value) qmsSel.value = qmsHit.value?.qms_id ?? null
+  } else if (lpOn.value) {
+    lpEvent.value = lpHit.value?.lp_event || ''
+  }
 }
 watch(selectedDir, () => {
   if (!mediaTouched.value) autoMatchMedia()
+})
+// 关掉再打开：目录默认值立刻带回来（下拉没被手动改过时）
+watch(mediaOn, (v) => {
+  if (v && !mediaTouched.value && mediaBackend.value === 'qms') qmsSel.value = qmsHit.value?.qms_id ?? null
+})
+watch(lpOn, (v) => {
+  if (v && !mediaTouched.value && mediaBackend.value === 'litepan') lpEvent.value = lpHit.value?.lp_event || ''
 })
 
 /** 每次打开重置：分享树收起、勾选清空、目标位置回默认国产剧 */
@@ -232,16 +278,17 @@ watch(selectedDir, () => {
     if (!v) return
     selPaths.value = []
     renameInput.value = ''
+    detectDone.value = false
     if (props.target?.url) void loadShareFiles() // 左栏文件清单（缓存联动秒开）
     // 打开即选中锁定根（默认根目录）；没配置就回退原来的默认
+    rootReady.value = false
     if (!USE_MOCK) rootDirs.value = await getRootDirs().catch(() => ({}))
     rootDir.value = rootDirs.value[props.target?.type || ''] || ''
+    rootReady.value = true
     selectedDir.value = rootDir.value || DEFAULT_DIR
     includeSub.value = true
-    mediaOn.value = true
-    lpOn.value = true
-    lpEvent.value = ''
     getSettings().then((d) => (mediaBackend.value = d.media?.backend || 'qms')).catch(() => {})
+    onlyVideo.value = true
     mediaTouched.value = false
     // QMS/STRM 目录清单后台拉（QMS 在 NAS 上，秒级）；到货后按目标目录带默认值
     if (!USE_MOCK) {
@@ -251,14 +298,9 @@ watch(selectedDir, () => {
       pathsLoading.value = false
       qmsPaths.value = qs
     }
-    autoMatchMedia()
+    resetMedia()
   },
 )
-
-/** 清单不可用时的老语义兜底：无勾选 → 建壳全转 */
-function checkedFilesFallback(): boolean {
-  return filesFailed.value || !fileRows.value.length ? false : true
-}
 
 function close() {
   emit('update:open', false)
@@ -275,17 +317,21 @@ function start() {
     message.warning('正在检测资源，请稍候…')
     return
   }
+  if (detectBad.value) {
+    message.error('文件检测未通过（链接可能已失效），无法转存')
+    return
+  }
   if (!selectedDir.value) {
     message.warning('请先在右侧选择目标位置')
     return
   }
   const picked = selPaths.value
-  if (!filesFailed.value && fileRows.value.length && !picked.length) {
+  if (fileRows.value.length && !picked.length) {
     message.warning('请先在左侧勾选要转存的文件')
     return
   }
   const rename = renameInput.value.trim()
-  const files = fileRows.value.length || parseInt((sumMeta.value.match(/(\d+)\s*项/) || [])[1] || '', 10) || 12
+  const files = fileRows.value.length
   const pos = pkQueue.enqueue({
     name: t.name,
     type: t.type,
@@ -296,7 +342,7 @@ function start() {
     share_code: t.share_code,
     /* 更名填了 = 建壳承接（更名文件夹 + 只转勾选文件）；没填 = 按勾选路径直接转 */
     rename,
-    with_shell: filesFailed.value || !fileRows.value.length ? checkedFilesFallback() : !!rename,
+    with_shell: !!rename,
     file_paths: picked,
     /* 勾选了嵌套路径时必须带子目录列举，否则 only_paths 找不到文件 */
     include_subdirs: includeSub.value || picked.some((x) => x.includes('/')),
@@ -306,6 +352,7 @@ function start() {
     media_off: mediaBackend.value === 'litepan' ? !lpOn.value : !mediaOn.value,
     qms_id: mediaBackend.value === 'qms' && mediaOn.value ? qmsSel.value : null,
     lp_event: mediaBackend.value === 'litepan' && lpOn.value ? lpEvent.value.trim() : '',
+    only_video: onlyVideo.value,
   })
   if (pos < 0) {
     message.warning('该分享已在转存队列中，勿重复添加')
@@ -339,40 +386,39 @@ function start() {
         <span class="tm-savepath-val" :title="savePath">{{ savePath }}</span>
       </div>
 
-      <!-- 文件夹更名（留空 = 用资源名在目标位置新建文件夹）；「识别」= TMDB 回填 -->
-      <div class="tm-rename">
-        <label>文件夹更名</label>
-        <a-input v-model:value="renameInput" :maxlength="80" placeholder="留空则用资源名新建文件夹" allow-clear>
-          <template #suffix>
-            <a-button size="small" type="text" :loading="recognizing" style="margin-right: -7px" @click="onRecognize">
-              识别
-            </a-button>
-          </template>
-        </a-input>
-      </div>
-
-      <!-- 包含子目录：独立一行（自绘勾选框，样式对齐任务弹窗） -->
-      <div class="filterbar" style="margin-top: 12px">
-        <span class="muted">选项</span>
-        <div class="tm-opts">
-          <label class="tm-opt">
-            <input v-model="includeSub" type="checkbox" /><span class="tm-box"></span>分享内有子目录时一并转存
-          </label>
+      <!-- 文件夹更名（60%）+ 子目录开关同行（悬停解释；「识别」= TMDB 回填） -->
+      <div class="tm-rename-row">
+        <div class="tm-rename">
+          <label>文件夹更名</label>
+          <a-input v-model:value="renameInput" :maxlength="80" placeholder="留空则用资源名新建文件夹" allow-clear>
+            <template #suffix>
+              <a-button size="small" class="tm-recog" :loading="recognizing" @click="onRecognize">
+                <template #icon><ThunderboltOutlined /></template>
+                识别
+              </a-button>
+            </template>
+          </a-input>
         </div>
+        <label class="tm-opt tm-sub">
+          <input v-model="includeSub" type="checkbox" /><span class="tm-box"></span>
+          <a-tooltip title="分享内有子目录时一并转存">
+            <span class="tm-sub-label">子目录</span>
+          </a-tooltip>
+        </label>
       </div>
 
-      <!-- 联动：按「系统设置 → 联动后端」切换 QMS / LitePan 表单。
-           总闸：保存位置没命中任何开了联动的目录 → 开关禁用+自动关（什么都不让选） -->
+      <!-- 联动：按「系统设置 → 联动后端」切换 QMS / LitePan 表单 -->
       <div class="tm-media">
         <template v-if="mediaBackend === 'qms'">
           <label class="tm-media-switch">
-            <a-switch v-model:checked="mediaOn" size="small" :disabled="qmsDisabled" />
-            <span>转存完成后联动 QMS 整理</span>
+            <a-switch v-model:checked="mediaOn" size="small" />
+            <span>联动 QMS</span>
           </label>
-          <div v-if="qmsDisabled" class="tm-hint">
-            该保存位置未配置 QMS 联动——先到「转存配置」给目录开启后才能在这里联动。
-          </div>
-          <template v-else-if="mediaOn">
+          <label class="tm-media-switch">
+            <a-switch v-model:checked="onlyVideo" size="small" />
+            <span>过滤其他文件</span>
+          </label>
+          <template v-if="mediaOn">
             <a-select
               v-model:value="qmsSel"
               :options="qmsOpts"
@@ -386,16 +432,20 @@ function start() {
               默认按目标位置自动带出。QMS 整理成功后自动生成 STRM，失败不生成；不需要就清空。
             </div>
           </template>
+          <div v-else class="tm-hint">
+            已关闭：本次转存完成后不触发 QMS 刮削与 STRM 生成。
+          </div>
         </template>
         <template v-else>
           <label class="tm-media-switch">
-            <a-switch v-model:checked="lpOn" size="small" :disabled="lpDisabled" />
-            <span>转存完成后推送 LitePan</span>
+            <a-switch v-model:checked="lpOn" size="small" />
+            <span>联动 LitePan</span>
           </label>
-          <div v-if="lpDisabled" class="tm-hint">
-            该保存位置未配置 LitePan 联动——先到「转存配置」给目录开启后才能在这里推送。
-          </div>
-          <template v-else-if="lpOn">
+          <label class="tm-media-switch">
+            <a-switch v-model:checked="onlyVideo" size="small" />
+            <span>过滤其他文件</span>
+          </label>
+          <template v-if="lpOn">
             <a-input
               v-model:value="lpEvent"
               style="width: 100%; margin-top: 10px"
@@ -406,6 +456,9 @@ function start() {
               须与 LitePan 自动化规则里配的事件名一致；留空则按转存配置目录配的事件，目录也没配就不推送。
             </div>
           </template>
+          <div v-else class="tm-hint">
+            已关闭：本次转存完成后不推送 LitePan。
+          </div>
         </template>
       </div>
 
@@ -426,14 +479,25 @@ function start() {
                 <input type="checkbox" :checked="allSelected" @change="toggleAllFiles" />
                 <b>全选</b>
               </label>
-              <label v-for="f in fileRows" :key="f.path" class="tm-file" :class="{ on: selPaths.includes(f.path) }">
-                <input type="checkbox" :checked="selPaths.includes(f.path)" @change="toggleFile(f.path)" />
+              <label
+                v-for="f in fileRows"
+                :key="f.path"
+                class="tm-file"
+                :class="{ on: selPaths.includes(f.path), off: onlyVideo && !isVideoFile(f.name) }"
+                :title="onlyVideo && !isVideoFile(f.name) ? '非视频文件——开启「过滤其他文件」时不参与转存' : undefined"
+              >
+                <input
+                  type="checkbox"
+                  :checked="selPaths.includes(f.path)"
+                  :disabled="onlyVideo && !isVideoFile(f.name)"
+                  @change="toggleFile(f.path)"
+                />
                 <span class="tm-file-name" :title="f.name">{{ f.name }}</span>
                 <span class="tm-file-size">{{ fmtSize(f.size) }}</span>
               </label>
             </template>
             <div v-else class="tm-col-loading">
-              <span class="small muted">文件清单获取失败——将按资源名整包转存（含子目录设置）</span>
+              <span class="small" style="color: var(--error)">文件检测未通过（清单拉取失败或为空）——链接可能已失效，无法转存</span>
             </div>
           </div>
         </div>
@@ -445,13 +509,16 @@ function start() {
           </div>
           <div class="tm-col-list">
             <LazyDirTree
-              v-if="!USE_MOCK && isMainDrive"
+              v-if="!USE_MOCK && isMainDrive && rootReady"
               ref="mineTree"
               :type="target!.type as MainDriveType"
               :root-path="rootDir"
-              :manageable="false"
               @select="(p: string) => (selectedDir = p)"
             />
+            <div v-else-if="!USE_MOCK && isMainDrive && !rootReady" class="tm-col-loading">
+              <a-spin size="small" />
+              <span class="small muted">正在读取默认根目录…</span>
+            </div>
             <div v-else-if="!USE_MOCK" class="small" style="color: var(--text3); padding: 12px 0">
               该网盘的目录浏览暂未支持，可直接开始转存（目标目录不存在时会自动创建）。
             </div>
@@ -464,11 +531,22 @@ function start() {
 
     <div class="tm-foot">
       <span class="small muted">
-        {{ filesFailed ? '清单不可用 · 将按资源名整包转存' : `已选 ${selPaths.length}/${fileRows.length} 个文件 · 只转存勾选内容` }}
+        {{
+          detectBad
+            ? '文件检测未通过 · 链接可能已失效，无法转存'
+            : filesLoading
+              ? '正在检测资源…'
+              : `已选 ${selPaths.length}/${fileRows.length} 个文件 · 共 ${fmtSize(selTotal)} · 只转存勾选内容`
+        }}
       </span>
       <span style="flex: 1"></span>
       <a-button @click="close">取消</a-button>
-      <a-button type="primary" :disabled="filesLoading" :title="filesLoading ? '正在检测资源，请稍候…' : undefined" @click="start">开始转存</a-button>
+      <a-button
+        type="primary"
+        :disabled="filesLoading || detectBad"
+        :title="filesLoading ? '正在检测资源，请稍候…' : detectBad ? '文件检测未通过（链接可能已失效）' : undefined"
+        @click="start"
+      >开始转存</a-button>
     </div>
 
     <!-- 识别歧义候选（同名剧/电影时让用户挑，回填「文件夹更名」） -->
@@ -533,8 +611,22 @@ function start() {
 .tm-file-all { border-bottom: 1px dashed var(--split); border-radius: 0; margin-bottom: 4px; }
 .tm-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tm-file-size { flex: none; color: var(--text3); font-size: 11.5px; }
+/* 非视频文件（过滤其他文件开着时）：显示但禁选置灰（普通转存的口径——与快速转存的"直接消失"区分） */
+.tm-file.off { opacity: 0.45; cursor: not-allowed; }
+.tm-file.off:hover { background: transparent; }
+.tm-file.off input { cursor: not-allowed; }
+
+/* 右栏目录管理工具条：虚线分隔与左栏「全选」行同款观感 */
+.tm-col-list :deep(.ldt-toolbar) {
+  border-bottom: 1px dashed var(--split);
+  padding-bottom: 8px;
+  margin-bottom: 4px;
+}
 @media (max-width: 767px) {
   .tm-split { flex-direction: column; }
+  .tm-rename-row { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .tm-rename { flex: 1 1 100%; width: 100%; }
+  .tm-sub { padding-bottom: 0; }
 }
 .tm-foot {
   display: flex;
@@ -550,17 +642,7 @@ function start() {
 .tm-field { display: inline-flex; flex-direction: column; gap: 4px; min-width: 0; }
 .tm-field label { font-size: 12px; color: var(--text3); }
 
-/* 选项勾选框（样式对齐任务弹窗 mt-opt）：带框容器 + 自绘 16px 勾选块 */
-.tm-opts {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px 20px;
-  padding: 10px 14px;
-  border: 1px solid var(--split);
-  border-radius: 10px;
-  background: var(--surface-2);
-}
+/* 勾选框（样式对齐任务弹窗 mt-opt）：自绘 16px 勾选块 */
 .tm-opt {
   display: inline-flex;
   align-items: center;
@@ -601,19 +683,52 @@ function start() {
 .tm-opt input:checked + .tm-box { background: var(--primary); border-color: var(--primary); }
 .tm-opt input:checked + .tm-box::after { opacity: 1; transform: rotate(45deg) scale(1); }
 
-/* 文件夹更名：分享摘要下方整行（label 小字在上，输入框全宽） */
-.tm-rename { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
+/* 文件夹更名撑满剩余宽度 + 行尾「子目录」勾选（悬停出解释）。
+   flex-wrap：窄视口（>767px 未触发移动布局的）子目录自动换行，不再被挤出可视区 */
+.tm-rename-row { margin-top: 14px; display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
+.tm-rename { flex: 1 1 240px; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
 .tm-rename label { font-size: 12px; color: var(--text3); }
+/* 子目录：灰边框小盒（对齐原选项框观感），高度对齐输入框 */
+.tm-sub {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px; /* 与 a-input 默认控制高度一致：顶边底边都对齐 */
+  padding: 0 14px;
+  border: 1px solid var(--split);
+  border-radius: 10px;
+  background: var(--surface-2);
+  cursor: pointer;
+  user-select: none;
+}
+.tm-sub-label { font-size: 13px; color: var(--text); line-height: 1.2; }
+/* 识别按钮：淡紫描边 + 闪电图标（智能识别一族的颜色语言），悬停加深 */
+.tm-recog {
+  color: #8c73e6;
+  border-color: rgba(140, 115, 230, 0.5);
+  background: rgba(140, 115, 230, 0.06);
+  box-shadow: none;
+}
+/* 图标贴紧文字（antd 默认图标/文字双向留 8px，小按钮里松散） */
+.tm-recog :deep(.ant-btn-icon + span) { margin-inline-start: 4px; }
+.tm-recog :deep(.anticon) { margin-inline-end: 0; }
+.tm-recog:hover, .tm-recog:focus-visible {
+  color: #7451d8;
+  border-color: #8c73e6;
+  background: rgba(140, 115, 230, 0.12);
+}
 
-/* 联动区（对齐任务弹窗观感）：一行开关，开后下拉全宽堆叠 */
+/* 联动区（对齐任务弹窗观感）：整行 + min-height 按展开态占位（开关切换框体不跳） */
 .tm-media {
   margin-top: 12px;
+  min-height: 140px;
   padding: 11px 12px;
   border: 1px solid var(--split);
   border-radius: 10px;
   background: var(--surface-2);
 }
-.tm-media-switch { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text2); cursor: pointer; }
+.tm-media-switch { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text2); cursor: pointer; margin-right: 24px; }
 .tm-hint { margin-top: 8px; font-size: 12px; color: var(--text3); line-height: 1.65; }
 
 /* 移动端（<768px）：底部操作区改两行（说明一行 + 按钮铺满） */
