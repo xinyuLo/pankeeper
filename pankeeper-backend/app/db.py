@@ -34,6 +34,7 @@ def init_db() -> None:
 
     Base.metadata.create_all(engine)
     _migrate_columns()
+    _backfill_litepan_backend()
     _migrate_accounts()
 
 
@@ -63,6 +64,22 @@ def _migrate_accounts() -> None:
             )
         conn.commit()
         print(f"[migrate] 多账号迁移：旧 accounts 表 {len(rows)} 个账号已搬入 drive_accounts（旧表保留）")
+
+
+def _backfill_litepan_backend() -> None:
+    """一次性数据回填：backend 列上线（10-07）前的旧记录没有落"当时的联动后端"，
+    其中**真走过 LitePan 流程的**（执行日志含「LitePan」字样）整理/STRM 快照都是
+    「未执行」，记录页会错显示成 qms 未执行（2026-10-08 用户实锤）。
+    用 logs_json LIKE '%LitePan%' 判定——manual 的"未配置 QMS"日志是另一句，不会误伤。"""
+    with engine.connect() as conn:
+        n = conn.exec_driver_sql(
+            "UPDATE records SET backend='litepan' "
+            "WHERE (backend IS NULL OR backend='') "
+            "AND logs_json LIKE '%LitePan%'"
+        ).rowcount
+        conn.commit()
+    if n:
+        print(f"[migrate] 旧记录 LitePan backend 回填：{n} 条")
 
 
 def _migrate_columns() -> None:
@@ -113,6 +130,7 @@ def _migrate_columns() -> None:
             ("lp_on", "INTEGER DEFAULT 0"),
             ("lp_event", "TEXT DEFAULT ''"),
             ("media_type", "TEXT DEFAULT ''"),
+            ("only_video", "INTEGER DEFAULT 1"),
         ],
         "pa_tasks": [
             ("lp_event", "TEXT DEFAULT ''"),

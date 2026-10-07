@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import time
 
-from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, TaskSpec
+from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, TaskSpec, split_video_files
 from ..adapters.factory import make_adapter
 from ..db import SessionLocal
 from ..models import Account, DdItem, Record
@@ -40,6 +40,7 @@ def _files_snap(files, spec, result) -> list:
     ok_names = {e.get("name") for e in (result.transferred if result else [])}
 
     def kept(rel: str) -> bool:
+        rel = rel.strip("/")  # 两侧同口径剥斜杠（2026-10-08 修复勾选全不中）
         for sel in spec.only_paths or set():
             sel = sel.strip("/")
             if sel and (rel == sel or rel.startswith(sel + "/")):
@@ -98,6 +99,15 @@ def run_manual(eng, t: dict, cfg: dict) -> None:
     try:
         _push_log(t, "INFO", f"解析分享链接：{t['shareUrl'][:60]}")
         files = adapter.list_share(spec)
+        # 过滤其他文件：放在项数统计前，「完成 N/M」分母只算留下的。
+        # 弹窗显式指定（onlyVideo，普通转存弹窗开关默认开）优先；没带（快速转存等）按目录配置
+        from .auto import dir_only_video
+        only_video = t.get("onlyVideo")
+        use_filter = dir_only_video(t["path"]) if only_video is None else bool(only_video)
+        if use_filter:
+            files, dropped = split_video_files(files)
+            if dropped:
+                _push_log(t, "INFO", f"过滤其他文件：跳过 {len(dropped)} 个非视频文件（只转 mkv/mp4/iso 等视频）")
         # 项数只数文件（目录条目不计）——队列行「N 项」和「完成 N/M」的分母都指它，
         # 带壳分享里壳目录也算一项的话 1 个文件会显示成「完成 1/2」
         t["files"] = sum(1 for f in files if not f.is_dir)
@@ -155,10 +165,10 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
         from .auto import resolve_litepan_link
         t["_media"] = {"qms_id": None, "strm_id": None}
         lp_link = resolve_litepan_link(t["path"])
-        # 弹窗里填了事件名（搜索转存弹窗输入框）= 一次性覆盖；总闸在 resolve 里：
-        # 目录没配 lp_on 时 lp_link 为 None，弹窗填了事件也**不推**（没配联动就不让选/不生效）
+        # 弹窗里填了事件名（搜索转存弹窗输入框）= 一次性联动：不要求目录开过 lp_on
+        # （2026-10-07 用户定稿：弹窗永远可选），只受设置页 LitePan「启用联动」总闸约束
         popup_event = (t.get("lpEvent") or "").strip()
-        if lp_link is not None and popup_event:
+        if popup_event and get_group("litepan").get("enabled"):
             lp_link = {"event": popup_event}
         if lp_link is None:
             _push_log(t, "INFO", "该目录未配置 LitePan 联动（转存配置里没开），跳过推送")

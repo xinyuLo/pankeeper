@@ -24,7 +24,7 @@ import httpx
 
 from ..security import decrypt_credential
 from ..services import reqstat
-from .base import AdapterError, CloudAdapter, CredentialExpired, ShareBanned, ShareFile, TaskSpec, TransferResult
+from .base import AdapterError, CloudAdapter, CredentialExpired, RiskControlError, ShareBanned, ShareFile, TaskSpec, TransferResult
 from .rate_gate import RateGate
 
 UA = (
@@ -88,11 +88,11 @@ class Pan115Adapter(CloudAdapter):
             # 这是账号级临时封禁，只有等——明确报人话，别让上层显示"响应非 JSON"这种废话，
             # 同时让 RateGate 进退避，防止自动任务接着撞。
             self.gate.on_failure()
-            raise AdapterError("115 触发风控（HTTP 302 跳转），请暂停 10-30 分钟再试，期间勿反复点检测/转存")
+            raise RiskControlError("115 触发风控（HTTP 302 跳转），请暂停 10-30 分钟再试，期间勿反复点检测/转存")
         if resp.status_code == 406:
             # 115 限频信号：让 RateGate 进退避，调用方按普通失败处理
             self.gate.on_failure()
-            raise AdapterError("115 限频（HTTP 406），请稍后再试")
+            raise RiskControlError("115 限频（HTTP 406），请稍后再试")
         try:
             data = resp.json()
         except ValueError as e:
@@ -110,7 +110,7 @@ class Pan115Adapter(CloudAdapter):
             raise AdapterError(f"网络异常：{e}") from e
         if resp.status_code in (301, 302, 307, 308):
             self.gate.on_failure()
-            raise AdapterError("115 触发风控（HTTP 302 跳转），请暂停 10-30 分钟再试，期间勿反复点检测/转存")
+            raise RiskControlError("115 触发风控（HTTP 302 跳转），请暂停 10-30 分钟再试，期间勿反复点检测/转存")
         try:
             body = resp.json()
         except ValueError as e:
@@ -128,7 +128,7 @@ class Pan115Adapter(CloudAdapter):
         if already_ok and ALREADY in err:
             return True
         if "验证码" in err:
-            raise AdapterError(f"115 已触发验证码（疑似风控），停止操作并告警：{err}")
+            raise RiskControlError(f"115 已触发验证码（疑似风控），停止操作并告警：{err}")
         if "登录" in err or "身份" in err or "cookie" in err.lower():
             raise CredentialExpired(f"115 Cookie 已失效：{err}")
         raise AdapterError(f"{action}失败：{err or data}")
@@ -172,15 +172,22 @@ class Pan115Adapter(CloudAdapter):
         self._share_ctx = {"share_code": share_code, "receive_code": receive_code}
         return out
 
-    def _snap_page(self, share_code: str, receive_code: str, cid: str) -> list[dict]:
+    def probe_share(self, spec: TaskSpec) -> list[ShareFile]:
+        """死活探针：snap 只拉第一页 20 条（list_share 的 limit=1000 大 JSON 是有效链慢的主因）。"""
+        share_code, receive_code = parse_share_url(spec.share_url)
+        rows = self._snap_page(share_code, receive_code, cid="", limit=20, max_pages=1)
+        return [self._row_to_file(r, "") for r in rows]
+
+    def _snap_page(self, share_code: str, receive_code: str, cid: str, limit: int | None = None, max_pages: int = 100) -> list[dict]:
         """share/snap 翻页到 count（别学 limit=20 不翻页的反面教材）。
 
         ⚠️ 实测响应两种形态（2026-10-04）：带 cid（子目录）时 list/count 在顶层；
-        不带 cid（根层）时嵌在 data.count/data.list 里。两种都接，别按一种写死。"""
+        不带 cid（根层）时嵌在 data.count/data.list 里。两种都接，别按一种写死。
+        limit/max_pages：死活探针用小分页单页（判非空不需要整个根层）。"""
         rows: list[dict] = []
         offset = 0
-        for _ in range(100):  # 10 万项封顶
-            params = {"share_code": share_code, "receive_code": receive_code, "offset": offset, "limit": PAGE}
+        for _ in range(max_pages):
+            params = {"share_code": share_code, "receive_code": receive_code, "offset": offset, "limit": limit or PAGE}
             if cid:
                 params["cid"] = cid
             data = self._get("https://webapi.115.com/share/snap", params)
@@ -350,9 +357,10 @@ class Pan115Adapter(CloudAdapter):
         # ⚠️ 必须有——实测漏了会把全量清单都收进去（2026-10-04：只想转 1 集收了 82 集）
         if spec.only_paths:
             def _kept(f: ShareFile) -> bool:
+                rel = f.path.strip("/")  # 两侧同口径剥斜杠（同 quark 2026-10-08 修复）
                 for sel in spec.only_paths or set():
                     sel = sel.strip("/")
-                    if sel and (f.path == sel or f.path.startswith(sel + "/")):
+                    if sel and (rel == sel or rel.startswith(sel + "/")):
                         return True
                 return False
             before = len(save_list)

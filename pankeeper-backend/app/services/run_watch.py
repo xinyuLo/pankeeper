@@ -23,7 +23,7 @@ import time
 
 from ..db import SessionLocal
 from ..models import PaTask, RunHistory
-from ..adapters.base import AdapterError
+from ..adapters.base import AdapterError, is_video_file
 from . import qms
 
 POLL_INTERVAL = 30        # 轮询间隔（秒）
@@ -35,6 +35,13 @@ SCRAPE_WAIT_TIMEOUT = 5 * 60  # 等刮削完成的上限（超时就不触发 ST
 CLOCK_TOLERANCE = 60      # updated_at 判据的时钟容差（秒）：QMS 在 NAS、PanKeeper 在另一台机器，
                           # 两边时钟差几秒就会让 `updated_at >= 触发时刻` 误判为假（桩测试实测踩到）
 PAGE_SIZE = 500           # 记录拉取条数：不按任务名筛（实测会漏，见下）
+
+
+def video_names(names) -> list[str]:
+    """转存清单里的视频文件（QMS 等待/未见统计的口径，杂件一律豁免）。
+
+    扩展名白名单在 adapters/base.VIDEO_EXTS（与目录「过滤其他文件」开关同一份）。"""
+    return [n for n in (names or []) if n and is_video_file(n)]
 
 # STRM 触发结果登记（run_id → {st, cls}）：media_push 的推送线程在 QMS 终态后来取，
 # 信息条才能如实显示「STRM 已生成」（进程重启即空——推送顶多按"状态未知"显示）。
@@ -331,7 +338,9 @@ def _wait(names: list[str], baseline: dict[str, list] | None = None) -> tuple[li
        否则同名旧记录顶替（狂飙 17.mp4 撞兰香如故旧记录，推送变成"兰香如故 · 更新 1 集"）。
     """
     baseline = baseline or {}
-    want = set(names)
+    want = set(video_names(names))
+    if not want:  # 清单里没有视频（纯杂件）→ QMS 本就无可等记录，立即放行
+        return [], "done"
     deadline = time.time() + POLL_TIMEOUT
     stale_deadline = time.time() + NO_RECORD_TIMEOUT
     dedup_deadline = time.time() + DEDUP_WAIT
@@ -376,7 +385,8 @@ def _summary(recs: list[dict], names: list[str]) -> dict:
     """终态汇总 → 快照 {st, cls}（cls: t-ok 绿 / t-bad 红 / t-off 灰）。"""
     ok = sum(1 for r in recs if r.get("status") == "renamed")
     fail = sum(1 for r in recs if r.get("status") in FAILED_STATUS)
-    missing = len(names) - len({r.get("file_name") for r in recs})
+    # 「未见」只对视频文件成立：nfo/图片等杂件 QMS 过滤不刮，永远没有记录，不算未见
+    missing = len(video_names(names)) - len({r.get("file_name") for r in recs})
     if not recs:
         return {"st": "未见刮削记录", "cls": "t-off"}
     if fail:

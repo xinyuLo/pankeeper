@@ -280,6 +280,8 @@ export const pkQueue = {
     media_off?: boolean
     /** LitePan 事件名（media.backend=litepan 时弹窗覆盖；空=按转存配置/全局默认） */
     lp_event?: string
+    /** 过滤其他文件（普通转存弹窗开关，默认 true）：只转视频文件；不传 = 按转存配置目录的设置 */
+    only_video?: boolean
   }): number {
     if (USE_MOCK) {
       const s = stateMock()

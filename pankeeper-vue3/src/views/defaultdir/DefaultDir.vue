@@ -90,6 +90,8 @@ const fQmsId = ref<number | undefined>(undefined)
 // LitePan 出接口后换下拉——2026-10-06 用户定稿）
 const fLpOn = ref(false)
 const fLpEvent = ref('')
+/** 过滤其他文件：默认开启（推荐），新增目录即开；编辑时读存量值 */
+const fOnlyVideo = ref(true)
 /** 当前联动后端：qms 显示 QMS 表单，litepan 显示 LitePan 表单（进页面拉一次） */
 const mediaBackend = ref<'qms' | 'litepan'>('qms')
 
@@ -174,6 +176,7 @@ function openEditor(id: number | null) {
   fQmsId.value = it?.qms_id ?? undefined
   fLpOn.value = it ? !!it.lp_on : false
   fLpEvent.value = it?.lp_event || ''
+  fOnlyVideo.value = it ? !!it.only_video : true
   bdPath.value = fPath.value
   modalOpen.value = true
   loadQmsStrmPaths()
@@ -242,8 +245,9 @@ async function confirmEditor() {
     message.error('LitePan 联动需填写事件名（与 LitePan 自动化规则里配的一致）')
     return
   }
-  const qmsFields = {
+  const sharedFields = {
     media_type: fMediaType.value,
+    only_video: fOnlyVideo.value,
     qms_on: fQmsOn.value,
     qms_id: fQmsOn.value && fQmsId.value != null ? fQmsId.value : null,
     strm_id: null, // 此表单只管 QMS；STRM 目录在任务弹窗里配（DdItemDraft 要求字段存在）
@@ -269,7 +273,7 @@ async function confirmEditor() {
       account: fAcc.value,
       type: fType.value,
       is_default: moved ? beforeCount === 0 : it.is_default,
-      ...qmsFields,
+      ...sharedFields,
     })
     message.success(`已保存「${name}」`)
   } else {
@@ -281,7 +285,7 @@ async function confirmEditor() {
       name,
       path: fPath.value,
       is_default: beforeCount === 0,
-      ...qmsFields,
+      ...sharedFields,
     })
     message.success(beforeCount === 0 ? `已新增「${name}」，并设为该账号默认` : `已新增「${name}」`)
   }
@@ -452,6 +456,15 @@ async function confirmEditor() {
       <div class="dd-tip">数字越小越靠前，「快速转存」的下拉框按这个顺序排。</div>
     </div>
 
+    <!-- 过滤其他文件：目录级属性，转到此目录的转存（搜索/自动都算）只保留视频文件 -->
+    <div class="dd-field">
+      <div class="dd-qmsline">
+        <a-switch v-model:checked="fOnlyVideo" />
+        <span class="dd-qmslabel">过滤其他文件</span>
+      </div>
+      <div class="dd-tip">开启后转到此目录只保存视频文件（推荐开启）。</div>
+    </div>
+
     <!-- 联动区块按「系统设置 → 联动后端」切换：qms = QMS 表单，litepan = LitePan 表单。
          两套字段（qms_on/lp_on）各自独立保存，切后端不丢另一套的配置。 -->
     <div v-if="mediaBackend === 'qms'" class="dd-field">
@@ -468,7 +481,6 @@ async function confirmEditor() {
           class="dd-sel"
           :placeholder="qmsOptions.length ? '请选择 QMS 整理目录' : 'QMS 暂无刮削目录，请先到 qmediasync 添加'"
         />
-        <div class="dd-tip">自动转存完成后触发 QMS 整理。</div>
         <div class="dd-tip dd-mt12">QMS 整理成功后会自动按整理结果生成 STRM，失败不生成（无需配置）。</div>
       </div>
     </div>

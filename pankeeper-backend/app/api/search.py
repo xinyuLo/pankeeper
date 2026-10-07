@@ -1,6 +1,8 @@
 """搜索：pansou 代理 + 频道/地址展示。"""
 from __future__ import annotations
 
+import time
+
 from fastapi import APIRouter, HTTPException
 
 from ..deps import CurrentUser
@@ -117,6 +119,11 @@ def search_channels(_user=CurrentUser):
     return [{"name": c, "on": (not selected) or (c in selected)} for c in pansou.channels()]
 
 
+# 死活探针的正结果缓存：链接 → 最近判定时刻（进程内存态，重启即空）
+_PROBE_TTL = 5 * 60
+_PROBE_OK: dict[tuple, float] = {}
+
+
 @router.post("/check-link")
 def check_link(body: dict, _user=CurrentUser):
     """转存前死活预检：**用网盘适配器实拉一次清单判定**（与转存/查看文件同链路，最准）。
@@ -139,7 +146,14 @@ def check_link(body: dict, _user=CurrentUser):
     if hit and isinstance(hit[0], dict) and (hit[0].get("total") or 0) > 0:
         return {"state": "ok", "summary": "近期查看过文件清单", "from_cache": True}
 
-    # ② 适配器实拉（只列根层够判死活）
+    # ①' 探针正结果短缓存：检测过的链接 5 分钟内直接放行（检测→快速转存→普通转存
+    #    一连串点下来不再重复实拉；进程内存态即可）
+    probe_key = (t, url, code)
+    ts = _PROBE_OK.get(probe_key)
+    if ts and time.time() - ts < _PROBE_TTL:
+        return {"state": "ok", "summary": "5 分钟内检测过", "from_cache": True}
+
+    # ② 适配器实拉（判死活只需要小第一页：probe_share；没实现探针的盘回落 list_share）
     from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, TaskSpec
     from ..adapters.factory import make_adapter
 
@@ -149,7 +163,12 @@ def check_link(body: dict, _user=CurrentUser):
         return {"state": "unknown", "summary": str(e)}
     DEAD_HINTS = ("不存在", "已取消", "已删除", "过期", "失效", "违规", "敏感")
     try:
-        files = adapter.list_share(TaskSpec(share_url=url, share_code=code, include_subdirs=False))
+        spec = TaskSpec(share_url=url, share_code=code, include_subdirs=False)
+        probe = getattr(adapter, "probe_share", None)
+        files = probe(spec) if probe is not None else None
+        if files is None:
+            files = adapter.list_share(spec)
+        _PROBE_OK[probe_key] = time.time()
         if not files:
             return {"state": "bad", "summary": "分享内容为空（可能已失效）"}
         return {"state": "ok", "summary": f"清单 {len(files)} 项"}

@@ -163,6 +163,9 @@ async function onRetry() {
 }
 /** 联动后端（决定触发行为：qms=重触发刮削 / litepan=重发 Webhook） */
 const mediaBackend = ref<'qms' | 'litepan'>('qms')
+/** 行显示口径：按该条记录**当时**的联动后端（2026-10-07 定稿：不随当前设置切——
+ * 之前用 litepan 转的就显示「LitePan 接管」，qms 转的显示刮削徽标）；老记录空值回落当前设置 */
+const rowBackend = (r: RecordRow) => (r.backend || mediaBackend.value) as 'qms' | 'litepan'
 async function onRetrigQms() {
   if (!cur.value) return
   await retrigQms(cur.value)
@@ -310,8 +313,9 @@ async function confirmTrig() {
               <th style="width: 118px">来源</th>
               <th style="width: 170px">目标位置</th>
               <th style="width: 26%">结果</th>
-              <th style="width: 130px">{{ mediaBackend === 'litepan' ? '整理' : 'QMS 整理' }}</th>
-              <th style="width: 96px">{{ mediaBackend === 'litepan' ? 'STRM' : 'STRM 生成' }}</th>
+              <!-- 表头固定不随后端切换（2026-10-07 定稿）；行内容按记录自己的 backend 显示 -->
+              <th style="width: 130px">整理</th>
+              <th style="width: 96px">STRM</th>
               <th style="width: 88px">时间</th>
               <th style="width: 150px">操作</th>
             </tr>
@@ -335,11 +339,11 @@ async function confirmTrig() {
               </td>
               <td class="small muted rk-path" :title="r.p">{{ r.p }}</td>
               <td><span class="tag rk-tagclip" :class="r.cls" :title="r.st">{{ r.st }}</span></td>
-              <td v-if="mediaBackend === 'litepan'">
+              <td v-if="rowBackend(r) === 'litepan'">
                 <span class="tag rk-tagclip rk-lp">LitePan 接管</span>
               </td>
               <td v-else><span class="tag rk-tagclip" :class="r.qms.cls" :title="r.qms.st">{{ r.qms.st }}</span></td>
-              <td v-if="mediaBackend === 'litepan'" class="small muted">—</td>
+              <td v-if="rowBackend(r) === 'litepan'" class="small muted">—</td>
               <td v-else><span class="tag rk-tagclip" :class="r.strm.cls" :title="r.strm.st">{{ r.strm.st }}</span></td>
               <td class="small muted rk-nowrap">{{ r.tm }}</td>
               <td>
@@ -386,7 +390,9 @@ async function confirmTrig() {
               <span class="small muted rk-card-path">{{ r.p }}</span>
             </div>
             <div class="rk-card-foot">
-              <span v-if="mediaBackend === 'litepan'" class="tag rk-card-tag rk-lp">整理：LitePan 接管</span>
+              <template v-if="rowBackend(r) === 'litepan'">
+                <span class="tag rk-card-tag rk-lp">整理：LitePan 接管</span>
+              </template>
               <template v-else>
                 <span class="tag rk-card-tag" :class="r.qms.cls" :title="r.qms.st">整理：{{ r.qms.st }}</span>
                 <span class="tag rk-card-tag" :class="r.strm.cls" :title="r.strm.st">STRM：{{ r.strm.st }}</span>

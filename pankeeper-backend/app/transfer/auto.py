@@ -11,7 +11,7 @@ import json
 import re
 import time
 
-from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, TaskSpec
+from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, TaskSpec, split_video_files
 from ..adapters.factory import make_adapter
 from ..db import SessionLocal
 from ..models import Account, DdItem, PaTask, Record, RunHistory
@@ -56,6 +56,7 @@ def _files_snap(files, spec, result) -> list:
     ok_names = {e.get("name") for e in (result.transferred if result else [])}
 
     def kept(rel: str) -> bool:
+        rel = rel.strip("/")  # 两侧同口径剥斜杠（2026-10-08 修复勾选全不中）
         for sel in spec.only_paths or set():
             sel = sel.strip("/")
             if sel and (rel == sel or rel.startswith(sel + "/")):
@@ -142,6 +143,13 @@ def run_auto(eng, t: dict, cfg: dict) -> None:
         if excluded_names:
             t["_runStats"]["excluded_names"] = excluded_names
             _push_log(t, "INFO", f"排除清单：跳过 {len(excluded_names)} 个文件")
+
+        # 目录开了「过滤其他文件」：非视频文件转存环节直接剔除（QMS 只整理视频，杂件转过去也是垃圾）
+        if dir_only_video(t["path"]):
+            files, dropped = split_video_files(files)
+            if dropped:
+                t["_runStats"]["excluded_names"] = (t["_runStats"]["excluded_names"] or []) + dropped
+                _push_log(t, "INFO", f"过滤其他文件：剔除 {len(dropped)} 个非视频文件（只转 mkv/mp4/iso 等视频）")
 
         total_size = sum(f.size for f in files if not f.is_dir)  # 目录行自带整目录合计，计入会双重计算
         _push_log(t, "INFO", f"获取分享内文件清单，共 {len(files)} 项（{total_size / 1024**3:.1f} GB）")
@@ -269,8 +277,20 @@ def _hit_dd_dir(path: str) -> dict | None:
                 continue
             if path == base or path.startswith(base + "/"):
                 if hit is None or len(base) > len(hit["path"]):
-                    hit = {"path": base, "qms_on": bool(d.qms_on), "qms_id": d.qms_id, "strm_id": d.strm_id}
+                    hit = {
+                        "path": base, "qms_on": bool(d.qms_on), "qms_id": d.qms_id,
+                        "strm_id": d.strm_id, "only_video": bool(d.only_video),
+                    }
     return hit
+
+
+def dir_only_video(path: str) -> bool:
+    """目标目录是否开了「过滤其他文件」（save_dir 前缀最长匹配；没命中任何目录 = False）。
+
+    开启后转到此目录只保存视频文件（adapters.base.VIDEO_EXTS），nfo/海报图片等
+    杂件在转存环节直接剔除（2026-10-07 定稿）。"""
+    hit = _hit_dd_dir(path or "")
+    return bool(hit and hit["only_video"])
 
 
 def resolve_media_link(path: str, task_id: int | None = None) -> dict | None:
