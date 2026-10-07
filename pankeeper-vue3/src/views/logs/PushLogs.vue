@@ -5,6 +5,7 @@
  * 数据源 GET /notify/history（notify.push 落库的 push_logs 快照，倒序取最近 100 条）。
  * 表格口径与转存历史页一致：全局基础样式 + 本页只收横向内边距（pl- 前缀）。 */
 import { onMounted, ref } from 'vue'
+import { useBackGuard } from '@/composables/useBackGuard'
 import { message } from 'ant-design-vue'
 import { ReloadOutlined, EyeOutlined } from '@ant-design/icons-vue'
 import { getPushLogs, getPushLogDetail, type PushLogRow, type PushLogDetail } from '@/api/modules/settings'
@@ -41,6 +42,7 @@ onMounted(load)
 
 /* ===== 详情抽屉：拉该条推送的完整正文快照 ===== */
 const detailOpen = ref(false)
+useBackGuard(detailOpen)
 const detailLoading = ref(false)
 const detail = ref<PushLogDetail | null>(null)
 async function openDetail(row: PushLogRow) {
