@@ -386,25 +386,17 @@ function start() {
         <span class="tm-savepath-val" :title="savePath">{{ savePath }}</span>
       </div>
 
-      <!-- 文件夹更名（60%）+ 子目录开关同行（悬停解释；「识别」= TMDB 回填） -->
-      <div class="tm-rename-row">
-        <div class="tm-rename">
-          <label>文件夹更名</label>
-          <a-input v-model:value="renameInput" :maxlength="80" placeholder="留空则用资源名新建文件夹" allow-clear>
-            <template #suffix>
-              <a-button size="small" class="tm-recog" :loading="recognizing" @click="onRecognize">
-                <template #icon><ThunderboltOutlined /></template>
-                识别
-              </a-button>
-            </template>
-          </a-input>
-        </div>
-        <label class="tm-opt tm-sub">
-          <input v-model="includeSub" type="checkbox" /><span class="tm-box"></span>
-          <a-tooltip title="分享内有子目录时一并转存">
-            <span class="tm-sub-label">子目录</span>
-          </a-tooltip>
-        </label>
+      <!-- 文件夹更名：撑满整行；「识别」= TMDB 识别回填（子目录开关挪到联动框里） -->
+      <div class="tm-rename">
+        <label>文件夹更名</label>
+        <a-input v-model:value="renameInput" :maxlength="80" placeholder="留空则用资源名新建文件夹" allow-clear>
+          <template #suffix>
+            <a-button size="small" class="tm-recog" :loading="recognizing" @click="onRecognize">
+              <template #icon><ThunderboltOutlined /></template>
+              识别
+            </a-button>
+          </template>
+        </a-input>
       </div>
 
       <!-- 联动：按「系统设置 → 联动后端」切换 QMS / LitePan 表单 -->
@@ -417,6 +409,12 @@ function start() {
           <label class="tm-media-switch">
             <a-switch v-model:checked="onlyVideo" size="small" />
             <span>过滤其他文件</span>
+          </label>
+          <label class="tm-opt tm-sub">
+            <input v-model="includeSub" type="checkbox" /><span class="tm-box"></span>
+            <a-tooltip title="分享内有子目录时一并转存">
+              <span class="tm-sub-label">子目录</span>
+            </a-tooltip>
           </label>
           <template v-if="mediaOn">
             <a-select
@@ -444,6 +442,12 @@ function start() {
           <label class="tm-media-switch">
             <a-switch v-model:checked="onlyVideo" size="small" />
             <span>过滤其他文件</span>
+          </label>
+          <label class="tm-opt tm-sub">
+            <input v-model="includeSub" type="checkbox" /><span class="tm-box"></span>
+            <a-tooltip title="分享内有子目录时一并转存">
+              <span class="tm-sub-label">子目录</span>
+            </a-tooltip>
           </label>
           <template v-if="lpOn">
             <a-input
@@ -677,26 +681,22 @@ function start() {
 .tm-opt input:checked + .tm-box { background: var(--primary); border-color: var(--primary); }
 .tm-opt input:checked + .tm-box::after { opacity: 1; transform: rotate(45deg) scale(1); }
 
-/* 文件夹更名撑满剩余宽度 + 行尾「子目录」勾选（悬停出解释）。
-   flex-wrap：窄视口（>767px 未触发移动布局的）子目录自动换行，不再被挤出可视区 */
-.tm-rename-row { margin-top: 14px; display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
-.tm-rename { flex: 1 1 240px; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+/* 文件夹更名：撑满整行（子目录开关在下方联动框的开关行里） */
+.tm-rename { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
 .tm-rename label { font-size: 12px; color: var(--text3); }
-/* 子目录：灰边框小盒（对齐原选项框观感），高度对齐输入框 */
-.tm-sub {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  height: 32px; /* 与 a-input 默认控制高度一致：顶边底边都对齐 */
-  padding: 0 14px;
+/* 子目录：联动框开关行里的小号灰边框盒（跟在「过滤其他文件」后面） */
+.tm-opt.tm-sub {
+  height: 22px; /* 与旁边 small 开关等高（16px 开关+描边余量），vertical-align 对齐上沿 */
+  padding: 0 8px;
+  margin-right: 0;
   border: 1px solid var(--split);
-  border-radius: 10px;
-  background: var(--surface-2);
-  cursor: pointer;
-  user-select: none;
+  border-radius: 6px;
+  background: var(--card);
+  vertical-align: middle;
 }
-.tm-sub-label { font-size: 13px; color: var(--text); line-height: 1.2; }
+.tm-sub-label { font-size: 12.5px; color: var(--text2); line-height: 1; }
+.tm-sub .tm-box { width: 14px; height: 14px; }
+.tm-sub .tm-box::after { left: 4px; top: 1px; width: 3.5px; height: 8px; }
 /* 识别按钮：淡紫描边 + 闪电图标（智能识别一族的颜色语言），悬停加深 */
 .tm-recog {
   color: #8c73e6;
@@ -722,7 +722,7 @@ function start() {
   border-radius: 10px;
   background: var(--surface-2);
 }
-.tm-media-switch { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text2); cursor: pointer; margin-right: 24px; }
+.tm-media-switch { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text2); cursor: pointer; margin-right: 24px; vertical-align: middle; }
 .tm-hint { margin-top: 8px; font-size: 12px; color: var(--text3); line-height: 1.65; }
 
 /* 移动端（<768px）：⚠️ 本块必须排在所有桌面规则之后——同优先级下后写的赢，
@@ -731,9 +731,8 @@ function start() {
 @media (max-width: 767px) {
   .tm-body { max-height: 56dvh; }
   .tm-split { flex-direction: column; }
-  .tm-rename-row { flex-direction: column; align-items: flex-start; gap: 10px; }
-  .tm-rename { flex: 0 0 auto; width: 100%; }
-  .tm-sub { height: 28px; padding: 0 10px; }
+  /* 更名输入框与「子目录」保持同行（2026-10-08 用户定稿）：只收紧 flex 基准不换行 */
+  .tm-rename { flex: 1 1 140px; }
   .tm-media { min-height: 0; }
   .tm-foot { flex-wrap: wrap; }
   .tm-foot .small { flex: 1 1 100%; margin-bottom: 2px; }
