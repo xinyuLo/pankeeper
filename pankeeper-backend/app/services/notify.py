@@ -102,7 +102,7 @@ def _serverchan(sendkey: str, title: str, content: str, short: str | None = None
             data["short"] = short
         resp = _sc_request(sendkey, data)
     except httpx.HTTPError as e:
-        return False, str(e)
+        return False, _human_net_error(e)
     if resp.status_code != 200:
         # 带上 Server酱 原始原因——只写「HTTP 400」等于没说，实测这里能直接看到
         # 「[AUTH]错误的Key」（占位符 sendkey）之类，秒定位（2026-10-04 踩坑）
@@ -115,6 +115,29 @@ def _serverchan(sendkey: str, title: str, content: str, short: str | None = None
     if code in (0, None):
         return True, ""
     return False, str(body.get("message") or f"code={code}")
+
+
+def _human_net_error(e: Exception) -> str:
+    """httpx 网络异常 → 人话（原始 _ssl.c:983 这类堆栈文案用户看不懂，2026-10-08 用户实锤）。
+
+    只翻译常见网络故障；认不出的保留原文前 80 字（信息不丢）。"""
+    s = str(e)
+    low = s.lower()
+    if "handshake" in low and ("timed out" in low or "timeout" in low):
+        return "连接超时（Server酱服务响应慢或网络不稳定），稍后重试"
+    if "timed out" in low or "timeout" in low:
+        return "请求超时（网络不稳定或服务无响应），稍后重试"
+    if "getaddrinfo" in low or "name or service not known" in low or "nodename nor servname" in low:
+        return "域名解析失败（检查设备的网络/DNS）"
+    if "connection refused" in low:
+        return "连接被拒绝（服务地址不可达）"
+    if "reset" in low:
+        return "连接被重置（网络中断或服务端断开），稍后重试"
+    if "ssl" in low or "certificate" in low:
+        return "SSL/证书异常（网络被劫持或设备时间不对）"
+    if "unreachable" in low or "network is down" in low:
+        return "网络不可达（检查设备联网状态）"
+    return s[:80] or e.__class__.__name__
 
 
 def _sc_reason(resp: httpx.Response) -> str:
@@ -134,7 +157,7 @@ def _webhook(url: str, title: str, content: str) -> tuple[bool, str]:
     try:
         resp = httpx.post(url, json={"title": title, "content": content}, timeout=10)
     except httpx.HTTPError as e:
-        return False, str(e)
+        return False, _human_net_error(e)
     if resp.status_code < 200 or resp.status_code >= 300:
         return False, f"HTTP {resp.status_code}"
     return True, ""
@@ -144,7 +167,7 @@ def test_sendkey(sendkey: str) -> tuple[bool, str]:
     try:
         resp = _sc_request(sendkey, {"title": "PanKeeper 测试", "desp": "推送链路已打通，PanKeeper 的消息会带这个标签。"})
     except httpx.HTTPError as e:
-        return False, str(e)
+        return False, _human_net_error(e)
     if resp.status_code != 200:
         return False, f"HTTP {resp.status_code}{_sc_reason(resp)}"
     # 两个版本都回 {code, message}：HTTP 200 也可能 body 里报错，得看 code
