@@ -4,12 +4,13 @@
  * 行内「详情」/点卡片 → 抽屉展示 Server酱实际收到的完整正文（push_logs.content 快照）。
  * 数据源 GET /notify/history（notify.push 落库的 push_logs 快照，倒序取最近 100 条）。
  * 表格口径与转存历史页一致：全局基础样式 + 本页只收横向内边距（pl- 前缀）。 */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useBackGuard } from '@/composables/useBackGuard'
 import { message } from 'ant-design-vue'
 import { ReloadOutlined, EyeOutlined } from '@ant-design/icons-vue'
 import { getPushLogs, getPushLogDetail, type PushLogRow, type PushLogDetail } from '@/api/modules/settings'
 import { useIsMobile } from '@/composables/useIsMobile'
+import MarkdownIt from 'markdown-it'
 
 const isMobile = useIsMobile()
 
@@ -43,6 +44,9 @@ onMounted(load)
 /* ===== 详情抽屉：拉该条推送的完整正文快照 ===== */
 const detailOpen = ref(false)
 useBackGuard(detailOpen)
+const md = new MarkdownIt({ breaks: true })
+/** 正文按 Markdown 渲染（与 Server酱展示同观感：标题/加粗/图片/段落） */
+const detailHtml = computed(() => (detail.value?.content ? md.render(detail.value.content) : ''))
 const detailLoading = ref(false)
 const detail = ref<PushLogDetail | null>(null)
 async function openDetail(row: PushLogRow) {
@@ -161,7 +165,8 @@ function kindTxt(k: string) {
           </div>
           <div class="pd-block">
             <div class="pd-label">推送正文（Server酱实际收到）</div>
-            <pre class="pd-content">{{ detail.content || '（无正文快照——本条产生于详情功能上线前）' }}</pre>
+            <div v-if="detail.content" class="md-body" v-html="detailHtml"></div>
+            <div v-else class="small muted">（无正文快照——本条产生于详情功能上线前）</div>
           </div>
         </template>
       </a-spin>
@@ -198,21 +203,33 @@ function kindTxt(k: string) {
 .pd-meta { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
 .pd-block { margin-bottom: 16px; }
 .pd-label { font-size: 12px; color: var(--text3); margin-bottom: 6px; }
-.pd-content {
-  margin: 0;
-  padding: 12px;
-  background: var(--surface-2);
-  border-radius: var(--r-sm);
-  font-size: 12.5px;
-  line-height: 1.7;
-  white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 60vh;
-  overflow: auto;
-  font-family: inherit;
-}
 
 @media (max-width: 767px) {
   .filterbar { flex-wrap: wrap; }
 }
+/* Markdown 正文（Server酱同观感）：标题/加粗/图片/段落间距 */
+.md-body {
+  font-size: 13.5px;
+  line-height: 1.8;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.md-body :deep(p) { margin: 8px 0; }
+.md-body :deep(h2) {
+  font-size: 15.5px;
+  font-weight: 600;
+  margin: 16px 0 8px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--split);
+}
+.md-body :deep(h3) { font-size: 14px; font-weight: 600; margin: 12px 0 6px; }
+.md-body :deep(img) {
+  display: block;
+  max-width: 100%;
+  border-radius: 8px;
+  margin: 6px 0;
+}
+.md-body :deep(strong) { font-weight: 600; }
+.md-body :deep(a) { color: var(--primary); }
+.md-body :deep(hr) { border: none; border-top: 1px dashed var(--split); margin: 10px 0; }
 </style>
