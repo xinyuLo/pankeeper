@@ -66,11 +66,14 @@ def delete_record(record_id: int, _user=CurrentUser):
 
 @router.delete("/records")
 def clear_old(before: str = "", _user=CurrentUser):
-    """清空三月前记录（before = ISO 日期）。"""
-    if not before:
-        raise HTTPException(status_code=400, detail="缺少 before 参数")
+    """清空搜索历史记录（before = 'MM-DD HH:MM'，与 tm 同格式；空 = 全部清空）。
+
+    只清 source=search（本页展示的）——自动转存的执行记录在「转存历史」页清。"""
     with SessionLocal() as db:
-        n = db.query(Record).filter(Record.tm < before).delete()
+        q = db.query(Record).filter(Record.source == "search")
+        if before:
+            q = q.filter(Record.tm < before)
+        n = q.delete(synchronize_session=False)
         db.commit()
     return {"count": n}
 

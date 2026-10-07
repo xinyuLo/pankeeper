@@ -4,12 +4,13 @@
  * 行上「详情」开共用 RunDetailModal。数据源 GET /pa/runs（与单任务「转存日志」同库同形）。
  * 与「转存记录」页刻意分开：那边只展示手动查询转存。 */
 import { computed, onMounted, ref, watch } from 'vue'
+import ClearHistoryButton, { type ClearRange } from '@/components/ClearHistoryButton.vue'
 import { message } from 'ant-design-vue'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import PkPager from '@/components/PkPager.vue'
 import RunDetailModal from './RunDetailModal.vue'
 import { DRIVE_META } from '@/api/mock/meta'
-import { listPaRuns, listPaTasks, type PaRunListItem } from '@/api/modules/tasks'
+import { listPaRuns, listPaTasks, clearRuns, type PaRunListItem } from '@/api/modules/tasks'
 import { useIsMobile } from '@/composables/useIsMobile'
 import type { MainDriveType, PaTask } from '@/types/model'
 
@@ -97,6 +98,18 @@ function durTxt(s: number): string {
   if (s < 60) return `${s} 秒`
   return `${Math.floor(s / 60)} 分 ${s % 60} 秒`
 }
+/** 清空转存历史（下拉选范围） */
+async function onClear(range: ClearRange) {
+  let before = ''
+  if (range !== 'all') {
+    const d = new Date()
+    d.setMonth(d.getMonth() - { '1m': 1, '3m': 3, '6m': 6 }[range])
+    before = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} 00:00:00`
+  }
+  const n = await clearRuns(before)
+  message.success(n > 0 ? `已清空 ${n} 条执行记录` : '没有符合条件的记录')
+  await load()
+}
 </script>
 
 <template>
@@ -108,6 +121,7 @@ function durTxt(s: number): string {
         <a-select v-model:value="fStatus" :options="STATUS_OPTS" style="width: 110px" />
         <a-input v-model:value="kw" placeholder="任务名 / 消息关键词" style="width: 200px" allow-clear />
         <span class="hr-flex1"></span>
+        <ClearHistoryButton @clear="onClear" />
         <a-button :loading="loading" type="primary" ghost @click="load">
           <template #icon><ReloadOutlined /></template>
           刷新

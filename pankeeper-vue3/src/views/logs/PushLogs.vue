@@ -5,10 +5,11 @@
  * 数据源 GET /notify/history（notify.push 落库的 push_logs 快照，倒序取最近 100 条）。
  * 表格口径与转存历史页一致：全局基础样式 + 本页只收横向内边距（pl- 前缀）。 */
 import { computed, onMounted, ref } from 'vue'
+import ClearHistoryButton, { type ClearRange } from '@/components/ClearHistoryButton.vue'
 import { useBackGuard } from '@/composables/useBackGuard'
 import { message } from 'ant-design-vue'
 import { ReloadOutlined, EyeOutlined } from '@ant-design/icons-vue'
-import { getPushLogs, getPushLogDetail, type PushLogRow, type PushLogDetail } from '@/api/modules/settings'
+import { getPushLogs, getPushLogDetail, clearPushLogs, type PushLogRow, type PushLogDetail } from '@/api/modules/settings'
 import { useIsMobile } from '@/composables/useIsMobile'
 import MarkdownIt from 'markdown-it'
 
@@ -80,6 +81,18 @@ const KIND_TXT: Record<string, string> = {
 function kindTxt(k: string) {
   return KIND_TXT[k] || k || '通知'
 }
+/** 清空推送历史（下拉选范围） */
+async function onClear(range: ClearRange) {
+  let before = ''
+  if (range !== 'all') {
+    const d = new Date()
+    d.setMonth(d.getMonth() - { '1m': 1, '3m': 3, '6m': 6 }[range])
+    before = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} 00:00:00`
+  }
+  const n = await clearPushLogs(before)
+  message.success(n > 0 ? `已清空 ${n} 条推送记录` : '没有符合条件的记录')
+  await load()
+}
 </script>
 
 <template>
@@ -89,6 +102,7 @@ function kindTxt(k: string) {
         <a-select v-model:value="fStatus" :options="STATUS_OPTS" style="width: 110px" />
         <span class="small muted">最近 100 条 · 成功 {{ delivered }} / 失败 {{ failed }}</span>
         <span class="pl-flex1"></span>
+        <ClearHistoryButton @clear="onClear" />
         <a-button :loading="loading" type="primary" ghost @click="load">
           <template #icon><ReloadOutlined /></template>
           刷新

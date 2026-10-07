@@ -502,3 +502,10 @@ export function getDirTree(type: MainDriveType): Promise<TreeNode[]> {
   const tree: TreeNode[] = [{ name: '全部文件', path: '/', kids: annotateDirs(PA_DIR_RAW[type], '/') }]
   return mockDelay(JSON.parse(JSON.stringify(tree)) as TreeNode[], 80)
 }
+
+/** 清空转存历史：before = 'YYYY-MM-DD HH:MM:SS'（该时刻之前），空串 = 全部。返回清除条数。 */
+export async function clearRuns(before: string): Promise<number> {
+  if (USE_MOCK) return mockDelay(0)
+  const { count } = await del<{ count: number }>(`/pa/runs?before=${encodeURIComponent(before)}`)
+  return count
+}
