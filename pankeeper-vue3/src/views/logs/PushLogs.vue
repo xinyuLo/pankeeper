@@ -102,7 +102,7 @@ function kindTxt(k: string) {
             <th style="width: 84px">状态</th>
             <th>推送内容</th>
             <th style="width: 26%">失败原因</th>
-            <th style="width: 64px">操作</th>
+            <th style="width: 64px; text-align: left">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -199,7 +199,17 @@ function kindTxt(k: string) {
 .pl-card .pl-err { margin-top: 5px; }
 
 /* 详情「详情」链接 + 抽屉排版 */
-.pl-detail { font-size: 12.5px; color: var(--primary); white-space: nowrap; }
+.pl-detail {
+  font-size: 12.5px;
+  color: var(--primary);
+  white-space: nowrap;
+  cursor: pointer;
+  margin-right: 18px; /* 别贴着表格右边缘 */
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: rgba(22, 119, 255, 0.35);
+}
+.pl-detail:hover { text-decoration-color: var(--primary); }
 .pd-meta { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
 .pd-block { margin-bottom: 16px; }
 .pd-label { font-size: 12px; color: var(--text3); margin-bottom: 6px; }
