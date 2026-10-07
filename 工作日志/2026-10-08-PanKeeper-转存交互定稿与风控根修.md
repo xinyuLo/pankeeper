@@ -72,6 +72,7 @@
 - **手机侧滑返回护栏**（用户实锤：详情抽屉开着从左往右滑直接退出页面）：新 composable `useBackGuard`——弹层打开时推占位历史栈，边缘侧滑先弹占位栈关抽屉、不退页；用户点关闭时自动弹掉占位栈（popstate 无副作用）。记录详情抽屉已接入，其他抽屉/弹窗可复用。
   - 追修一（用户实测"抽屉闪出来一瞬间又缩回"）：占位栈必须**克隆 vue-router 自身的 state** 再加标记——推外来 state 会让 router 在 popstate 时认不出 current、触发同路径重导航（页面闪刷、弹层闪一下又缩回）。克隆后 router 静默处理，实测 DOM 不重建。
   - 追修二（用户实测"还是会闪一下"）：popstate 时 router 的重渲染会**打断 antd 抽屉的 leave 过渡**（transform 重置回 x=0 而 display:none 未应用，闪现几帧）。护栏关闭窗口内给根元素挂 `pk-no-anim` 类（transition/animation 全禁，400ms 自动摘除）——抽屉瞬时关闭，逐帧采样首帧即 display:none，无任何可见闪现；再开抽屉动画正常。
+- **系统设置：TMDB API Key / TMDB 代理两项从「联动后端」tab 挪到「搜索源」tab**（结果缓存下面；数据仍存 qms 组，纯位置调整）。
 - **推送历史行内「详情」链接样式**（用户：不知道能点、太靠右）：加下划线+悬停加深、右移出 18px 不贴边。
 - **三个历史页统一「清空记录」下拉按钮**（新组件 ClearHistoryButton）：下拉选 一个月前/三个月前/半年前/全部记录（红色警示项）→ 二次确认（危险色"删除"）→ 按各自接口删除。搜索历史替换原「清空三月前记录」（顺修两个老坑：clear_old 无 before 直接 400——想清空全都不行；**不筛 source 会连自动转存记录一起删**，现只清 source=search）。后端新增 `DELETE /pa/runs`、`DELETE /notify/history`（before 空=全部）。浏览器实测：造 7 月旧记录 → 半年前 → 确认删除，旧记录消失、近期保留。
 - **推送失败原因人话化**（用户实锤 `_ssl.c:983: The handshake operation timed out` 看不懂）：`_human_net_error` 翻译 httpx 网络异常——超时/域名解析/拒绝/重置/SSL 证书/网络不可达各给一句带建议的人话；认不出的保留原文前 80 字。Server酱/Webhook/测试发送三处通用。
