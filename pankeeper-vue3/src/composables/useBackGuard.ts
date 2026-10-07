@@ -23,7 +23,10 @@ export function useBackGuard(open: Ref<boolean>, onClose?: () => void) {
   watch(open, (v) => {
     if (v && !guard) {
       guard = true
-      history.pushState({ pkBackGuard: 1 }, '')
+      // ⚠️ 必须克隆 vue-router 自己的历史 state 再加标记：推一个"外来" state 的话，
+      // popstate 时 router 认不出 current 会触发同路径重导航 → 页面闪刷、弹层闪一下
+      // 又缩回（2026-10-08 用户实测）。克隆后 router 看到的是同路由，静默处理。
+      history.pushState({ ...history.state, pkBackGuard: 1 }, '')
     } else if (!v && guard) {
       guard = false
       history.back() // 弹掉占位栈；popstate 时 open 已是 false，无副作用
