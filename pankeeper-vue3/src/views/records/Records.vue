@@ -399,6 +399,23 @@ async function confirmTrig() {
               </template>
               <span class="small muted rk-card-tm">{{ r.tm }}</span>
             </div>
+            <!-- 操作行：详情/触发/删除（与 PC 表格操作列同款；点按钮不触发卡片开抽屉） -->
+            <div class="rk-card-acts">
+              <a-button type="link" size="small" class="rk-detail" @click.stop="openDrawer(r)">详情</a-button>
+              <span class="rk-opdiv">丨</span>
+              <a-button
+                type="link"
+                size="small"
+                class="rk-detail"
+                :disabled="isRetrigging(r.id)"
+                :title="isRetrigging(r.id) ? '正在触发…' : '按联动后端重新触发'"
+                @click.stop="onRetrigger(r)"
+              >触发</a-button>
+              <span class="rk-opdiv">丨</span>
+              <a-popconfirm title="确定删除这条记录？" ok-text="删除" cancel-text="取消" @confirm="onRowDelete(r)">
+                <a-button type="link" danger size="small" class="rk-detail" @click.stop>删除</a-button>
+              </a-popconfirm>
+            </div>
           </div>
           <div v-if="!paged.length" class="pq-empty">没有匹配的记录 · 换个筛选条件试试</div>
         </div>
@@ -786,6 +803,15 @@ html[data-theme='dark'] .pa-ico.pa-ico-copy:hover { background: #1a1425; }
   }
   .rk-card-foot .tag { margin-right: 0; }
   .rk-card-tm { margin-left: auto; white-space: nowrap; font-size: 11.5px; }
+  /* 操作行：详情丨触发丨删除（PC 操作列同款，触屏目标够大） */
+  .rk-card-acts {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    margin: 6px 0 2px 11px;
+  }
+  .rk-card-acts .rk-detail { height: 30px; padding: 0 6px; font-size: 13px; }
+  .rk-card-acts .rk-opdiv { color: var(--text4); font-size: 12px; margin: 0 2px; }
 
   /* 详情抽屉操作按钮窄屏换行 */
   .rk-drawerbtns { flex-wrap: wrap; }
