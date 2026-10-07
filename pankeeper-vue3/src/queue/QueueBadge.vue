@@ -3,12 +3,14 @@
  * 看板本体在 QueueBoard（原记录页队列段同一组件），规则一致：日志单选、进度跟随。
  * 记录页的队列 tab 已撤，这里就是队列的唯一入口。 */
 import { computed, ref } from 'vue'
+import { useBackGuard } from '@/composables/useBackGuard'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { queueView, isAutoQueued } from '@/queue/engine'
 import QueueBoard from '@/queue/QueueBoard.vue'
 
 const isMobile = useIsMobile()
 const open = ref(false)
+useBackGuard(open)
 /* 浮标只统计手动（搜索转存）任务——自动转存走「转存历史」页，不进这块浮标（前台分区，用户要求） */
 const manual = computed(() => queueView.tasks.filter((t) => !isAutoQueued(t)))
 const active = computed(() => manual.value.filter((t) => t.status === 'wait' || t.status === 'run').length)

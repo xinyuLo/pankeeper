@@ -5,6 +5,7 @@
  * 状态读写走 accountStore（内存 mock），动作走 api/modules/accounts.ts。
  * ===================================================================== */
 import { computed, onMounted, ref } from 'vue'
+import { useBackGuard } from '@/composables/useBackGuard'
 import { message } from 'ant-design-vue'
 import LazyDirTree from '@/components/LazyDirTree.vue'
 import { accountStore, ACCOUNT_STATUS_VIEW, type AccountRow } from '@/api/mock/accounts'
@@ -89,6 +90,7 @@ async function onToggleNotify(a: AccountRow, v: boolean) {
 
 /* ===== 新增账号：选平台 + 别名 + 粘贴 Cookie，保存即验证 ===== */
 const addOpen = ref(false)
+useBackGuard(addOpen)
 const addSaving = ref(false)
 const addType = ref<MainDriveType>('baidu')
 const addAlias = ref('')
@@ -159,6 +161,7 @@ onMounted(async () => {
 /* ===== 默认根目录：独立配置（root_cfg），目录树弹窗的固定浏览起点 =====
  * 与转存配置的 is_default（快速转存下拉第一项/排序）是两回事。 */
 const bdOpen = ref(false)
+useBackGuard(bdOpen)
 const bdType = ref<MainDriveType>('quark')
 const bdPath = ref('')
 const bdFid = ref('') // 树里选中的目录 fid（预热缓存用；没点选就保存时回落按路径预热）
@@ -347,6 +350,7 @@ function capUnit(accId: number): 'GB' | 'TB' {
 
 /* 凭据表单：从浏览器 F12 复制整串 Cookie 粘贴；后端保存即验证，永远不回填明文 */
 const credOpen = ref(false)
+useBackGuard(credOpen)
 const credAcc = ref<AccountRow | null>(null)
 const credTitle = computed(() => `配置凭据 · ${credAcc.value ? credAcc.value.alias || DRIVE_META[credAcc.value.type]?.full || credAcc.value.type : ''}`)
 const credCookies = ref('')

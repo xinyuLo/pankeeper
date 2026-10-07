@@ -12,8 +12,10 @@ import { USE_MOCK, get } from '@/api/http'
 import { buildPaRunSeq, finishPaRun, runPaTaskNow, type PaRunStep } from '@/api/modules/tasks'
 import type { MainDriveType, PaTask, QueueLogLine, QueueState, QueueTask } from '@/types/model'
 
+import { useBackGuard } from '@/composables/useBackGuard'
 const props = defineProps<{ open: boolean; task: PaTask | null }>()
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void; (e: 'finished'): void }>()
+useBackGuard(() => props.open, () => emit('update:open', false))
 
 const meta = computed(() => (props.task ? DRIVE_META[props.task.type as MainDriveType] : DRIVE_META.baidu))
 

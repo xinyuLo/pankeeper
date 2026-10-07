@@ -4,6 +4,7 @@
  * TaskModal（任务配置，含叠加的 DirModal）/ RunModal（执行监控）/ ExclModal（排除清单）。
  * 互斥规则：开执行监控关掉其余弹窗；Esc 逐层关。排除入口在任务行（不在编辑弹窗里）。 */
 import { computed, onMounted, ref, watch } from 'vue'
+import { useBackGuard } from '@/composables/useBackGuard'
 import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
 import {
@@ -159,6 +160,7 @@ function onCheckAll() {
 
 /* ===== 任务弹窗（新增/编辑） ===== */
 const taskOpen = ref(false)
+useBackGuard(taskOpen)
 const editing = ref<PaTask | null>(null)
 function openAdd() {
   editing.value = null
@@ -174,6 +176,7 @@ function onSaved() {
 
 /* ===== 执行（paRun）：开监控（互斥：关掉其余弹窗）。排除清单缓存由后端转存时自动刷新 ===== */
 const runOpen = ref(false)
+useBackGuard(runOpen)
 const runTask = ref<PaTask | null>(null)
 function openRun(t: PaTask) {
   runTask.value = t
@@ -187,6 +190,7 @@ function onRunFinished() {
 
 /* ===== 排除清单：行内直开（不经过编辑弹窗） ===== */
 const exclOpen = ref(false)
+useBackGuard(exclOpen)
 const exclTask = ref<PaTask | null>(null)
 function openExcl(t: PaTask) {
   exclTask.value = t
@@ -198,6 +202,7 @@ function onExclCommitted() {
 
 /* ===== 任务详情抽屉（原型 openTaskDetail：快照字段 + 执行日志） ===== */
 const detailOpen = ref(false)
+useBackGuard(detailOpen)
 const detailTask = ref<PaTask | null>(null)
 const detailLog = ref<QueueLogLine[]>([])
 async function openDetail(t: PaTask) {

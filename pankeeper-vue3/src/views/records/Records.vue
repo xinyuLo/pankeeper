@@ -92,6 +92,7 @@ function metaOf(r: RecordRow) {
 
 /* ===== 行内「查看文件 / 复制链接」（对齐自动转存行操作） ===== */
 const sfOpen = ref(false)
+useBackGuard(sfOpen)
 const sfRec = ref<RecordRow | null>(null)
 function onViewFiles(r: RecordRow) {
   sfRec.value = r
@@ -141,6 +142,7 @@ async function openDrawer(r: RecordRow) {
 
 // 详情抽屉里「最近结果 → 详情」的文件清单弹窗
 const filesOpen = ref(false)
+useBackGuard(filesOpen)
 function fileCls(st: string): string {
   if (st === '已转存') return 't-ok'
   if (st === '未转存') return 't-bad'

@@ -44,8 +44,10 @@ import { DRIVE_META } from '@/api/mock/meta'
 import { MINE_TREE } from '@/api/mock/tree'
 import type { DdItem, DdQmsPath, MainDriveType, TreeNode } from '@/types/model'
 
+import { useBackGuard } from '@/composables/useBackGuard'
 const props = defineProps<{ open: boolean; target: TransferTarget | null }>()
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>()
+useBackGuard(() => props.open, () => emit('update:open', false))
 
 const DEFAULT_DIR = USE_MOCK ? '/我的资源/影视/电视剧/国产剧' : '/'
 

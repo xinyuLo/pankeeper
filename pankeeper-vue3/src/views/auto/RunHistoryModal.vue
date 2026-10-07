@@ -8,8 +8,10 @@ import RunDetailModal from './RunDetailModal.vue'
 import { getPaRuns, type PaRunRow } from '@/api/modules/tasks'
 import type { PaTask } from '@/types/model'
 
+import { useBackGuard } from '@/composables/useBackGuard'
 const props = defineProps<{ open: boolean; task: PaTask | null }>()
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>()
+useBackGuard(() => props.open, () => emit('update:open', false))
 
 const rows = ref<PaRunRow[]>([])
 const loading = ref(false)

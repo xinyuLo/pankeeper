@@ -5,8 +5,10 @@
 import { computed, ref, watch } from 'vue'
 import { cronHuman } from '@/api/modules/tasks'
 
+import { useBackGuard } from '@/composables/useBackGuard'
 const props = defineProps<{ open: boolean; cron: string }>()
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void; (e: 'save', cron: string): void }>()
+useBackGuard(() => props.open, () => emit('update:open', false))
 
 type Mode = 'daily' | 'weekly' | 'hourly' | 'everyn' | 'custom'
 const mode = ref<Mode>('daily')

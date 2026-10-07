@@ -12,8 +12,10 @@ import { DRIVE_META } from '@/api/mock/meta'
 import { commitExcl, fetchExclFiles, fmtHms, type PaExclFetch, type PaExclFile } from '@/api/modules/tasks'
 import type { MainDriveType, PaTask } from '@/types/model'
 
+import { useBackGuard } from '@/composables/useBackGuard'
 const props = defineProps<{ open: boolean; task: PaTask | null }>()
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void; (e: 'committed'): void }>()
+useBackGuard(() => props.open, () => emit('update:open', false))
 
 const meta = computed(() => (props.task ? DRIVE_META[props.task.type as MainDriveType] : DRIVE_META.baidu))
 

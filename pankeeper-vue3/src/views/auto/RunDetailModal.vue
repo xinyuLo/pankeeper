@@ -6,8 +6,10 @@ import { FileTextOutlined } from '@ant-design/icons-vue'
 import LogBox from '@/components/LogBox.vue'
 import { getPaRunDetail, type PaRunDetail } from '@/api/modules/tasks'
 
+import { useBackGuard } from '@/composables/useBackGuard'
 const props = defineProps<{ open: boolean; runId: number | null }>()
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>()
+useBackGuard(() => props.open, () => emit('update:open', false))
 
 const detail = ref<PaRunDetail | null>(null)
 const loading = ref(false)

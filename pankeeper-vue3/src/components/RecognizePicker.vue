@@ -6,6 +6,7 @@ import { computed } from 'vue'
 import { message } from 'ant-design-vue'
 import type { RecognizeCandidate } from '@/api/modules/recognize'
 
+import { useBackGuard } from '@/composables/useBackGuard'
 const props = defineProps<{
   open: boolean
   candidates: RecognizeCandidate[]
@@ -13,6 +14,7 @@ const props = defineProps<{
   sourceName?: string
 }>()
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void; (e: 'pick', c: RecognizeCandidate): void }>()
+useBackGuard(() => props.open, () => emit('update:open', false))
 
 const TYPE_TXT: Record<string, string> = { movie: '电影', tv: '剧集' }
 

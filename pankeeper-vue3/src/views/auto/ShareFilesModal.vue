@@ -18,8 +18,10 @@ interface TreeNode {
   kids: TreeNode[]
 }
 
+import { useBackGuard } from '@/composables/useBackGuard'
 const props = defineProps<{ open: boolean; taskId: number | null; taskName: string; fetcher?: (refresh: boolean) => Promise<ShareFilesMeta> }>()
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>()
+useBackGuard(() => props.open, () => emit('update:open', false))
 
 const loading = ref(false)
 const refreshing = ref(false)
