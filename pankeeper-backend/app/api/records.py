@@ -21,6 +21,8 @@ def _row(r: Record) -> dict:
         "n": r.n, "t": r.t, "p": r.p, "st": r.st, "cls": r.cls, "tm": r.tm,
         "qms": json.loads(r.qms_json or "{}"),
         "strm": json.loads(r.strm_json or "{}"),
+        # 该次转存当时的联动后端：记录页整理/STRM 列按它逐行显示（老记录空值前端回落当前设置）
+        "backend": (r.backend or "").strip(),
         "share_url": r.share_url, "share_code": r.share_code,
         "cron": r.cron, "include_subdirs": r.include_subdirs,
         "exclude_count": r.exclude_count, "post_qms": r.post_qms, "post_notify": r.post_notify,

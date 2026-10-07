@@ -15,6 +15,7 @@ import threading
 import time
 
 from . import notify, tmdb
+from ..adapters.base import is_video_file
 from .settings_svc import get_group
 
 # 轮询节奏/超时统一由 run_watch._wait 管（媒体推送与结果回填共用一套口径，别再各写一份）
@@ -181,8 +182,12 @@ def _header(ctx: dict, records: list[dict], strm_res: dict | None = None) -> str
     if ctx.get("qms_ok") is False:
         stats.append("❌ QMS 触发失败")
     elif ctx.get("qms_ok"):
-        # 未见记录的文件如实点名（2026-10-06：旧版只统计匹配到的记录，缺文件毫无声息）
-        missing = len(ctx["names"]) - len({r.get("file_name") for r in records})
+        # 未见记录的文件如实点名（2026-10-06）；「未见」只数视频文件——nfo/图片等杂件
+        # QMS 过滤不刮、永远没有记录，不能算未见（2026-10-07 实锤：电影夹带 nfo/图片
+        # 被算成未见 → 卡等待 30 分钟 → Server酱静默）
+        from . import run_watch  # 延迟导入避免循环
+
+        missing = len(run_watch.video_names(ctx["names"])) - len({r.get("file_name") for r in records})
         if records:
             failed = [r for r in records if r.get("status") in FAILED_STATUS]
             if not failed:
@@ -319,6 +324,8 @@ def _clip(text: str) -> str:
 
 def _fallback(ctx: dict, records: list[dict], strm_res: dict | None = None) -> None:
     """富文本拿不到时的兜底：信息条 + 文件清单（失败/未见记录的标注原因），通知不丢。"""
+    from . import run_watch  # 延迟导入避免循环
+
     print("[push] 富文本推送回退纯文字")
     failed = {r.get("file_name"): r.get("failed_reason") or "刮削失败" for r in records if r.get("status") in FAILED_STATUS}
     seen = {r.get("file_name") for r in records}
@@ -326,7 +333,7 @@ def _fallback(ctx: dict, records: list[dict], strm_res: dict | None = None) -> N
     for n in ctx["names"]:
         if n in failed:
             lines.append(f"- {n}（{failed[n]}）")
-        elif n not in seen:
+        elif n not in seen and is_video_file(n):  # 杂件（nfo/图片）QMS 不刮，不标未见
             lines.append(f"- {n}（未见 QMS 刮削记录）")
         else:
             lines.append(f"- {n}")

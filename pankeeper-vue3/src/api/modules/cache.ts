@@ -78,16 +78,44 @@ export interface WarmStatus {
   done: number
   total: number
   message?: string
+  /** 后端队列任务附带的展示字段（缓存预热队列化后返回） */
+  type?: string
+  acc_name?: string
 }
 
-/** 启动某网盘的全树预热（后台执行立即返回；已在跑则回当前进度） */
-export function warmTrees(type: string): Promise<WarmStatus> {
+/** 启动某网盘的全树预热（后台执行立即返回；同账号已在排队/在跑则回当前进度）。
+ *  accId 空 = 该类型默认账号。全局单工队列：所有任务串行跑。 */
+export function warmTrees(type: string, accId?: number | null): Promise<WarmStatus> {
   if (USE_MOCK) return mockDelay({ status: 'done', done: 0, total: 0 })
-  return post<WarmStatus>('/cache/trees/warm', { type })
+  return post<WarmStatus>('/cache/trees/warm', { type, acc_id: accId ?? null })
 }
 
-/** 查询预热进度 */
-export function warmStatus(type: string): Promise<WarmStatus> {
+/** 查询预热进度（accId 口径要和 warmTrees 一致，否则查不到那个任务） */
+export function warmStatus(type: string, accId?: number | null): Promise<WarmStatus> {
   if (USE_MOCK) return mockDelay({ status: 'done', done: 0, total: 0 })
-  return get<WarmStatus>('/cache/trees/warm/status', { params: { type } })
+  return get<WarmStatus>('/cache/trees/warm/status', { params: { type, acc_id: accId ?? null } })
+}
+
+/** ===== 缓存配置页「缓存预热」：全部已连接账号入队，单工队列串行跑 ===== */
+
+export interface WarmAllStatus {
+  total_jobs: number
+  done_jobs: number
+  failed_jobs: number
+  queued: number
+  current: (WarmStatus & { type: string; acc_name?: string }) | null
+  jobs: (WarmStatus & { type: string; acc_name?: string })[]
+}
+
+/** 全部已连接账号入队预热（后端队列串行，同网盘多账号绝不并行——防风控） */
+export function warmAllAccounts(): Promise<{ count: number }> {
+  if (USE_MOCK) return mockDelay({ count: 0 })
+  return post<{ count: number }>('/cache/trees/warm-all')
+}
+
+/** 预热队列总览（排队数/在跑任务/完成数） */
+export function warmAllStatus(): Promise<WarmAllStatus> {
+  if (USE_MOCK)
+    return mockDelay({ total_jobs: 0, done_jobs: 0, failed_jobs: 0, queued: 0, current: null, jobs: [] })
+  return get<WarmAllStatus>('/cache/trees/warm-all/status')
 }

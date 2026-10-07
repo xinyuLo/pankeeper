@@ -5,6 +5,7 @@
  * 「转存后路径」和按该位置配置会触发的 QMS / STRM。确认 = pkQueue.enqueue 入队即走。 */
 import { computed, nextTick, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
+import { ThunderboltOutlined } from '@ant-design/icons-vue'
 import { pkQueue } from '@/queue/engine'
 import { DRIVE_META, DD_MEDIA } from '@/api/mock/meta'
 import { listDdItems, listQmsPaths } from '@/api/modules/dd'
@@ -53,15 +54,28 @@ const isMovieDir = computed(() => {
   const n = (it.name || '').toLowerCase()
   return !(n.includes('电视') || n.includes('剧'))
 })
-/** 展开多选框列表的条件：电影目录 + 检测到多文件（单文件直接转，不用选） */
-const showFilePicker = computed(() => isMovieDir.value && !filesFailed.value && fileRows.value.length > 1)
+/* 视频扩展名（与后端 VIDEO_EXTS 同口径）：所选目录开了「过滤其他文件」→ 列表里非视频直接消失 */
+const VIDEO_EXTS = new Set([
+  '.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ts',
+  '.iso', // 蓝光/DVD 原盘镜像（用户点名：iso 也是视频）
+])
+function isVideoFile(name: string): boolean {
+  const dot = name.lastIndexOf('.')
+  return dot >= 0 && VIDEO_EXTS.has(name.slice(dot).toLowerCase())
+}
+/** 勾选列表展示的文件：所选转存配置目录开了「过滤其他文件」就只展示视频（不是禁选，是消失） */
+const displayRows = computed(() =>
+  currentItem.value?.only_video ? fileRows.value.filter((f) => isVideoFile(f.name)) : fileRows.value,
+)
+/** 展开多选框列表的条件：电影目录 + 检测到多文件（单文件直接转，不用选；按过滤后的口径数） */
+const showFilePicker = computed(() => isMovieDir.value && !filesFailed.value && displayRows.value.length > 1)
 /** 内容判断的提示行（始终显示，按状态换文案——别让弹窗内容凭空跳变） */
 const dirCheckTip = computed(() => {
   if (filesLoading.value) return '正在检测资源…'
-  if (filesFailed.value) return isMovieDir.value ? '文件清单获取失败，按单一资源直接转存' : '电视节目无需确认勾选，转存内容全部转存'
+  if (filesFailed.value) return '文件清单获取失败——链接可能已失效，无法转存'
   if (!isMovieDir.value) return '电视节目无需确认勾选，转存内容全部转存'
-  if (fileRows.value.length <= 1) return '单一资源，无需勾选，直接转存'
-  return `检测到 ${fileRows.value.length} 个文件，勾选要转存的`
+  if (displayRows.value.length <= 1) return '单一资源，无需勾选，直接转存'
+  return `检测到 ${displayRows.value.length} 个文件，过滤 ${fileRows.value.length - displayRows.value.length} 个`
 })
 async function loadShareFiles() {
   filesLoading.value = true
@@ -245,10 +259,15 @@ const pv = computed(() => {
   return { base: it.path, raw, origin, xrows }
 })
 
-/** 确认 = 入队即走，绝不弹进度条。资源检测中（清单未回）不允许提交 */
+/** 确认 = 入队即走，绝不弹进度条。资源检测中/没过（清单失败=疑似坏链）都不允许提交
+ *  （2026-10-08 用户定稿：文件检测是最终守门，没过就不转） */
 function onOk() {
   if (filesLoading.value) {
     message.warning('正在检测资源，请稍候…')
+    return
+  }
+  if (filesFailed.value) {
+    message.error('文件检测未通过（链接可能已失效），无法转存')
     return
   }
   const it = currentItem.value
@@ -309,9 +328,9 @@ function onOk() {
           />
         </div>
 
-        <!-- 新文件夹名：label 和输入框同一行，留空 = 用资源名；「识别」= TMDB 识别回填 -->
-        <div class="dd-field dd-inline">
-          <label class="dd-label" style="margin-bottom: 0">文件夹更名</label>
+        <!-- 新文件夹名：label 在输入框上方（与其他字段一致）；留空 = 用资源名；「识别」= TMDB 识别回填 -->
+        <div class="dd-field">
+          <label class="dd-label">文件夹更名</label>
           <a-input
             ref="renameRef"
             v-model:value="rename"
@@ -320,7 +339,8 @@ function onOk() {
             @press-enter="onOk"
           >
             <template #suffix>
-              <a-button size="small" type="text" :loading="recognizing" style="margin-right: -7px" @click="onRecognize">
+              <a-button size="small" class="tm-recog" :loading="recognizing" @click="onRecognize">
+                <template #icon><ThunderboltOutlined /></template>
                 识别
               </a-button>
             </template>
@@ -339,7 +359,7 @@ function onOk() {
         <div v-if="showFilePicker" class="dd-field">
           <label class="dd-label">选择要转存的文件<i>*</i></label>
           <div class="qs-chk-list">
-            <label v-for="f in fileRows" :key="f.path" class="qs-chk">
+            <label v-for="f in displayRows" :key="f.path" class="qs-chk">
               <input type="checkbox" :value="f.path" v-model="selPaths" />
               <span class="qs-chk-name" :title="f.name">{{ f.name }}</span>
               <span class="qs-chk-size">{{ f.size ? (f.size / 1024 / 1024 / 1024).toFixed(1) + ' GB' : '—' }}</span>
@@ -360,9 +380,6 @@ function onOk() {
               <div v-if="pv.raw" class="qs-pv-note">
                 新建文件夹 <b>{{ pv.raw }}</b> 承接分享内容（剥壳转入）
               </div>
-              <div v-else class="qs-pv-note">
-                以「{{ pv.origin }}」新建文件夹承接分享内容 · 填「文件夹更名」可换成别的名字
-              </div>
               <div class="qs-pv-xrows">
                 <div v-for="x in pv.xrows" :key="x.k" class="qs-pv-xrow">
                   <span class="qs-pv-xk">{{ x.k }}</span>
@@ -377,7 +394,12 @@ function onOk() {
 
     <div class="qs-foot">
       <a-button @click="close">取消</a-button>
-      <a-button type="primary" :disabled="!currentItem" @click="onOk">开始转存</a-button>
+      <a-button
+        type="primary"
+        :disabled="!currentItem || filesLoading || filesFailed"
+        :title="filesLoading ? '正在检测资源，请稍候…' : filesFailed ? '文件检测未通过（链接可能已失效）' : undefined"
+        @click="onOk"
+      >开始转存</a-button>
     </div>
 
     <!-- 识别歧义候选（同名剧/电影时让用户挑，回填「文件夹更名」） -->
@@ -488,4 +510,18 @@ html[data-theme='dark'] .qs-preview.is-renamed { border-color: rgba(64, 150, 255
   .dd-inline { display: block; }
   .dd-inline .dd-label { margin-bottom: 6px !important; }
 }
+/* 识别按钮：淡紫描边 + 闪电图标（与普通转存弹窗同款），图标贴紧文字 */
+.tm-recog {
+  color: #8c73e6;
+  border-color: rgba(140, 115, 230, 0.5);
+  background: rgba(140, 115, 230, 0.06);
+  box-shadow: none;
+}
+.tm-recog:hover, .tm-recog:focus-visible {
+  color: #7451d8;
+  border-color: #8c73e6;
+  background: rgba(140, 115, 230, 0.12);
+}
+.tm-recog :deep(.ant-btn-icon + span) { margin-inline-start: 4px; }
+.tm-recog :deep(.anticon) { margin-inline-end: 0; }
 </style>
