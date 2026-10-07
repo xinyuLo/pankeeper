@@ -7,6 +7,7 @@ import { message } from 'ant-design-vue'
 import { CopyOutlined, FolderOpenOutlined } from '@ant-design/icons-vue'
 import PkPager from '@/components/PkPager.vue'
 import LogBox from '@/components/LogBox.vue'
+import { useBackGuard } from '@/composables/useBackGuard'
 import ShareFilesModal from '@/views/auto/ShareFilesModal.vue'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { DD_MEDIA, DRIVE_META, MAIN_ORDER } from '@/api/mock/meta'
@@ -130,6 +131,8 @@ async function onClearOld() {
 const drawerOpen = ref(false)
 const cur = ref<RecordRow | null>(null)
 const curLog = ref<QueueLogLine[]>([])
+// 侧滑返回护栏：手机上开抽屉推占位历史栈，边缘侧滑先关抽屉而不是退出页面
+useBackGuard(drawerOpen)
 async function openDrawer(r: RecordRow) {
   cur.value = r
   drawerOpen.value = true
