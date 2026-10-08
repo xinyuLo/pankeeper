@@ -13,6 +13,7 @@
 import { nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
+import { DeleteOutlined } from '@ant-design/icons-vue'
 import { useAuthStore } from '@/store/auth'
 import {
   getLitePanHealth,
@@ -530,7 +531,7 @@ async function onRemoveAvatar() {
               <div v-for="(h, i) in qms.tmdb_hosts" :key="i" class="host-row">
                 <a-input v-model:value="h.ip" style="width: 180px" placeholder="IP，如 108.162.1.1" @blur="flushSave('qms')" />
                 <a-input v-model:value="h.host" style="width: 240px" placeholder="域名，如 api.themoviedb.org" @blur="flushSave('qms')" />
-                <a-button type="text" danger @click="removeHost(i)">删除</a-button>
+                <a-button danger @click="removeHost(i)"><template #icon><DeleteOutlined /></template>删除</a-button>
               </div>
               <div class="ctl" style="margin-top: 8px">
                 <a-button @click="addHost">添加一行</a-button>
@@ -789,12 +790,16 @@ async function onRemoveAvatar() {
 .qms-pill.ok { color: var(--text2); }
 .qms-pill.bad i { background: var(--error); }
 
-/* Host 模式映射行：一左一右 IP/域名（对齐 .ctl 的 10px 间距） */
+/* Host 模式映射行：卡片框住一左一右 IP/域名（浅底+细边框，随暗色主题自动翻转） */
 .host-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 8px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
 }
 
 /* 头像管理：预览圆（没传图时用与 logo 同套的品牌渐变，不至于难看） */
