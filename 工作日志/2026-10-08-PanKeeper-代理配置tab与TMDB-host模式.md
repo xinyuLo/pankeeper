@@ -68,5 +68,10 @@
 
 - 本地前后端已起（8000/5173）；库里终态：`tmdb_mode=host`、`tmdb_hosts=[]`、
   原代理地址原样保留、API Key 完好（每次保存重新 fernet 加密，密文会变、可解密不变）。
-- NAS 部署待用户发话：pankeeper-deploy `git pull` → `/vol1/1001/compose/pankeeper` 下
-  `docker compose up -d`（本批未推）。
+- **NAS 已部署 `fa15cb7`**（2026-10-08 晚，用户发话后执行）：pankeeper-deploy `git pull` →
+  `/vol1/1001/compose/pankeeper` 下 `docker compose up -d --build`，容器重建、站点 200、
+  `[pa-sched] 自动任务排期：1 个生效`；镜像内 `tmdb.py` 含 `sni_hostname` 实锤新代码。
+  用户已在部署站配好两个优选 IP 实测连通（108.138.246.55 / 18.161.156.50）。
+- 坑：外网 SSH kick 命令读输出会 PipeTimeout（nohup 后台任务占着通道）——**部署其实已经
+  跑起来了**，别慌，直接另起连接轮询 `/tmp/pk_deploy.log` 即可；NAS 拉 docker.io 元数据
+  慢（node/python 镜像 metadata 30~60s），构建全程约 4 分钟属正常。
