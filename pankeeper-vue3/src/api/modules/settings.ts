@@ -104,6 +104,33 @@ export async function testQms(url: string, apikey: string): Promise<{ ok: boolea
   return post<{ ok: boolean; message?: string }>('/settings/qms/test', { url, apikey })
 }
 
+/** 测试 TMDB 连通（代理配置 tab）：代理/Host 模式都按「输入框正在编辑的值」测。
+ *  host 模式同域名多 IP 时后端并发测全部候选，results 逐个报耗时，winner=最快的 IP（前端置顶为生效行）。
+ *  api_key 传掩码（****开头）时后端回落已保存配置。失败也是 200 + {ok:false,message} */
+export async function testTmdb(cfg: {
+  mode: string
+  proxy: string
+  hosts: { ip: string; host: string }[]
+  skip_tls: boolean
+  api_key: string
+}): Promise<{
+  ok: boolean
+  ms?: number
+  /** host 模式多候选时的最快 IP（target），前端据此把该行置顶 */
+  winner?: string
+  message?: string
+  results?: { target: string; desc: string; ok: boolean; ms?: number; error?: string }[]
+}> {
+  if (USE_MOCK) {
+    void cfg
+    return mockDelay({ ok: true, ms: 220, message: '（mock）TMDB 连通正常' }, 300)
+  }
+  return post<{ ok: boolean; ms?: number; winner?: string; message?: string; results?: { target: string; desc: string; ok: boolean; ms?: number; error?: string }[] }>(
+    '/settings/tmdb/test',
+    cfg,
+  )
+}
+
 /** QMS 引擎状态胶囊（设置页用，语义同 /search/health；按已保存配置测） */
 export function getQmsHealth(): Promise<{ ok: boolean; message?: string }> {
   if (USE_MOCK) return mockDelay({ ok: true, message: '在线' }, 200)

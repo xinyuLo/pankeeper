@@ -1,11 +1,13 @@
 <script setup lang="ts">
 /* =====================================================================
- * 系统设置页 —— 原型 _shell.html 设置段（5 个胶囊 tab）的 Vue 移植。
- * - tab1 搜索源 / tab2 推送通知：改完静默保存（原型即改即存内存，无保存按钮）
- * - tab3 联动后端：顶部选 qms/litepan，下面按所选显示 QMS 连接参数或 LitePan Webhook 参数
- *   （目录关联在「转存配置」与自动转存任务弹窗），与 tab1/tab2 一致走防抖自动保存
- * - tab4 账号安全：改密码（前端先校验）+ 会话有效期
- * - tab5 头像管理：上传/移除头像（前端压缩后存后端）
+ * 系统设置页 —— 原型 _shell.html 设置段（胶囊 tab）的 Vue 移植。
+ * - tab1 搜索源：改完静默保存（原型即改即存内存，无保存按钮）
+ * - tab2 代理配置：TMDB API Key + 连通模式（代理 / host 直连），TMDB 字段从搜索源 tab 迁来
+ * - tab3 推送通知：改完静默保存（原型即改即存内存，无保存按钮）
+ * - tab4 联动后端：顶部选 qms/litepan，下面按所选显示 QMS 连接参数或 LitePan Webhook 参数
+ *   （目录关联在「转存配置」与自动转存任务弹窗），与 tab1/tab3 一致走防抖自动保存
+ * - tab5 账号安全：改密码（前端先校验）+ 会话有效期
+ * - tab6 头像管理：上传/移除头像（前端压缩后存后端）
  * ⚠️ 交互契约：推送只服务自动转存，手动转存不接 Server 酱（docs/01）。
  * ===================================================================== */
 import { nextTick, onMounted, reactive, ref, watch } from 'vue'
@@ -26,6 +28,7 @@ import {
   testPansou,
   testQms,
   testSendkey,
+  testTmdb,
 } from '@/api/modules/settings'
 import { getEngineHealth } from '@/api/modules/search'
 import type { LitePanCfg, NotifyCfg, QmsCfg, SearchSrcCfg, SecurityCfg } from '@/api/mock/settings'
@@ -36,10 +39,11 @@ const auth = useAuthStore()
 /* ===== 胶囊 tab ===== */
 const TABS = [
   { k: 'tb1', label: '搜索源' },
-  { k: 'tb2', label: '推送通知' },
-  { k: 'tb3', label: '联动后端' },
-  { k: 'tb4', label: '账号安全' },
-  { k: 'tb5', label: '头像管理' },
+  { k: 'tb2', label: '代理配置' },
+  { k: 'tb3', label: '推送通知' },
+  { k: 'tb4', label: '联动后端' },
+  { k: 'tb5', label: '账号安全' },
+  { k: 'tb6', label: '头像管理' },
 ] as const
 type TabKey = (typeof TABS)[number]['k']
 const tab = ref<TabKey>('tb1')
@@ -59,7 +63,7 @@ const notify = reactive<NotifyCfg>({
   on_search: true,
   on_cred: true,
 })
-const qms = reactive<QmsCfg>({ enabled: true, url: '', apikey: '', tmdb_api_key: '', tmdb_proxy: '', act_strm: true, act_emby: true })
+const qms = reactive<QmsCfg>({ enabled: true, url: '', apikey: '', tmdb_api_key: '', tmdb_mode: 'proxy', tmdb_proxy: '', tmdb_hosts: [], tmdb_skip_tls: false, act_strm: true, act_emby: true })
 const litepan = reactive<LitePanCfg>({ enabled: false, webhook_url: '', apikey: '', source: '' })
 const security = reactive<SecurityCfg>({ username: 'admin', session_days: 7 })
 
@@ -127,7 +131,8 @@ watch(notify, (v) => {
   if (ready.value) debouncedSave('notify', v, () => saveNotify({ ...v }))
 })
 watch(qms, (v) => {
-  if (ready.value) debouncedSave('qms', v, () => saveQms({ ...v }))
+  // hosts 空行（ip/host 全空）不入库：占位行只是输入辅助，落库只留填了内容的
+  if (ready.value) debouncedSave('qms', v, () => saveQms({ ...v, tmdb_hosts: v.tmdb_hosts.filter((h) => h.ip.trim() || h.host.trim()) }))
 })
 watch(litepan, (v) => {
   if (ready.value) debouncedSave('litepan', v, () => saveLitePan({ ...v }))
@@ -167,7 +172,7 @@ async function onTestPansou() {
   }
 }
 
-/* ===== tab2 推送通知 ===== */
+/* ===== tab3 推送通知 ===== */
 function onNotifySw(v: boolean | string | number) {
   message.success(v ? '推送已开启' : '推送已关闭')
 }
@@ -187,7 +192,7 @@ async function onTestSendkey() {
   }
 }
 
-/* ===== tab3 联动后端 ===== */
+/* ===== tab4 联动后端 ===== */
 const ONOFF_OPTS = [
   { value: 'on', label: '开启' },
   { value: 'off', label: '关闭' },
@@ -311,7 +316,55 @@ async function onTestQms() {
   }
 }
 
-/* ===== tab4 账号安全 ===== */
+/* ===== tab2 代理配置（TMDB，字段从搜索源 tab 迁来） ===== */
+const TMDB_MODE_OPTS = [
+  { value: 'proxy', label: '代理模式' },
+  { value: 'host', label: 'Host 模式' },
+]
+function addHost() {
+  qms.tmdb_hosts.push({ ip: '', host: '' })
+}
+function removeHost(i: number) {
+  qms.tmdb_hosts.splice(i, 1)
+  flushSave('qms')
+}
+const tmdbTesting = ref(false)
+async function onTestTmdb() {
+  // mode/proxy/hosts/skip_tls 传「输入框正在编辑的值」不等自动保存；掩码 key 原样传，后端回落已保存配置
+  tmdbTesting.value = true
+  try {
+    const r = await testTmdb({
+      mode: qms.tmdb_mode,
+      proxy: qms.tmdb_proxy,
+      hosts: qms.tmdb_hosts.filter((h) => h.ip.trim() && h.host.trim()),
+      skip_tls: qms.tmdb_skip_tls,
+      api_key: qms.tmdb_api_key,
+    })
+    // 后端连通失败也是 200 + {ok:false}，必须看 ok 字段；多候选时 message 已含逐 IP 耗时
+    if (r.ok) {
+      message.success(r.results && r.results.length > 1 ? r.message || 'TMDB 连通正常' : `${r.message || 'TMDB 连通正常'}${r.ms != null ? ` · ${r.ms} ms` : ''}`)
+      // host 模式：把最快的 IP 置顶为生效行（运行时按行序生效、失败自动换下一行）
+      if (qms.tmdb_mode === 'host' && r.winner) {
+        const i = qms.tmdb_hosts.findIndex((h) => h.ip.trim() === r.winner)
+        if (i > 0) {
+          const [row] = qms.tmdb_hosts.splice(i, 1)
+          qms.tmdb_hosts.unshift(row)
+          flushSave('qms')
+          message.info(`已把最快的 ${r.winner} 置顶为生效行`)
+        }
+      }
+    } else {
+      message.error(r.message || 'TMDB 连通失败', 5)
+    }
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || 'TMDB 连通失败', 5)
+  } finally {
+    tmdbTesting.value = false
+  }
+}
+
+/* ===== tab5 账号安全 ===== */
 const SESSION_OPTS = [
   { value: 7, label: '7 天' },
   { value: 30, label: '30 天' },
@@ -356,7 +409,7 @@ async function onSaveSecurity() {
   router.push({ name: 'login' })
 }
 
-/* ===== tab5 头像管理 ===== */
+/* ===== tab6 头像管理 ===== */
 const avatarFile = ref<HTMLInputElement | null>(null)
 const avatarBusy = ref(false)
 
@@ -442,24 +495,61 @@ async function onRemoveAvatar() {
             <a-select v-model:value="search.cache_mode" :options="CACHE_OPTS" style="width: 180px" />
           </div>
         </div>
+      </div>
+
+      <!-- ===== tab2 代理配置：TMDB API Key + 连通模式（代理 / host 直连） ===== -->
+      <div v-show="tab === 'tb2'">
         <div class="formrow">
           <label>TMDB API Key</label>
           <div class="ctl">
             <a-input-password v-model:value="qms.tmdb_api_key" style="width: 280px" @blur="flushSave('qms')" />
+            <a-button :loading="tmdbTesting" @click="onTestTmdb">测试连通</a-button>
             <span class="muted small">转存完成的推送通知用它查封面/剧照（themoviedb.org 免费申请）</span>
           </div>
         </div>
         <div class="formrow">
-          <label>TMDB 代理</label>
+          <label>连通模式</label>
           <div class="ctl">
-            <a-input v-model:value="qms.tmdb_proxy" style="width: 280px" placeholder="http://192.168.2.77:7890" @blur="flushSave('qms')" />
-            <span class="muted small">服务端连不上 TMDB 时填，留空直连</span>
+            <a-select v-model:value="qms.tmdb_mode" :options="TMDB_MODE_OPTS" style="width: 180px" @change="flushSave('qms')" />
+            <span class="muted small">只影响服务端调 TMDB 接口；推送里的图片链接由手机端自己拉取</span>
           </div>
         </div>
+        <template v-if="qms.tmdb_mode === 'proxy'">
+          <div class="formrow">
+            <label>TMDB 代理</label>
+            <div class="ctl">
+              <a-input v-model:value="qms.tmdb_proxy" style="width: 280px" placeholder="http://192.168.2.77:7890" @blur="flushSave('qms')" />
+              <span class="muted small">服务端连不上 TMDB 时填，留空直连</span>
+            </div>
+          </div>
+        </template>
+        <template v-else>
+          <div class="formrow">
+            <label>Hosts 映射</label>
+            <div>
+              <div v-for="(h, i) in qms.tmdb_hosts" :key="i" class="host-row">
+                <a-input v-model:value="h.ip" style="width: 180px" placeholder="IP，如 108.162.1.1" @blur="flushSave('qms')" />
+                <a-input v-model:value="h.host" style="width: 240px" placeholder="域名，如 api.themoviedb.org" @blur="flushSave('qms')" />
+                <a-button type="text" danger @click="removeHost(i)">删除</a-button>
+              </div>
+              <div class="ctl" style="margin-top: 8px">
+                <a-button @click="addHost">添加一行</a-button>
+                <span class="muted small">左 IP 右域名，TMDB 只查 api.themoviedb.org；同域名多行按顺序生效、连不上自动换下一行，点「测试连通」会把最快的 IP 置顶</span>
+              </div>
+            </div>
+          </div>
+          <div class="formrow">
+            <label>跳过证书校验</label>
+            <div class="ctl">
+              <a-switch v-model:checked="qms.tmdb_skip_tls" @change="flushSave('qms')" />
+              <span class="muted small">自建反代/中转的证书和域名对不上时打开；公共 CDN 优选 IP 别开</span>
+            </div>
+          </div>
+        </template>
       </div>
 
-      <!-- ===== tab2 推送通知（只服务自动转存） ===== -->
-      <div v-show="tab === 'tb2'">
+      <!-- ===== tab3 推送通知（只服务自动转存） ===== -->
+      <div v-show="tab === 'tb3'">
         <div class="formrow">
           <label>启用推送</label>
           <div class="ctl">
@@ -497,8 +587,8 @@ async function onRemoveAvatar() {
         </div>
       </div>
 
-      <!-- ===== tab3 联动后端：顶部选后端，下面按所选显示对应参数 ===== -->
-      <div v-show="tab === 'tb3'">
+      <!-- ===== tab4 联动后端：顶部选后端，下面按所选显示对应参数 ===== -->
+      <div v-show="tab === 'tb4'">
         <div class="st-mig">
           目录关联已迁到<b>「转存配置」</b>（每条目录配）与<b>自动转存任务弹窗</b>（每个任务配）两处，
           这里只保留连接参数与联动总开关。
@@ -580,8 +670,8 @@ async function onRemoveAvatar() {
         </template>
       </div>
 
-      <!-- ===== tab4 账号安全 ===== -->
-      <div v-show="tab === 'tb4'">
+      <!-- ===== tab5 账号安全 ===== -->
+      <div v-show="tab === 'tb5'">
         <div class="formrow">
           <label>用户名</label>
           <div class="ctl">
@@ -621,8 +711,8 @@ async function onRemoveAvatar() {
         </div>
       </div>
 
-      <!-- ===== tab5 头像管理 ===== -->
-      <div v-show="tab === 'tb5'">
+      <!-- ===== tab6 头像管理 ===== -->
+      <div v-show="tab === 'tb6'">
         <div class="formrow">
           <label>当前头像</label>
           <div>
@@ -699,6 +789,14 @@ async function onRemoveAvatar() {
 .qms-pill.ok { color: var(--text2); }
 .qms-pill.bad i { background: var(--error); }
 
+/* Host 模式映射行：一左一右 IP/域名（对齐 .ctl 的 10px 间距） */
+.host-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
 /* 头像管理：预览圆（没传图时用与 logo 同套的品牌渐变，不至于难看） */
 .av-box {
   width: 84px;
@@ -725,5 +823,13 @@ async function onRemoveAvatar() {
   }
   /* 多控件行（如 PanSou 地址 + 测试按钮）铺满，别撑破屏 */
   .st-card :deep(.ctl) { width: 100%; }
+  /* Hosts 映射行窄屏重排：IP/域名各自独占一整行（宽度一致，别 180/240 参差），删除键单独靠右 */
+  .host-row { flex-wrap: wrap; row-gap: 8px; }
+  .st-card .host-row > :deep(.ant-input) { flex: 1 1 100%; }
+  .st-card .host-row > :deep(.ant-btn) { margin-left: auto; }
+  /* 6 个胶囊 tab 手机端 3 个一排（拉宽 + 文字居中），别 4+2 参差换行；
+     覆盖 pk.css 移动端的 flex: 0 0 auto（那条是给横向滚动场景的） */
+  .st-card .tabs { width: 100%; }
+  .st-card .tabs > div { flex: 1 1 calc((100% - 8px) / 3); text-align: center; }
 }
 </style>

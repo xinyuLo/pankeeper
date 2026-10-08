@@ -39,13 +39,25 @@ export interface QmsCfg {
   enabled: boolean
   url: string
   apikey: string
-  /** TMDB v3 api_key：转存完成的富文本推送（封面/剧照）用它查 TMDB */
+  /** TMDB v3 api_key：转存完成的富文本推送（封面/剧照）用它查 TMDB（代理配置 tab） */
   tmdb_api_key: string
-  /** TMDB 代理（http://host:port）：NAS 直连 api.themoviedb.org 不通时填 */
+  /** TMDB 连通模式：proxy=HTTP 代理 / host=按 hosts 表直连指定 IP */
+  tmdb_mode: 'proxy' | 'host'
+  /** 代理模式的代理地址（http://host:port），留空直连 */
   tmdb_proxy: string
+  /** host 模式的域名→IP 表（同 hosts 文件；现消费方 api.themoviedb.org，见后端 tmdb.py） */
+  tmdb_hosts: TmdbHostEntry[]
+  /** host 模式跳过 HTTPS 证书校验（自建反代/中转证书对不上域名时开） */
+  tmdb_skip_tls: boolean
   /** 触发动作：刮削后生成 STRM / 完成后刷新 Emby */
   act_strm: boolean
   act_emby: boolean
+}
+
+/** host 模式的一行映射：左 IP 右域名（空行保存/查找时忽略） */
+export interface TmdbHostEntry {
+  ip: string
+  host: string
 }
 
 /** ===== tab3 LitePan 对接（联动后端=litepan 时生效：HTTP Webhook 推转存完成消息） ===== */
@@ -97,7 +109,10 @@ export const settingsStore = reactive<SettingsData>({
     url: 'http://192.168.2.77:8020',
     apikey: '****-****-****',
     tmdb_api_key: '',
+    tmdb_mode: 'proxy' as 'proxy' | 'host',
     tmdb_proxy: '',
+    tmdb_hosts: [],
+    tmdb_skip_tls: false,
     act_strm: true,
     act_emby: true,
   },
