@@ -16,6 +16,10 @@
   覆盖 pk.css 移动端给横向滚动场景的 `flex: 0 0 auto`；实测 390 宽 3+3 两排整齐拉宽居中。
 - **手机端 Hosts 行输入框等宽**（用户截图：IP 180 / 域名 240 换行后宽度参差）：媒体查询里改
   `.host-row` 输入框 `flex: 1 1 100%` 各自独占一整行、删除键 `margin-left: auto` 靠右。
+- **Hosts 行卡片化**（用户要求"做成卡片加点背景色有框住感，删除按钮要边框加图标"）：
+  `.host-row` 加 `background: var(--surface-2) + border: 1px solid var(--border) + radius/padding`
+  （CSS 变量随暗色主题自动翻转）；删除按钮从 `type="text"`（无边框）改默认 danger 按钮
+  （红边框）+ `DeleteOutlined` 垃圾桶图标。桌面横排/手机竖排两形态浏览器实测 OK。
 - 实测：多假 IP 并发全失败逐 IP 报错、空表降级直连、浏览器点测试红提示全链路 OK；
   winner 置顶路径桩测覆盖（真 TMDB 连不通没法实测 winner，逻辑同 `_ping_one` 汇总分支）。
 
