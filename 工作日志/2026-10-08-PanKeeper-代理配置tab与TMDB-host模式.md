@@ -85,4 +85,5 @@
 - **TMDB 代理支持 socks5**（用户问支不支持 → 原来不支持）：requirements.txt 的 httpx 改
   httpx[socks]（=装 socksio，纯 py 小包）；_build_clients 代理构造加 try/except——代理串写坏
   按空候选处理（ping 报「代理配置无效」，_get 走 None 兜底），不再 500。socks5:// 与
-  socks5h:// 都支持（后者域名解析交给代理，防 DNS 污染）。前端提示文案同步注明两协议。
+  socks5h:// 都支持（后者域名解析交给代理，防 DNS 污染）。前端占位改「支持 http 与 socks5 连接」（不带 IP:端口 示例），说明恢复「服务端连不上 TMDB 时填，留空直连」。
+
