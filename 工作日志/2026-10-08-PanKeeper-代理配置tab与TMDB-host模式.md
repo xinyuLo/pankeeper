@@ -79,3 +79,6 @@
 - 坑：外网 SSH kick 命令读输出会 PipeTimeout（nohup 后台任务占着通道）——**部署其实已经
   跑起来了**，别慌，直接另起连接轮询 `/tmp/pk_deploy.log` 即可；NAS 拉 docker.io 元数据
   慢（node/python 镜像 metadata 30~60s），构建全程约 4 分钟属正常。
+- **占位示例去真实 IP**（用户指出示例不该写真 IP）：Hosts 的 IP 占位改 127.0.0.1；
+  LitePan Webhook 占位 LitePan地址:端口 → 127.0.0.1:端口；TMDB 代理占位 192.168.2.77:7890 →
+  http://127.0.0.1:7890（支持 http 协议）。全局 grep 确认无其他真实 IP 占位。
