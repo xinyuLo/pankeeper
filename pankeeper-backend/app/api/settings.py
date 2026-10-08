@@ -241,6 +241,28 @@ def test_qms(body: dict, _user=CurrentUser):
     return {"ok": ok, "message": msg}
 
 
+@router.post("/settings/tmdb/test")
+def test_tmdb(body: dict, _user=CurrentUser):
+    """TMDB 连通测试（代理配置 tab）：按「输入框正在编辑的草稿值」测，不等自动保存。
+    掩码 api_key（****开头）= 没改 → 回落已保存配置，别把掩码当真 key 发。"""
+    from ..services import tmdb
+
+    body = body or {}
+    saved = get_group("settings")["qms"]
+    apikey = (body.get("api_key") or "").strip()
+    if not apikey or apikey.startswith("****"):
+        apikey = saved.get("tmdb_api_key") or ""
+    hosts = body.get("hosts")
+    cfg = {
+        "tmdb_api_key": apikey,
+        "tmdb_mode": (body.get("mode") or "proxy").strip() or "proxy",
+        "tmdb_proxy": (body.get("proxy") or "").strip(),
+        "tmdb_hosts": hosts if isinstance(hosts, list) else [],
+        "tmdb_skip_tls": bool(body.get("skip_tls")),
+    }
+    return tmdb.ping(cfg)
+
+
 @router.delete("/notify/history")
 def clear_push_history(before: str = "", _user=CurrentUser):
     """清空推送历史（push_logs）。before = 'YYYY-MM-DD HH:MM:SS'（与 ts 同格式），空 = 全部。"""

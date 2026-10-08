@@ -40,6 +40,14 @@ DEFAULTS: dict[str, dict[str, Any]] = {
             "enabled": False,
             "url": "",
             "apikey": "",
+            # TMDB（设置页「代理配置」tab）：API Key 用于推送带图；连通模式
+            # proxy=HTTP 代理（tmdb_proxy）/ host=按 tmdb_hosts 域名→IP 表直连
+            # （消费方见 services/tmdb.py；tmdb_skip_tls=自建反代证书对不上时跳过校验）
+            "tmdb_api_key": "",
+            "tmdb_proxy": "",
+            "tmdb_mode": "proxy",
+            "tmdb_hosts": [],
+            "tmdb_skip_tls": False,
             "act_strm": True,
             "act_emby": True,
         },
