@@ -57,7 +57,9 @@ def _build_clients(qms_cfg: dict | None = None, timeout: float = 15.0) -> list[t
     """按连通模式产出候选 (client, sni, target, desc)，**顺序即失败换行的次序**。
 
     host 模式 = 同域名每个 IP 一个候选；一个都没配 → 普通直连兜底。
-    proxy 模式 = 单候选。返回 [] = 没配 API Key。
+    proxy 模式 = 单候选（支持 http:// 与 socks5://，后者依赖 httpx[socks]）。
+    代理串非法时按「无候选」处理，调用方如实报失败，不让配置错误炸成 500。
+    返回 [] = 没配 API Key 或配置无效。
     qms_cfg 传「测试按钮正在编辑的草稿值」（缺省读已保存配置）。"""
     cfg = qms_cfg if qms_cfg is not None else get_group("settings")["qms"]
     key = (cfg.get("tmdb_api_key") or "").strip()
@@ -82,7 +84,10 @@ def _build_clients(qms_cfg: dict | None = None, timeout: float = 15.0) -> list[t
         return [(httpx.Client(base_url=BASE, **common), None, "直连", "直连（host 表里没配 api.themoviedb.org）")]
     proxy = (cfg.get("tmdb_proxy") or "").strip() or None
     desc = f"经代理 {proxy}" if proxy else "直连"
-    return [(httpx.Client(base_url=BASE, proxy=proxy, **common), None, desc, desc)]
+    try:
+        return [(httpx.Client(base_url=BASE, proxy=proxy, **common), None, desc, desc)]
+    except Exception:
+        return []
 
 
 def _get(path: str, params: dict | None = None, qms_cfg: dict | None = None) -> dict | None:
@@ -134,7 +139,8 @@ def ping(qms_cfg: dict | None = None) -> dict:
     cfg = qms_cfg if qms_cfg is not None else get_group("settings")["qms"]
     cands = _build_clients(cfg, timeout=8.0)
     if not cands:
-        return {"ok": False, "message": "还没填 TMDB API Key"}
+        saved_key = ((cfg.get("tmdb_api_key") or "").strip())
+        return {"ok": False, "message": "还没填 TMDB API Key" if not saved_key else "代理配置无效（检查代理串格式）"}
     with ThreadPoolExecutor(max_workers=len(cands)) as ex:
         results = list(ex.map(_ping_one, cands))
 

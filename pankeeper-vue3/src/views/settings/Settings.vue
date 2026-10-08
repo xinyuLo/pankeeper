@@ -519,8 +519,8 @@ async function onRemoveAvatar() {
           <div class="formrow">
             <label>TMDB 代理</label>
             <div class="ctl">
-              <a-input v-model:value="qms.tmdb_proxy" style="width: 280px" placeholder="http://127.0.0.1:7890（支持 http 协议）" @blur="flushSave('qms')" />
-              <span class="muted small">服务端连不上 TMDB 时填，留空直连</span>
+              <a-input v-model:value="qms.tmdb_proxy" style="width: 280px" placeholder="http://127.0.0.1:7890" @blur="flushSave('qms')" />
+              <span class="muted small">支持 http / socks5 协议（如 socks5://127.0.0.1:7891），留空直连</span>
             </div>
           </div>
         </template>
