@@ -1,285 +1,324 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
-import { message } from 'ant-design-vue';
-import { CopyOutlined, FolderOpenOutlined } from '@ant-design/icons-vue';
-import PkPager from '@/components/PkPager.vue';
-import LogBox from '@/components/LogBox.vue';
-import { useBackGuard } from '@/composables/useBackGuard';
-import ClearHistoryButton, { type ClearRange } from '@/components/ClearHistoryButton.vue';
-import ShareFilesModal from '@/views/auto/ShareFilesModal.vue';
-import { useIsMobile } from '@/composables/useIsMobile';
-import { DD_MEDIA, DRIVE_META, MAIN_ORDER } from '@/api/mock/meta';
-import { recordsStore } from '@/api/mock/records';
-import type { RecordRow } from '@/api/mock/records';
-import { listQmsPaths, listStrmPaths } from '@/api/modules/dd';
-import { getSettings } from '@/api/modules/settings';
-import { clearRecords, deleteRecord, getRecordLog, getRecordShareFiles, listRecords, retriggerRecord, retrigQms, retryFailedItems, triggerQms, triggerStrm, } from '@/api/modules/records';
-import type { DdQmsPath, DdStrmPath, QueueLogLine } from '@/types/model';
-const isMobile = useIsMobile();
-const rows = ref<RecordRow[]>([]);
+/* 转存记录页 —— 原型 _shell.html 记录段（全部记录表）的 Vue 移植。
+ * 队列入口已撤（右下角浮标侧边抽屉是唯一入口），本页只做记录：筛选/分页真实生效
+ * （内存过滤 + 切片）；记录是快照，抽屉展示转存当时的配置与结果。 */
+import { computed, onMounted, ref, watch } from 'vue'
+import { message } from 'ant-design-vue'
+import { CopyOutlined, FolderOpenOutlined } from '@ant-design/icons-vue'
+import PkPager from '@/components/PkPager.vue'
+import LogBox from '@/components/LogBox.vue'
+import { useBackGuard } from '@/composables/useBackGuard'
+import ClearHistoryButton, { type ClearRange } from '@/components/ClearHistoryButton.vue'
+import ShareFilesModal from '@/views/auto/ShareFilesModal.vue'
+import { useIsMobile } from '@/composables/useIsMobile'
+import { DD_MEDIA, DRIVE_META, MAIN_ORDER } from '@/api/mock/meta'
+import { recordsStore } from '@/api/mock/records'
+import type { RecordRow } from '@/api/mock/records'
+import { listQmsPaths, listStrmPaths } from '@/api/modules/dd'
+import { getSettings } from '@/api/modules/settings'
+import { pkQueueCfgFetch } from '@/queue/engine'
+import {
+  clearRecords,
+  deleteRecord,
+  getRecordLog,
+  getRecordShareFiles,
+  listRecords,
+  retriggerRecord,
+  retrigQms,
+  retryFailedItems,
+  triggerQms,
+  triggerStrm,
+} from '@/api/modules/records'
+import type { DdQmsPath, DdStrmPath, QueueLogLine } from '@/types/model'
+
+/* ===== 全部记录：数据 + 筛选 + 分页 ===== */
+/* 手机（<768px）8 列表格换卡片列表，点卡片=开详情抽屉 */
+const isMobile = useIsMobile()
+
+const rows = ref<RecordRow[]>([])
 async function reload() {
-    rows.value = await listRecords();
+  rows.value = await listRecords()
 }
 onMounted(async () => {
-    await reload();
-    getSettings().then((d) => (mediaBackend.value = d.media?.backend || 'qms')).catch(() => { });
-});
-const fStatus = ref('');
-const fPan = ref('');
-const kw = ref('');
+  await reload()
+  getSettings().then((d) => (mediaBackend.value = d.media?.backend || 'qms')).catch(() => {})
+})
+
+const fStatus = ref('') // ''=全部状态 ok=完成 part=部分失败 fail=失败
+const fPan = ref('') // ''=全部网盘
+const kw = ref('')
 const STATUS_OPTS = [
-    { value: '', label: '全部状态' },
-    { value: 'ok', label: '完成' },
-    { value: 'part', label: '部分失败' },
-    { value: 'warn', label: '链接失效' },
-    { value: 'fail', label: '失败' },
-];
+  { value: '', label: '全部状态' },
+  { value: 'ok', label: '完成' },
+  { value: 'part', label: '部分失败' },
+  { value: 'warn', label: '链接失效' },
+  { value: 'fail', label: '失败' },
+]
 const PAN_OPTS = [
-    { value: '', label: '全部网盘' },
-    ...MAIN_ORDER.map((t) => ({ value: t, label: DRIVE_META[t].name })),
-];
-const filtered = computed(() => rows.value.filter((r) => {
-    if (fStatus.value === 'ok' && r.cls !== 't-ok')
-        return false;
-    if (fStatus.value === 'part' && !r.st.startsWith('部分'))
-        return false;
-    if (fStatus.value === 'warn' && r.cls !== 't-warn')
-        return false;
-    if (fStatus.value === 'fail' && !r.st.startsWith('失败'))
-        return false;
-    if (fPan.value && r.t !== fPan.value)
-        return false;
-    const k = kw.value.trim();
-    if (k && !r.n.includes(k))
-        return false;
-    return true;
-}));
-const page = ref(1);
-const size = ref(8);
-const paged = computed(() => filtered.value.slice((page.value - 1) * size.value, page.value * size.value));
+  { value: '', label: '全部网盘' },
+  ...MAIN_ORDER.map((t) => ({ value: t, label: DRIVE_META[t].name })),
+]
+
+const filtered = computed(() =>
+  rows.value.filter((r) => {
+    // 结果列的几种长相：完成(t-ok) / 部分(t-off) / 链接失效(t-warn) / 失败(t-bad)
+    if (fStatus.value === 'ok' && r.cls !== 't-ok') return false
+    if (fStatus.value === 'part' && !r.st.startsWith('部分')) return false
+    if (fStatus.value === 'warn' && r.cls !== 't-warn') return false
+    if (fStatus.value === 'fail' && !r.st.startsWith('失败')) return false
+    if (fPan.value && r.t !== fPan.value) return false
+    const k = kw.value.trim()
+    if (k && !r.n.includes(k)) return false
+    return true
+  }),
+)
+
+const page = ref(1)
+const size = ref(8)
+const paged = computed(() => filtered.value.slice((page.value - 1) * size.value, page.value * size.value))
+// 筛选条件变化回第 1 页；结果变少时把页码夹回有效范围
 watch([fStatus, fPan, kw], () => {
-    page.value = 1;
-});
-watch(() => filtered.value.length, (n) => {
-    const max = Math.max(1, Math.ceil(n / size.value));
-    if (page.value > max)
-        page.value = max;
-});
+  page.value = 1
+})
+watch(
+  () => filtered.value.length,
+  (n) => {
+    const max = Math.max(1, Math.ceil(n / size.value))
+    if (page.value > max) page.value = max
+  },
+)
+
 function metaOf(r: RecordRow) {
-    return DRIVE_META[r.t];
+  return DRIVE_META[r.t]
 }
-const sfOpen = ref(false);
-useBackGuard(sfOpen);
-const sfRec = ref<RecordRow | null>(null);
+
+/* ===== 行内「查看文件 / 复制链接」（对齐自动转存行操作） ===== */
+const sfOpen = ref(false)
+useBackGuard(sfOpen)
+const sfRec = ref<RecordRow | null>(null)
 function onViewFiles(r: RecordRow) {
-    sfRec.value = r;
-    sfOpen.value = true;
+  sfRec.value = r
+  sfOpen.value = true
 }
 async function onCopy(r: RecordRow) {
-    try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-            await navigator.clipboard.writeText(r.share_url);
-        }
-        else {
-            const ta = document.createElement('textarea');
-            ta.value = r.share_url;
-            document.body.appendChild(ta);
-            ta.select();
-            document.execCommand('copy');
-            document.body.removeChild(ta);
-        }
-        message.success('已复制分享链接');
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(r.share_url)
+    } else {
+      // 非安全上下文（http 部署）兜底：临时 textarea + execCommand
+      const ta = document.createElement('textarea')
+      ta.value = r.share_url
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
     }
-    catch {
-        message.error('复制失败');
-    }
+    message.success('已复制分享链接')
+  } catch {
+    message.error('复制失败')
+  }
 }
+
+/** 清空记录（下拉选范围）：搜索历史只清 source=search 的手动转存记录 */
 async function onClear(range: ClearRange) {
-    let before = '';
-    if (range !== 'all') {
-        const d = new Date();
-        d.setMonth(d.getMonth() - { '1m': 1, '3m': 3, '6m': 6 }[range]);
-        before = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} 00:00`;
-    }
-    const n = await clearRecords(before);
-    message.success(n > 0 ? `已清空 ${n} 条记录` : '没有符合条件的记录');
-    await reload();
+  let before = ''
+  if (range !== 'all') {
+    const d = new Date()
+    d.setMonth(d.getMonth() - { '1m': 1, '3m': 3, '6m': 6 }[range])
+    before = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} 00:00`
+  }
+  const n = await clearRecords(before)
+  message.success(n > 0 ? `已清空 ${n} 条记录` : '没有符合条件的记录')
+  await reload()
 }
-const drawerOpen = ref(false);
-const cur = ref<RecordRow | null>(null);
-const curLog = ref<QueueLogLine[]>([]);
-useBackGuard(drawerOpen);
+
+/* ===== 详情抽屉 ===== */
+const drawerOpen = ref(false)
+const cur = ref<RecordRow | null>(null)
+const curLog = ref<QueueLogLine[]>([])
+// 侧滑返回护栏：手机上开抽屉推占位历史栈，边缘侧滑先关抽屉而不是退出页面
+useBackGuard(drawerOpen)
 async function openDrawer(r: RecordRow) {
-    cur.value = r;
-    drawerOpen.value = true;
-    curLog.value = await getRecordLog(r);
+  cur.value = r
+  drawerOpen.value = true
+  curLog.value = await getRecordLog(r)
 }
-const filesOpen = ref(false);
-useBackGuard(filesOpen);
+
+// 详情抽屉里「最近结果 → 详情」的文件清单弹窗
+const filesOpen = ref(false)
+useBackGuard(filesOpen)
 function fileCls(st: string): string {
-    if (st === '已转存')
-        return 't-ok';
-    if (st === '未转存')
-        return 't-bad';
-    return 't-off';
+  if (st === '已转存') return 't-ok'
+  if (st === '未转存') return 't-bad'
+  return 't-off'
 }
 function fmtSize(v: number): string {
-    if (!v)
-        return '—';
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    let x = v;
-    let i = 0;
-    while (x >= 1024 && i < units.length - 1) {
-        x /= 1024;
-        i++;
-    }
-    return `${i === 0 || x >= 100 ? Math.round(x) : x.toFixed(1)} ${units[i]}`;
+  if (!v) return '—'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let x = v
+  let i = 0
+  while (x >= 1024 && i < units.length - 1) {
+    x /= 1024
+    i++
+  }
+  return `${i === 0 || x >= 100 ? Math.round(x) : x.toFixed(1)} ${units[i]}`
 }
+
 async function onRetry() {
-    if (!cur.value)
-        return;
-    const n = await retryFailedItems(cur.value);
-    if (n > 0)
-        message.success(`已重新提交 ${n} 个失败项`);
-    else
-        message.info('这条记录没有失败项，不用重试');
+  if (!cur.value) return
+  const n = await retryFailedItems(cur.value)
+  if (n > 0) message.success(`已重新提交 ${n} 个失败项`)
+  else message.info('这条记录没有失败项，不用重试')
 }
-const mediaBackend = ref<'qms' | 'litepan'>('qms');
-const rowBackend = (r: RecordRow) => (r.backend || mediaBackend.value) as 'qms' | 'litepan';
+/** 联动后端（决定触发行为：qms=重触发刮削 / litepan=重发 Webhook） */
+const mediaBackend = ref<'qms' | 'litepan'>('qms')
+/** 行显示口径：按该条记录**当时**的联动后端（2026-10-07 定稿：不随当前设置切——
+ * 之前用 litepan 转的就显示「LitePan 接管」，qms 转的显示刮削徽标）；老记录空值回落当前设置 */
+const rowBackend = (r: RecordRow) => (r.backend || mediaBackend.value) as 'qms' | 'litepan'
 async function onRetrigQms() {
-    if (!cur.value)
-        return;
-    await retrigQms(cur.value);
-    message.success('已再次触发 QMS 刮削');
+  if (!cur.value) return
+  await retrigQms(cur.value)
+  message.success('已再次触发 QMS 刮削')
 }
-const retriggingRows = ref(new Set<number>());
+
+/* ===== 行级「触发」（详情后）：按联动后端分流重新触发 ===== */
+const retriggingRows = ref(new Set<number>())
 async function onRetrigger(r: RecordRow) {
-    if (retriggingRows.value.has(r.id))
-        return;
-    retriggingRows.value = new Set(retriggingRows.value).add(r.id);
-    try {
-        const res = await retriggerRecord(r.id);
-        if (res.ok)
-            message.success(res.message || '已触发');
-        else
-            message.error(res.message || '触发失败', 5);
-    }
-    catch (e: unknown) {
-        const detail = (e as {
-            response?: {
-                data?: {
-                    detail?: string;
-                };
-            };
-        })?.response?.data?.detail;
-        message.error(detail || '触发失败（该目录可能未配置联动）', 5);
-    }
-    finally {
-        const next = new Set(retriggingRows.value);
-        next.delete(r.id);
-        retriggingRows.value = next;
-    }
+  if (retriggingRows.value.has(r.id)) return
+  retriggingRows.value = new Set(retriggingRows.value).add(r.id)
+  try {
+    const res = await retriggerRecord(r.id)
+    if (res.ok) message.success(res.message || '已触发')
+    else message.error(res.message || '触发失败', 5)
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '触发失败（该目录可能未配置联动）', 5)
+  } finally {
+    const next = new Set(retriggingRows.value)
+    next.delete(r.id)
+    retriggingRows.value = next
+  }
 }
-const isRetrigging = (id: number) => retriggingRows.value.has(id);
+const isRetrigging = (id: number) => retriggingRows.value.has(id)
 async function onDelete() {
-    if (!cur.value)
-        return;
-    await deleteRecord(cur.value.id);
-    message.success('记录已删除');
-    drawerOpen.value = false;
-    await reload();
+  if (!cur.value) return
+  await deleteRecord(cur.value.id)
+  message.success('记录已删除')
+  drawerOpen.value = false
+  await reload()
 }
+
+/** 操作列的行内删除（红字，popconfirm 二次确认） */
 async function onRowDelete(r: RecordRow) {
-    await deleteRecord(r.id);
-    message.success('记录已删除');
-    await reload();
+  await deleteRecord(r.id)
+  message.success('记录已删除')
+  await reload()
 }
-const trigOpen = ref(false);
-const trigQms = ref('');
-const trigStrm = ref('');
-const qmsPaths = ref<DdQmsPath[]>([]);
-const strmPaths = ref<DdStrmPath[]>([]);
+
+/* ===== 手动触发弹窗（trigMask）=====
+ * 两个下拉首项都是「（不触发）」；都空拦下不关；
+ * 只选谁触发谁（立即）；都选 → QMS 立即 + STRM 真 setTimeout 15 秒。 */
+const trigOpen = ref(false)
+const trigQms = ref('')
+const trigStrm = ref('')
+/** QMS/STRM 反转（队列配置全局）：两个都选时 STRM 先行、QMS 隔 15 秒跟上 */
+const trigReverse = ref(false)
+const qmsPaths = ref<DdQmsPath[]>([])
+const strmPaths = ref<DdStrmPath[]>([])
+
 function qmsLabel(p: DdQmsPath): string {
-    return `#${p.id} · ${DD_MEDIA[p.media_type] || p.media_type || '未分类'} · ${p.source_path}`;
+  return `#${p.id} · ${DD_MEDIA[p.media_type] || p.media_type || '未分类'} · ${p.source_path}`
 }
 function strmLabel(p: DdStrmPath): string {
-    return `#${p.id} · ${p.remote_path}`;
+  return `#${p.id} · ${p.remote_path}`
 }
 const trigQmsOpts = computed(() => [
-    { value: '', label: '（不触发）' },
-    ...qmsPaths.value.map((p) => ({ value: String(p.id), label: qmsLabel(p) })),
-]);
+  { value: '', label: '（不触发）' },
+  ...qmsPaths.value.map((p) => ({ value: String(p.id), label: qmsLabel(p) })),
+])
 const trigStrmOpts = computed(() => [
-    { value: '', label: '（不触发）' },
-    ...strmPaths.value.map((p) => ({ value: String(p.id), label: strmLabel(p) })),
-]);
-const pathsLoading = ref(false);
-async function fetchPathsSafe(): Promise<[
-    DdQmsPath[],
-    DdStrmPath[]
-] | null> {
-    for (let i = 0; i < 2; i++) {
-        try {
-            return [await listQmsPaths(), await listStrmPaths()];
-        }
-        catch {
-            if (i)
-                return null;
-            await new Promise((r) => setTimeout(r, 800));
-        }
+  { value: '', label: '（不触发）' },
+  ...strmPaths.value.map((p) => ({ value: String(p.id), label: strmLabel(p) })),
+])
+/** 目录列表拉取中：弹窗先开，下拉转圈等数据（QMS 在 NAS 上，现场拉要几百 ms～秒级） */
+const pathsLoading = ref(false)
+
+/** QMS/STRM 目录拉取：失败自动重试一次（代理偶发抖动别当成 QMS 没配），两连败才返回 null */
+async function fetchPathsSafe(): Promise<[DdQmsPath[], DdStrmPath[]] | null> {
+  for (let i = 0; i < 2; i++) {
+    try {
+      return [await listQmsPaths(), await listStrmPaths()]
+    } catch {
+      if (i) return null
+      await new Promise((r) => setTimeout(r, 800))
     }
-    return null;
+  }
+  return null
 }
+
 async function openTrig() {
-    trigQms.value = '';
-    trigStrm.value = '';
-    trigOpen.value = true;
-    if (qmsPaths.value.length)
-        return;
-    pathsLoading.value = true;
-    const got = await fetchPathsSafe();
-    pathsLoading.value = false;
-    if (!got)
-        message.warning('QMS 未启用或连接失败，目录列表拉不到；先到「转存配置」里联动 QMS');
-    qmsPaths.value = got?.[0] || [];
-    strmPaths.value = got?.[1] || [];
+  // 弹窗立即开，目录后台拉（loading 态）——点按钮卡半秒的体验太差
+  trigQms.value = ''
+  trigStrm.value = ''
+  trigOpen.value = true
+  pkQueueCfgFetch().then((c) => (trigReverse.value = !!c.reverse)).catch(() => {})
+  if (qmsPaths.value.length) return
+  pathsLoading.value = true
+  const got = await fetchPathsSafe()
+  pathsLoading.value = false
+  if (!got) message.warning('QMS 未启用或连接失败，目录列表拉不到；先到「转存配置」里联动 QMS')
+  qmsPaths.value = got?.[0] || []
+  strmPaths.value = got?.[1] || []
 }
 async function confirmTrig() {
-    const qv = trigQms.value;
-    const sv = trigStrm.value;
-    if (!qv && !sv) {
-        message.warning('请至少选择一个要触发的目标（或直接取消）');
-        return;
-    }
-    const q = qmsPaths.value.find((p) => String(p.id) === qv) || null;
-    const s = strmPaths.value.find((p) => String(p.id) === sv) || null;
-    const qTxt = q ? qmsLabel(q) : '';
-    const sTxt = s ? strmLabel(s) : '';
-    trigOpen.value = false;
+  const qv = trigQms.value
+  const sv = trigStrm.value
+  if (!qv && !sv) {
+    message.warning('请至少选择一个要触发的目标（或直接取消）')
+    return
+  }
+  const q = qmsPaths.value.find((p) => String(p.id) === qv) || null
+  const s = strmPaths.value.find((p) => String(p.id) === sv) || null
+  const qTxt = q ? qmsLabel(q) : ''
+  const sTxt = s ? strmLabel(s) : ''
+  trigOpen.value = false
+  if (q && s && trigReverse.value) {
+    // 反转模式（队列配置）：STRM 先行，QMS 隔 15 秒跟上（与默认顺序对偶）
+    await triggerStrm(s.id, sTxt)
+    message.success('已触发 STRM 生成 → ' + sTxt + '（反转模式：先行）')
+    recordsStore.strmPending = true
+    window.setTimeout(async () => {
+      recordsStore.strmPending = false
+      await triggerQms(q.id, qTxt)
+      message.success(`已触发 QMS 刮削 → ${qTxt}（与 STRM 间隔 15 秒，反转模式）`)
+    }, 15000)
+    return
+  }
+  if (q) {
+    await triggerQms(q.id, qTxt)
+    message.success('已触发 QMS 刮削 → ' + qTxt)
+  }
+  if (s) {
     if (q) {
-        await triggerQms(q.id, qTxt);
-        message.success('已触发 QMS 刮削 → ' + qTxt);
+      // 都选：STRM 与 QMS 真隔 10 秒（留痕 strmPending 对应原型 rcStrmPending）
+      recordsStore.strmPending = true
+      window.setTimeout(async () => {
+        recordsStore.strmPending = false
+        await triggerStrm(s.id, sTxt)
+        message.success(`已触发 STRM 生成 → ${sTxt}（与 QMS 间隔 15 秒）`)
+      }, 15000)
+    } else {
+      await triggerStrm(s.id, sTxt)
+      message.success('已触发 STRM 生成 → ' + sTxt)
     }
-    if (s) {
-        if (q) {
-            recordsStore.strmPending = true;
-            window.setTimeout(async () => {
-                recordsStore.strmPending = false;
-                await triggerStrm(s.id, sTxt);
-                message.success(`已触发 STRM 生成 → ${sTxt}（与 QMS 间隔 15 秒）`);
-            }, 15000);
-        }
-        else {
-            await triggerStrm(s.id, sTxt);
-            message.success('已触发 STRM 生成 → ' + sTxt);
-        }
-    }
+  }
 }
 </script>
 
 <template>
   <div>
-    
+    <!-- 全部记录：筛选条与表格合并成一张卡（同搜索页：别让两块白卡夹灰缝）。
+         队列入口在右下角浮标（侧边抽屉），本页不再放队列 tab -->
     <div class="card rk-flush">
         <div class="filterbar fb-head">
           <a-select v-model:value="fStatus" :options="STATUS_OPTS" style="width: 120px" />
@@ -292,12 +331,13 @@ async function confirmTrig() {
         <table v-if="!isMobile" class="rk-table">
           <thead>
             <tr>
-              
+              <!-- 列宽配比：名称/结果双主力列，长报错在结果列内截断（title 看全文），
+                   右侧 QMS/STRM/时间/操作收窄，别让宽屏下中间断崖、右边全空 -->
               <th style="width: 28%">资源名称</th>
               <th style="width: 118px">来源</th>
               <th style="width: 170px">目标位置</th>
               <th style="width: 26%">结果</th>
-              
+              <!-- 表头固定不随后端切换（2026-10-07 定稿）；行内容按记录自己的 backend 显示 -->
               <th style="width: 130px">整理</th>
               <th style="width: 96px">STRM</th>
               <th style="width: 88px">时间</th>
@@ -346,7 +386,7 @@ async function confirmTrig() {
           </tbody>
         </table>
 
-        
+        <!-- 手机端：一条记录一张卡，点卡片开详情（与表格同一 handler） -->
         <div v-else class="rk-cards">
           <div
             v-for="r in paged"
@@ -361,7 +401,7 @@ async function confirmTrig() {
               <span class="srcbar" :style="{ background: metaOf(r).color }"></span>
               <span class="rk-card-name">{{ r.n }}</span>
             </div>
-            
+            <!-- 结果/报错独占一行：都放开换行——名字看得全，errno 长文案也看得全 -->
             <div class="rk-card-tagline">
               <span class="tag" :class="r.cls">{{ r.st }}</span>
             </div>
@@ -383,7 +423,7 @@ async function confirmTrig() {
               </template>
               <span class="small muted rk-card-tm">{{ r.tm }}</span>
             </div>
-            
+            <!-- 操作行：详情/触发/删除（与 PC 表格操作列同款；点按钮不触发卡片开抽屉） -->
             <div class="rk-card-acts">
               <a-button type="link" size="small" class="rk-detail" @click.stop="openDrawer(r)">详情</a-button>
               <span class="rk-opdiv">丨</span>
@@ -406,7 +446,7 @@ async function confirmTrig() {
         <PkPager v-model:current="page" v-model:pageSize="size" :total="filtered.length" />
       </div>
 
-    
+    <!-- 详情抽屉：快照字段 + 执行日志 + 记录级操作（手机版宽度 100%，与队列抽屉同规矩） -->
     <a-drawer v-model:open="drawerOpen" :width="isMobile ? '100%' : 660" title="转存详情">
       <template v-if="cur">
         <dl class="snap">
@@ -454,7 +494,7 @@ async function confirmTrig() {
       </template>
     </a-drawer>
 
-    
+    <!-- 转存文件清单弹窗：转存当时的分享内文件快照（后端 files_json），逐文件标去向 -->
     <a-modal v-model:open="filesOpen" title="转存文件清单" :width="isMobile ? '94%' : 560" :footer="null">
       <div class="rk-filelist">
         <div v-for="(f, i) in cur?.files || []" :key="i" class="rk-file">
@@ -468,7 +508,7 @@ async function confirmTrig() {
       </div>
     </a-modal>
 
-    
+    <!-- 分享内容文件树弹窗：与自动转存「查看」同款（fetcher 走记录的分享链接） -->
     <ShareFilesModal
       v-model:open="sfOpen"
       :task-id="null"
@@ -476,10 +516,12 @@ async function confirmTrig() {
       :fetcher="(refresh: boolean) => getRecordShareFiles(sfRec!.id, refresh)"
     />
 
-    
+    <!-- 手动触发弹窗：QMS / STRM 都可空，选哪个触发哪个；都选时隔 10 秒触发第二个 -->
     <a-modal v-model:open="trigOpen" title="手动触发" :width="480" ok-text="立即触发" cancel-text="取消" @ok="confirmTrig">
       <div class="rk-tip">
-        选择要触发的目标，<b>可以选空</b>；两个都选时先触发 QMS，间隔 15 秒后自动触发 STRM。
+        选择要触发的目标，<b>可以选空</b>；
+        <template v-if="trigReverse">已开启 <b>QMS/STRM 反转</b>：两个都选时先触发 STRM，间隔 15 秒后自动触发 QMS。</template>
+        <template v-else>两个都选时先触发 QMS，间隔 15 秒后自动触发 STRM。</template>
       </div>
       <div class="rk-field">
         <label>QMS 刮削目录</label>

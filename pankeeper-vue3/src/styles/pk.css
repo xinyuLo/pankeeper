@@ -1,3 +1,8 @@
+/* =====================================================================
+ * PanKeeper 全局样式 —— 从原型 _shell.html + build.py THEME_CSS 移植
+ * 视觉令牌与原型 1:1 对齐；页面级私有样式（dd-/pa-/qs-/cc-/cq- 等前缀）
+ * 放各视图自己的 <style scoped>，不要塞进这个文件。
+ * ===================================================================== */
 
 :root {
   --primary: #1677ff;
@@ -12,8 +17,8 @@
   --text4: rgba(0, 0, 0, 0.25);
   --border: #d9d9d9;
   --split: #f0f0f0;
-  --surface-2: #fafafa;   
-  --surface-3: #fafbfc;   
+  --surface-2: #fafafa;   /* 表头 / 次级面 */
+  --surface-3: #fafbfc;   /* 悬浮 / 更浅的面 */
   --hover: #f5f5f5;
   --bg: #f4f5f7;
   --card: #fff;
@@ -25,7 +30,7 @@
   --note-border: #ffe58f;
   --note-fg: #614700;
   --note-strong: #d46b08;
-  
+  /* 行内操作按钮令牌：主操作实心，其余文字链接（暗色整套覆盖见下方） */
   --rb-solid: #1677ff;
   --rb-solid-hover: #4096ff;
   --rb-link: #1677ff;
@@ -37,6 +42,7 @@
   --rb-sep: #e5e7eb;
   --font-mono: ui-monospace, Consolas, Monaco, monospace;
 }
+
 html[data-theme='dark'] {
   color-scheme: dark;
   --bg: #0f1115;
@@ -69,6 +75,7 @@ html[data-theme='dark'] {
   --rb-off-bg: rgba(255, 255, 255, 0.08);
   --rb-sep: #3a3f4b;
 }
+
 * {
   box-sizing: border-box;
   margin: 0;
@@ -104,6 +111,8 @@ html[data-theme='dark'] ::-webkit-scrollbar-thumb {
 html[data-theme='dark'] ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.34);
 }
+
+/* ===== 卡片 ===== */
 .card {
   background: var(--card);
   border: 1px solid rgba(16, 24, 40, 0.05);
@@ -113,6 +122,8 @@ html[data-theme='dark'] ::-webkit-scrollbar-thumb:hover {
   transition: box-shadow 0.2s, border-color 0.2s;
 }
 html[data-theme='dark'] .card { border-color: rgba(255, 255, 255, 0.04); }
+
+/* ===== 标签 / 圆点 ===== */
 .tag {
   display: inline-block;
   padding: 1px 8px;
@@ -134,6 +145,7 @@ html[data-theme='dark'] .card { border-color: rgba(255, 255, 255, 0.04); }
 .t-bad { color: #a8071a; background: #fff1f0; border-color: #ffa39e; }
 .t-warn { color: #d48806; background: #fffbe6; border-color: #ffe58f; }
 .t-off { color: var(--text3); background: #fafafa; border-color: var(--border); }
+/* 磁力（非网盘来源，只展示+复制）：中性灰 */
 .t-magnet { color: #595959; background: #f5f5f5; border-color: #d9d9d9; }
 html[data-theme='dark'] .t-baidu { color: #69b1ff; background: rgba(22, 119, 255, 0.16); border-color: rgba(22, 119, 255, 0.45); }
 html[data-theme='dark'] .t-quark { color: #5cdbd3; background: rgba(19, 194, 194, 0.16); border-color: rgba(19, 194, 194, 0.45); }
@@ -147,6 +159,7 @@ html[data-theme='dark'] .t-bad { color: #ff9c9c; background: rgba(255, 77, 79, 0
 html[data-theme='dark'] .t-warn { color: #ffc53d; background: rgba(250, 173, 20, 0.16); border-color: rgba(250, 173, 20, 0.45); }
 html[data-theme='dark'] .t-off { color: var(--text3); background: rgba(255, 255, 255, 0.06); border-color: var(--border); }
 html[data-theme='dark'] .t-magnet { color: #bfbfbf; background: rgba(255, 255, 255, 0.08); border-color: rgba(255, 255, 255, 0.2); }
+
 .dot {
   width: 7px;
   height: 7px;
@@ -159,6 +172,8 @@ html[data-theme='dark'] .t-magnet { color: #bfbfbf; background: rgba(255, 255, 2
 .dot-off { background: #d9d9d9; }
 .muted { color: var(--text3); }
 .small { font-size: 12.5px; }
+
+/* ===== 胶囊 tab（同一产品只有这一套 tab 长相） ===== */
 .tabs {
   display: inline-flex;
   gap: 4px;
@@ -172,7 +187,7 @@ html[data-theme='dark'] .t-magnet { color: #bfbfbf; background: rgba(255, 255, 2
   cursor: pointer;
   color: var(--text2);
   border-radius: 8px;
-  
+  /* 未选中：白底描边，看得出来是按钮（与搜索页 pktab 同语言） */
   background: var(--card);
   border: 1px solid var(--border);
   transition: all 0.18s;
@@ -195,6 +210,8 @@ html[data-theme='dark'] .tabs { background: #11141a; }
 html[data-theme='dark'] .tabs > div:hover { background: rgba(255, 255, 255, 0.06); }
 html[data-theme='dark'] .tabs > div { background: transparent; }
 html[data-theme='dark'] .tabs > div.on { background: var(--primary); border-color: var(--primary); color: #fff; box-shadow: 0 2px 8px rgba(22, 119, 255, 0.28); }
+
+/* ===== 筛选条 ===== */
 .filterbar {
   display: flex;
   align-items: center;
@@ -216,11 +233,13 @@ html[data-theme='dark'] .tabs > div.on { background: var(--primary); border-colo
   cursor: pointer;
   user-select: none;
 }
+
+/* ===== 统计卡 ===== */
 .statline {
   display: flex;
-  flex-wrap: wrap; 
+  flex-wrap: wrap; /* 9 张卡（命中+7 盘+耗时）窄屏放不下时换行，不许挤出容器 */
   gap: 12px;
-  margin-top: 16px; 
+  margin-top: 16px; /* 与上方频道卡片拉开，不再贴着 */
   margin-bottom: 18px;
   background: transparent;
 }
@@ -236,8 +255,11 @@ html[data-theme='dark'] .tabs > div.on { background: var(--primary); border-colo
   transition: transform 0.18s, box-shadow 0.18s;
 }
 .stat:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08); }
+/* 可点统计卡（搜索页：点卡片 = 切网盘 tab，与上方 pktabs 同一 handler；耗时卡不可点） */
 .stat.clickable { cursor: pointer; }
-.stat.clickable:active { transform: scale(0.97); } 
+.stat.clickable:active { transform: scale(0.97); } /* 按压反馈：手机上点了要有反应 */
+/* 选中态：淡紫描边 + 极淡紫底（亮蓝 2px 描边在空态整行卡上太刺眼，改柔）；
+   手机端网盘 tab 那排隐藏，选中卡就是 tab 指示，紫环要保证一眼可辨 */
 .stat.sel {
   --stat-sel: #a78bfa;
   background: linear-gradient(0deg, rgb(167 139 250 / 0.06), rgb(167 139 250 / 0.06)), #fff;
@@ -264,6 +286,8 @@ html[data-theme='dark'] .stat.sel {
 .stat b { display: block; font-size: 23px; font-weight: 600; line-height: 1.25; letter-spacing: -0.02em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stat span { font-size: 12.5px; color: var(--text3); display: block; margin-top: 2px; }
 html[data-theme='dark'] .stat { background: var(--card); }
+
+/* ===== 表格基础（自定义表格用；antd 表格自带样式） ===== */
 table { width: 100%; border-collapse: separate; border-spacing: 0; }
 th {
   background: var(--surface-2);
@@ -284,6 +308,8 @@ td {
 tbody tr { transition: background 0.15s; }
 tbody tr:hover td { background: var(--surface-3); }
 tbody tr:last-child td { border-bottom: none; }
+
+/* ===== 表格行内操作按钮：主操作实心一颗，其余文字链接 ===== */
 .rowbtns { display: flex; align-items: center; gap: 4px; }
 .rowbtns .btn {
   height: 30px;
@@ -310,6 +336,8 @@ tbody tr:last-child td { border-bottom: none; }
 .rowbtns .btn[disabled], .rowbtns .btn:disabled { cursor: not-allowed; text-decoration: none; box-shadow: none; transform: none; }
 .rowbtns .btn-quick[disabled], .rowbtns .btn-quick:disabled { background: var(--rb-off-bg); color: var(--rb-off); }
 .rowbtns .btn-trans[disabled], .rowbtns .btn-jump[disabled] { color: var(--rb-off); }
+
+/* ===== 进度条 ===== */
 .progress {
   height: 8px;
   background: #f0f0f0;
@@ -326,6 +354,8 @@ tbody tr:last-child td { border-bottom: none; }
   width: 0;
 }
 html[data-theme='dark'] .progress { background: #2b3140; }
+
+/* ===== 日志盒（深色等宽，分级染色） ===== */
 .logbox {
   background: #1f2430;
   color: #cbd5e1;
@@ -342,6 +372,8 @@ html[data-theme='dark'] .progress { background: #2b3140; }
 .logbox .lv-ERROR { color: #ff9492; }
 .logbox .lv-STEP { color: #79c0ff; }
 html[data-theme='dark'] .logbox { background: #0b0e13; }
+
+/* ===== 面板（弹窗内双栏 / 目录树容器） ===== */
 .pane { border: 1px solid var(--split); border-radius: var(--r-sm); overflow: hidden; }
 .pane-hd {
   background: var(--surface-3);
@@ -354,6 +386,8 @@ html[data-theme='dark'] .logbox { background: #0b0e13; }
   align-items: center;
 }
 .pane-bd { padding: 10px 12px; max-height: 272px; overflow: auto; }
+
+/* ===== 分享内容摘要条 / 面包屑（转存弹窗） ===== */
 .share-sum {
   display: flex;
   align-items: center;
@@ -398,6 +432,8 @@ html[data-theme='dark'] .logbox { background: #0b0e13; }
   align-items: center;
   gap: 8px;
 }
+
+/* ===== 通用目录树 ===== */
 .tree { list-style: none; font-size: 13px; }
 .tnode {
   display: flex;
@@ -430,6 +466,8 @@ html[data-theme='dark'] .logbox { background: #0b0e13; }
 }
 .kids.open { display: block; }
 html[data-theme='dark'] .kids { border-left-color: #3a3f4b; }
+
+/* ===== 设置页表单行 ===== */
 .formrow {
   display: grid;
   grid-template-columns: 132px 1fr;
@@ -442,9 +480,11 @@ html[data-theme='dark'] .kids { border-left-color: #3a3f4b; }
 .formrow > label { color: var(--text2); font-size: 13.5px; text-align: right; line-height: 1.5; }
 .formrow .ctl { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .formrow .desc { font-size: 12.5px; color: var(--text3); margin-top: 7px; line-height: 1.6; }
+
+/* ===== 网盘连接卡 ===== */
 .accgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 18px; }
 .acc {
-  
+  /* 用户点名要回的清晰描边框（--split 太淡几乎隐形，换 --border） */
   border: 1px solid var(--border);
   border-radius: var(--r);
   padding: 22px;
@@ -473,6 +513,8 @@ html[data-theme='dark'] .kids { border-left-color: #3a3f4b; }
 .kv b { color: var(--text); font-weight: 500; }
 .accnote { font-size: 12.5px; color: var(--text3); margin: 12px 0 0; line-height: 1.7; }
 .accbtns { display: flex; gap: 8px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--split); }
+
+/* ===== 网盘容量条 + 会员信息（网盘连接卡片） ===== */
 .capblock { margin: 14px 0 0; }
 .capbar {
   height: 8px;
@@ -509,6 +551,8 @@ html[data-theme='dark'] .kids { border-left-color: #3a3f4b; }
   white-space: nowrap;
 }
 html[data-theme='dark'] .vip-tag { color: #b39cf8; }
+
+/* 普通用户 tag：同规格胶囊（中性灰蓝），没会员也有面子 */
 .normal-tag {
   display: inline-flex;
   align-items: center;
@@ -521,6 +565,8 @@ html[data-theme='dark'] .vip-tag { color: #b39cf8; }
   border: 1px solid color-mix(in srgb, var(--text2) 30%, var(--border));
 }
 html[data-theme='dark'] .normal-tag { color: #a8b3c5; }
+
+/* ===== 设计说明批注框 ===== */
 .note-box {
   background: var(--note-bg);
   border: 1px dashed var(--note-border);
@@ -533,6 +579,11 @@ html[data-theme='dark'] .normal-tag { color: #a8b3c5; }
 }
 .note-box b { color: var(--note-strong); }
 .note-box ul { margin: 6px 0 0 18px; }
+
+/* ===== 转存队列看板（pq-） / 右下角浮标（pkq-） ===== */
+/* 只收窄与下方卡片的间距。⚠️ 不能改 padding：.tabs 是灰底胶囊，
+   一旦把 padding 换成 0 0 12px，按钮会贴住灰底的上/左/右边缘，
+   而灰底底部反被撑高一截（按钮看起来像浮在空中）。 */
 .pq-tabs { margin-bottom: 12px; }
 .pq-tabs .pq-num { margin-left: 6px; font-size: 12px; color: var(--text3); font-variant-numeric: tabular-nums; }
 .pq-item { display: flex; align-items: flex-start; gap: 14px; padding: 14px 18px; border-bottom: 1px solid var(--split); }
@@ -580,6 +631,10 @@ html[data-theme='dark'] .pkq-st-done { color: #73d13d; }
   0%, 100% { opacity: 0.35; transform: scale(0.8); }
   50% { opacity: 1; transform: scale(1.15); }
 }
+
+/* ===== 分页条：PkPager 组件内自带 scoped 样式（全局段已撤） ===== */
+
+/* ===== 弹窗动画（antd Modal 之外的普通遮罩用） ===== */
 @keyframes pop {
   from { opacity: 0; transform: translateY(12px) scale(0.98); }
   to { opacity: 1; transform: none; }
@@ -588,15 +643,24 @@ html[data-theme='dark'] .pkq-st-done { color: #73d13d; }
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
+/* =====================================================================
+ * 移动端适配层（<768px）—— iPhone 15 Pro(393×852) / Pro Max(430×932) 主战场
+ * 铁律：PC（≥768px）观感零变化，所有覆盖都在媒体查询里。
+ * 安全区变量：PWA 全屏下灵动岛/底部横条的占位（Safari 浏览器模式为 0）。
+ * ===================================================================== */
 :root {
   --sat: env(safe-area-inset-top, 0px);
   --sab: env(safe-area-inset-bottom, 0px);
 }
+
+/* 触屏手感基础：任何宽度都无副作用（PC 无 tap 高亮，text-size-adjust 桌面不生效） */
 html {
   -webkit-tap-highlight-color: transparent;
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
 }
+/* 双击快快点按钮不再等待缩放判定（iOS Safari 仍有双击缩放） */
 button,
 .tabs > div,
 .pktab,
@@ -606,13 +670,15 @@ button,
 .m-item {
   touch-action: manipulation;
 }
+
 @media (max-width: 767px) {
-  
+  /* ---- 通用卡片/表格密度 ---- */
   .card { padding: 16px; }
   th { padding: 10px 12px; }
   td { padding: 11px 12px; font-size: 13px; }
   .note-box { padding: 10px 12px; margin-top: 12px; }
-  
+
+  /* ---- 胶囊 tab：放不下自动换行平铺（横滑藏按钮太隐晦，用户看不到第 5 个 tab） ---- */
   .tabs {
     display: flex;
     flex-wrap: wrap;
@@ -622,54 +688,70 @@ button,
   }
   .tabs::-webkit-scrollbar { display: none; }
   .tabs > div { flex: 0 0 auto; }
-  
+
+  /* ---- 统计卡：一行放不下 → 自动换行两列 ---- */
   .statline { flex-wrap: wrap; }
   .stat { flex: 1 1 42%; padding: 12px 14px 12px 20px; min-width: 0; }
   .stat b { font-size: 20px; }
-  
+
+  /* ---- 设置页式表单行（formrow 是全局共享类）：标签挪到控件上方 ---- */
   .formrow { grid-template-columns: 1fr; gap: 8px; padding: 12px 0; }
   .formrow > label { text-align: left; }
-  
+
+  /* ---- 筛选条：间距收紧，antd 控件不允许撑破容器 ---- */
   .filterbar { gap: 10px; padding: 10px 12px; }
   .filterbar .ant-select,
   .filterbar .ant-input { max-width: 100%; }
-  
+
+  /* ---- iOS 聚焦防缩放：焦点输入框字号必须 ≥16px，否则 Safari 强制放大页面 ----
+     （请假项目同款坑。antd Input/InputNumber 与分页跳页框都是真实 <input>） */
   .ant-input,
   .ant-input-number-input,
   .pager .pg-jump input {
     font-size: 16px !important;
   }
-  
+
+  /* ---- antd Modal：宽弹窗按屏宽收口，内容限高滚动 ---- */
   .ant-modal { max-width: calc(100vw - 16px); }
   .ant-modal .ant-modal-content { max-height: calc(100dvh - 32px); }
   .ant-modal .ant-modal-body { overflow-y: auto; }
   .ant-modal .ant-modal-header { padding-top: 0; }
-  
+
+  /* ---- antd Drawer：660px 详情抽屉直接全宽 ---- */
   .ant-drawer-content-wrapper { max-width: 100vw !important; }
   .ant-drawer-body { padding: 16px; }
-  
+
+  /* ---- antd 全局浮层：长 toast / 长下拉选项不允许横向溢出 ---- */
   .ant-message-notice-content,
   .ant-select-dropdown { max-width: calc(100vw - 20px); }
-  
+
+  /* ---- 网盘连接卡 ---- */
   .accgrid { grid-template-columns: 1fr; gap: 14px; }
   .acc { padding: 16px; }
-  
+
+  /* ---- 队列看板条目（QueueBoard，类名在全局共享段） ---- */
   .pq-item { padding: 12px 14px; gap: 10px; }
   .pq-path { word-break: break-all; white-space: normal; }
-  
+  /* 手机：日志框收紧——屏窄，桌面版的松行距+大内边距会把日志折得稀碎 */
   .pq-log { height: 220px; }
   .logbox { padding: 10px 12px; font-size: 12px; line-height: 1.6; max-height: 46vh; }
-  
+  /* 长链接/长路径别把日志框顶出横向滚动，手机上一律断行 */
   .logbox > div { word-break: break-all; }
-  
+
+  /* ---- 右下角队列浮标：抬到标签栏上方，别让拇指和底栏挡住 ---- */
   .pkq-badge {
     right: 14px;
     bottom: calc(var(--sab) + 68px);
   }
-  
+
+  /* ---- 通用横滑表格容器（低频管理页的宽表格保横滑方案） ----
+     用法：表格外套 .pk-hscroll（卡片层 overflow 放开），表格 min-width 保列宽 */
   .pk-hscroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   .pk-hscroll > table { min-width: 660px; }
 }
+
+/* ===== 搜索页网盘胶囊 tab（2026-09-29 从 git 原版恢复：视图重构时样式丢失，
+     桌面/手机都退化为竖排素 div；767px 以下改横滑不折行） ===== */
 .pktabs {
   display: flex;
   gap: 6px;
@@ -689,7 +771,7 @@ button,
   border-radius: 8px;
   font-size: 13.5px;
   color: var(--text2);
-  
+  /* 未选中：白底 + 描边，让每个胶囊看得出来是可点的按钮 */
   background: var(--card);
   border: 1px solid var(--border);
   transition: background 0.16s, color 0.16s, box-shadow 0.16s, border-color 0.16s;
@@ -710,6 +792,7 @@ button,
   background: var(--primary-h);
   color: #fff;
 }
+/* 小圆点：有结果的网盘用网盘色标识 */
 .pktab .pkdot {
   width: 6px;
   height: 6px;
@@ -741,6 +824,7 @@ button,
 .pktab.dim .pknum {
   background: transparent;
 }
+/* tab 行右侧的扫描状态 */
 .pktabs .pk-tab-scan {
   margin-left: auto;
   font-size: 12.5px;
@@ -775,11 +859,16 @@ button,
 @keyframes pkSpin {
   to { transform: rotate(360deg); }
 }
+
+/* 手机：胶囊超宽横滑 */
 @media (max-width: 767px) {
   .pktabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
   .pktabs::-webkit-scrollbar { display: none; }
   .pktab { flex: 0 0 auto; }
 }
+
+
+/* ===== 搜索页：频道摘要胶囊条（整条可点击 → 频道设置弹窗） ===== */
 .ch-strip {
   display: flex;
   align-items: center;
@@ -806,7 +895,11 @@ button,
 .ch-chip.ch-more { background: var(--split); color: var(--text2); border-color: transparent; }
 .ch-edit { font-size: 12px; color: var(--text3); white-space: nowrap; }
 .ch-strip:hover .ch-edit { color: var(--primary); }
+
+/* ===== 设计说明（原型批注）：真实系统不需要，全局隐藏 ===== */
 .note-box { display: none !important; }
+
+/* ===== 搜索页搜索框：桌面一行（输入框 flex + 104px 按钮），整体限宽不拉满 ===== */
 .searchwrap {
   display: flex;
   flex-direction: row;
@@ -816,6 +909,7 @@ button,
   margin-bottom: 18px;
 }
 .searchwrap .kw-input { flex: 1 1 auto; min-width: 0; }
+/* 输入框与按钮严格等高（44px）、同圆角，视觉配平 */
 .searchwrap .kw-input.ant-input,
 .searchwrap .kw-input.ant-input-affix-wrapper,
 .searchwrap .ant-input {
@@ -829,10 +923,13 @@ button,
   border-radius: 10px;
 }
 @media (max-width: 767px) {
-  
+  /* 手机保持堆叠：输入框整行，按钮下一行 */
   .searchwrap { flex-direction: column; align-items: stretch; max-width: none; }
   .searchwrap .btn-search { flex: 0 0 auto; width: 100%; }
 }
+
+
+/* ===== 搜索结果空态（居中插画式，撑起卡片高度） ===== */
 .st-res.is-empty {
   min-height: 420px;
   display: flex;
@@ -862,6 +959,9 @@ button,
 }
 .pk-es-title { font-size: 15px; font-weight: 600; color: var(--text); }
 .pk-es-sub { font-size: 13px; color: var(--text3); }
+
+
+/* ===== 搜索页：检索引擎状态胶囊（右上角，不暴露地址） ===== */
 .engine-pill {
   display: inline-flex;
   align-items: center;
@@ -886,8 +986,11 @@ button,
 .engine-pill.bad .ep-dot { background: var(--warning); box-shadow: 0 0 0 3px rgba(250, 173, 20, 0.18); }
 html[data-theme='dark'] .engine-pill.ok { color: #95de64; }
 html[data-theme='dark'] .engine-pill.bad { color: #ffc53d; }
+
+
+/* ===== 搜索页：检索活动条（空闲呼吸 / 检索扫掠 / 完成闪光） ===== */
 .pk-strip {
-  
+  /* 贴住筛选卡底边：绝对定位铺满卡宽，高度 3px，随卡片圆角裁切 */
   position: absolute;
   left: 0;
   right: 0;

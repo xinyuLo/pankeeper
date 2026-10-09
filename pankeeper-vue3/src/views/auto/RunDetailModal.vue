@@ -1,43 +1,45 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
-import { FileTextOutlined } from '@ant-design/icons-vue';
-import LogBox from '@/components/LogBox.vue';
-import { getPaRunDetail, type PaRunDetail } from '@/api/modules/tasks';
-import { useBackGuard } from '@/composables/useBackGuard';
-const props = defineProps<{
-    open: boolean;
-    runId: number | null;
-}>();
-const emit = defineEmits<{
-    (e: 'update:open', v: boolean): void;
-}>();
-useBackGuard(() => props.open, () => emit('update:open', false));
-const detail = ref<PaRunDetail | null>(null);
-const loading = ref(false);
-watch(() => [props.open, props.runId] as const, async ([open, id]) => {
-    if (!open || !id)
-        return;
-    loading.value = true;
-    detail.value = null;
+/* 转存记录详情弹窗（第二层）：执行信息 / 统计 / 正则命中 / 排除与转存清单 / 完整日志。
+ * 任务行的「转存日志」弹窗与「转存历史」页共用这里——详情只有一份，别在页面里再抄一遍。 */
+import { ref, watch } from 'vue'
+import { FileTextOutlined } from '@ant-design/icons-vue'
+import LogBox from '@/components/LogBox.vue'
+import { getPaRunDetail, type PaRunDetail } from '@/api/modules/tasks'
+
+import { useBackGuard } from '@/composables/useBackGuard'
+const props = defineProps<{ open: boolean; runId: number | null }>()
+const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>()
+useBackGuard(() => props.open, () => emit('update:open', false))
+
+const detail = ref<PaRunDetail | null>(null)
+const loading = ref(false)
+
+watch(
+  () => [props.open, props.runId] as const,
+  async ([open, id]) => {
+    if (!open || !id) return
+    loading.value = true
+    detail.value = null
     try {
-        detail.value = await getPaRunDetail(id);
+      detail.value = await getPaRunDetail(id)
+    } finally {
+      loading.value = false
     }
-    finally {
-        loading.value = false;
-    }
-});
+  },
+)
+
 function durTxt(started: string, finished: string): string {
-    const a = new Date(started.replace('-', '/')).getTime();
-    const b = new Date(finished.replace('-', '/')).getTime();
-    if (isNaN(a) || isNaN(b))
-        return '—';
-    const s = Math.max(0, Math.round((b - a) / 1000));
-    if (s < 60)
-        return `${s} 秒`;
-    return `${Math.floor(s / 60)} 分 ${s % 60} 秒`;
+  const a = new Date(started.replace('-', '/')).getTime()
+  const b = new Date(finished.replace('-', '/')).getTime()
+  if (isNaN(a) || isNaN(b)) return '—'
+  const s = Math.max(0, Math.round((b - a) / 1000))
+  if (s < 60) return `${s} 秒`
+  return `${Math.floor(s / 60)} 分 ${s % 60} 秒`
 }
+
+/** 联动快照 cls（t-ok/t-bad/t-off）→ 本弹窗 tag 类（ok/bad/off） */
 function clsOf(cls: string): string {
-    return cls === 't-ok' ? 'ok' : cls === 't-bad' ? 'bad' : 'off';
+  return cls === 't-ok' ? 'ok' : cls === 't-bad' ? 'bad' : 'off'
 }
 </script>
 
@@ -89,7 +91,7 @@ function clsOf(cls: string): string {
         </div>
       </div>
 
-      
+      <!-- 三段恒常显示：没数据时给空态说明，别让「旧记录没落这个字段」看着像功能没做 -->
       <div class="rd-section">
         <div class="rd-title">正则过滤后的文件（{{ detail.regex_hit.length }}）</div>
         <div v-if="detail.regex_hit.length" class="rd-files">

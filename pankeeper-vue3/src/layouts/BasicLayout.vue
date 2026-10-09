@@ -1,232 +1,263 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
-import { HomeOutlined, SwapOutlined, SearchOutlined, FileTextOutlined, FolderOutlined, ClockCircleOutlined, HistoryOutlined, CloudOutlined, DatabaseOutlined, FolderOpenOutlined, FieldTimeOutlined, SettingOutlined, AppstoreOutlined, BarChartOutlined, LogoutOutlined, ProfileOutlined, NotificationOutlined, } from '@ant-design/icons-vue';
-import { useAuthStore } from '@/store/auth';
-import { useThemeStore } from '@/store/theme';
-import { AUTO_TITLE, type AutoType } from '@/router';
-import QueueBadge from '@/queue/QueueBadge.vue';
-const route = useRoute();
-const router = useRouter();
-const auth = useAuthStore();
-const theme = useThemeStore();
+/* 主框架：侧栏（分组折叠菜单 + 用户脚）+ 顶栏（标题 + 夜间切换）+ 内容区 + 队列浮标。
+ * 分组折叠状态存 localStorage `pk-nav`（记分组 key，结构变动不错位）；
+ * 路由高亮时只强制展开所在分组，不写存储（用户手动收起的手感优先）。 */
+import { computed, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import {
+  HomeOutlined,
+  SwapOutlined,
+  SearchOutlined,
+  FileTextOutlined,
+  FolderOutlined,
+  ClockCircleOutlined,
+  HistoryOutlined,
+  CloudOutlined,
+  DatabaseOutlined,
+  FolderOpenOutlined,
+  FieldTimeOutlined,
+  SettingOutlined,
+  AppstoreOutlined,
+  BarChartOutlined,
+  LogoutOutlined,
+  ProfileOutlined,
+  NotificationOutlined,
+} from '@ant-design/icons-vue'
+import { useAuthStore } from '@/store/auth'
+import { useThemeStore } from '@/store/theme'
+import { AUTO_TITLE, type AutoType } from '@/router'
+import QueueBadge from '@/queue/QueueBadge.vue'
+
+const route = useRoute()
+const router = useRouter()
+const auth = useAuthStore()
+const theme = useThemeStore()
+
 const pageTitle = computed(() => {
-    if (route.name === 'auto')
-        return AUTO_TITLE[route.params.type as AutoType] || '自动转存';
-    return (route.meta.title as string) || '';
-});
+  if (route.name === 'auto') return AUTO_TITLE[route.params.type as AutoType] || '自动转存'
+  return (route.meta.title as string) || ''
+})
+
 interface MenuItem {
-    key: string;
-    label: string;
-    icon: any;
-    color?: string;
+  key: string
+  label: string
+  icon: any
+  color?: string
 }
-const groups: {
-    key: string;
-    label: string;
-    icon: any;
-    children: MenuItem[];
-}[] = [
-    {
-        key: 'transfer',
-        label: '转存中心',
-        icon: SwapOutlined,
-        children: [
-            { key: 'search', label: '搜索转存', icon: SearchOutlined },
-            { key: 'default-dir', label: '转存配置', icon: FolderOutlined },
-        ],
-    },
-    {
-        key: 'auto',
-        label: '自动转存',
-        icon: ClockCircleOutlined,
-        children: [
-            { key: 'auto-baidu', label: '百度网盘', icon: CloudOutlined, color: '#1677ff' },
-            { key: 'auto-quark', label: '夸克网盘', icon: CloudOutlined, color: '#13c2c2' },
-            { key: 'auto-115', label: '115 网盘', icon: CloudOutlined, color: '#722ed1' },
-        ],
-    },
-    {
-        key: 'logs',
-        label: '日志管理',
-        icon: ProfileOutlined,
-        children: [
-            { key: 'records', label: '搜索历史', icon: FileTextOutlined },
-            { key: 'auto-history', label: '转存历史', icon: HistoryOutlined },
-            { key: 'push-logs', label: '推送历史', icon: NotificationOutlined },
-            { key: 'drive-logs', label: '请求日志', icon: BarChartOutlined },
-        ],
-    },
-    {
-        key: 'sys',
-        label: '系统管理',
-        icon: SettingOutlined,
-        children: [
-            { key: 'accounts', label: '网盘连接', icon: DatabaseOutlined },
-            { key: 'cache-config', label: '缓存配置', icon: FolderOpenOutlined },
-            { key: 'queue-config', label: '队列配置', icon: FieldTimeOutlined },
-            { key: 'settings', label: '系统设置', icon: SettingOutlined },
-        ],
-    },
-];
+
+const groups: { key: string; label: string; icon: any; children: MenuItem[] }[] = [
+  {
+    key: 'transfer',
+    label: '转存中心',
+    icon: SwapOutlined,
+    children: [
+      { key: 'search', label: '搜索转存', icon: SearchOutlined },
+      { key: 'default-dir', label: '转存配置', icon: FolderOutlined },
+    ],
+  },
+  {
+    key: 'auto',
+    label: '自动转存',
+    icon: ClockCircleOutlined,
+    children: [
+      { key: 'auto-baidu', label: '百度网盘', icon: CloudOutlined, color: '#1677ff' },
+      { key: 'auto-quark', label: '夸克网盘', icon: CloudOutlined, color: '#13c2c2' },
+      { key: 'auto-115', label: '115 网盘', icon: CloudOutlined, color: '#722ed1' },
+    ],
+  },
+  {
+    key: 'logs',
+    label: '日志管理',
+    icon: ProfileOutlined,
+    children: [
+      { key: 'records', label: '搜索历史', icon: FileTextOutlined },
+      { key: 'auto-history', label: '转存历史', icon: HistoryOutlined },
+      { key: 'push-logs', label: '推送历史', icon: NotificationOutlined },
+      { key: 'drive-logs', label: '请求日志', icon: BarChartOutlined },
+    ],
+  },
+  {
+    key: 'sys',
+    label: '系统管理',
+    icon: SettingOutlined,
+    children: [
+      { key: 'accounts', label: '网盘连接', icon: DatabaseOutlined },
+      { key: 'cache-config', label: '缓存配置', icon: FolderOpenOutlined },
+      { key: 'queue-config', label: '队列配置', icon: FieldTimeOutlined },
+      { key: 'settings', label: '系统设置', icon: SettingOutlined },
+    ],
+  },
+]
+
 const activeKey = computed(() => {
-    if (route.name === 'auto')
-        return 'auto-' + route.params.type;
-    return (route.name as string) || 'dashboard';
-});
-const openGroups = ref<Set<string>>(new Set(['transfer', 'auto', 'logs', 'sys']));
+  if (route.name === 'auto') return 'auto-' + route.params.type
+  return (route.name as string) || 'dashboard'
+})
+
+// 分组折叠：从 localStorage 恢复，默认全展开
+const openGroups = ref<Set<string>>(new Set(['transfer', 'auto', 'logs', 'sys']))
 try {
-    const saved = JSON.parse(localStorage.getItem('pk-nav') || 'null');
-    if (saved && saved.length)
-        openGroups.value = new Set(saved as string[]);
+  const saved = JSON.parse(localStorage.getItem('pk-nav') || 'null')
+  if (saved && saved.length) openGroups.value = new Set(saved as string[])
+} catch {
+  /* ignore */
 }
-catch {
-}
+
 function toggleGroup(key: string) {
-    const s = new Set(openGroups.value);
-    if (s.has(key))
-        s.delete(key);
-    else
-        s.add(key);
-    openGroups.value = s;
-    try {
-        localStorage.setItem('pk-nav', JSON.stringify([...s]));
-    }
-    catch {
-    }
+  const s = new Set(openGroups.value)
+  if (s.has(key)) s.delete(key)
+  else s.add(key)
+  openGroups.value = s
+  try {
+    localStorage.setItem('pk-nav', JSON.stringify([...s]))
+  } catch {
+    /* ignore */
+  }
 }
+
+// 路由变化：激活项所在分组强制展开（不写存储）
 watch(activeKey, (key) => {
-    const g = groups.find((x) => x.children.some((c) => c.key === key));
-    if (g && !openGroups.value.has(g.key)) {
-        const s = new Set(openGroups.value);
-        s.add(g.key);
-        openGroups.value = s;
-    }
-});
+  const g = groups.find((x) => x.children.some((c) => c.key === key))
+  if (g && !openGroups.value.has(g.key)) {
+    const s = new Set(openGroups.value)
+    s.add(g.key)
+    openGroups.value = s
+  }
+})
+
 function go(item: MenuItem) {
-    if (item.key.startsWith('auto-')) {
-        router.push('/auto/' + item.key.replace('auto-', ''));
-    }
-    else {
-        router.push('/' + item.key);
-    }
+  if (item.key.startsWith('auto-')) {
+    router.push('/auto/' + item.key.replace('auto-', ''))
+  } else {
+    router.push('/' + item.key)
+  }
 }
+
 function logout() {
-    auth.logout();
-    router.push('/login');
+  auth.logout()
+  router.push('/login')
 }
-const moreOpen = ref(false);
+
+/* ===== 移动端（<768px）：底部标签栏 + 「更多」面板 =====
+ * PC 上这两个组件 display:none，桌面布局一根毛都不动。
+ * 高频页（首页/搜索/记录/自动）进底栏，低频页收进「更多」底部面板。 */
+const moreOpen = ref(false)
 interface TabSub {
-    label: string;
-    icon: any;
-    to: string;
+  label: string
+  icon: any
+  to: string
 }
 interface TabItem {
-    key: string;
-    label: string;
-    icon: any;
-    to?: string;
-    sub?: TabSub[];
+  key: string
+  label: string
+  icon: any
+  to?: string
+  /** 子菜单（2026-10-08 用户定稿）：点击弹出多项选择，而不是直接跳单页 */
+  sub?: TabSub[]
 }
 const tabs: TabItem[] = [
-    { key: 'dashboard', label: '首页', icon: HomeOutlined, to: '/dashboard' },
-    { key: 'search', label: '搜索', icon: SearchOutlined, to: '/search' },
-    {
-        key: 'records',
-        label: '记录',
-        icon: FileTextOutlined,
-        sub: [
-            { label: '搜索历史', icon: FileTextOutlined, to: '/records' },
-            { label: '转存历史', icon: HistoryOutlined, to: '/auto/history' },
-            { label: '推送历史', icon: NotificationOutlined, to: '/push-logs' },
-        ],
-    },
-    {
-        key: 'auto',
-        label: '自动',
-        icon: ClockCircleOutlined,
-        sub: [
-            { label: '百度网盘', icon: CloudOutlined, to: '/auto/baidu' },
-            { label: '夸克网盘', icon: CloudOutlined, to: '/auto/quark' },
-            { label: '115 网盘', icon: CloudOutlined, to: '/auto/115' },
-        ],
-    },
-    { key: 'more', label: '更多', icon: AppstoreOutlined },
-];
+  { key: 'dashboard', label: '首页', icon: HomeOutlined, to: '/dashboard' },
+  { key: 'search', label: '搜索', icon: SearchOutlined, to: '/search' },
+  {
+    key: 'records',
+    label: '记录',
+    icon: FileTextOutlined,
+    sub: [
+      { label: '搜索历史', icon: FileTextOutlined, to: '/records' },
+      { label: '转存历史', icon: HistoryOutlined, to: '/auto/history' },
+      { label: '推送历史', icon: NotificationOutlined, to: '/push-logs' },
+    ],
+  },
+  {
+    key: 'auto',
+    label: '自动',
+    icon: ClockCircleOutlined,
+    sub: [
+      { label: '百度网盘', icon: CloudOutlined, to: '/auto/baidu' },
+      { label: '夸克网盘', icon: CloudOutlined, to: '/auto/quark' },
+      { label: '115 网盘', icon: CloudOutlined, to: '/auto/115' },
+    ],
+  },
+  { key: 'more', label: '更多', icon: AppstoreOutlined },
+]
 const activeTab = computed(() => {
-    if (moreOpen.value)
-        return 'more';
-    const withSub = tabs.find((x) => x.sub?.some((sub) => sub.to === route.path));
-    if (withSub)
-        return withSub.key;
-    if (route.name === 'auto')
-        return 'auto';
-    return (route.name as string) || 'dashboard';
-});
-const subOpen = ref('');
+  if (moreOpen.value) return 'more'
+  // 子菜单型 tab：当前路由落在它的子项里就点亮它（如 /push-logs 点亮「记录」）
+  const withSub = tabs.find((x) => x.sub?.some((sub) => sub.to === route.path))
+  if (withSub) return withSub.key
+  if (route.name === 'auto') return 'auto'
+  return (route.name as string) || 'dashboard'
+})
+
+/** 子菜单展开中的 tab key（点同 tab 收起；点其他 tab 切走） */
+const subOpen = ref('')
+
 function tapTab(t: TabItem) {
-    if (t.key === 'more') {
-        moreOpen.value = !moreOpen.value;
-        subOpen.value = '';
-        return;
-    }
-    moreOpen.value = false;
-    if (t.sub) {
-        subOpen.value = subOpen.value === t.key ? '' : t.key;
-        return;
-    }
-    subOpen.value = '';
-    if (route.name !== t.key)
-        router.push(t.to!);
+  if (t.key === 'more') {
+    moreOpen.value = !moreOpen.value
+    subOpen.value = ''
+    return
+  }
+  moreOpen.value = false
+  if (t.sub) {
+    subOpen.value = subOpen.value === t.key ? '' : t.key
+    return
+  }
+  subOpen.value = ''
+  if (route.name !== t.key) router.push(t.to!)
 }
+
 function goSub(sub: TabSub) {
-    subOpen.value = '';
-    moreOpen.value = false;
-    router.push(sub.to);
+  subOpen.value = ''
+  moreOpen.value = false
+  router.push(sub.to)
 }
-const moreMenu: {
-    key: string;
-    label: string;
-    items: MenuItem[];
-}[] = [
-    {
-        key: 'transfer',
-        label: '转存中心',
-        items: [{ key: 'default-dir', label: '转存配置', icon: FolderOutlined }],
-    },
-    {
-        key: 'auto',
-        label: '自动转存',
-        items: [
-            { key: 'auto-baidu', label: '百度网盘', icon: CloudOutlined, color: '#1677ff' },
-            { key: 'auto-quark', label: '夸克网盘', icon: CloudOutlined, color: '#13c2c2' },
-            { key: 'auto-115', label: '115 网盘', icon: CloudOutlined, color: '#722ed1' },
-        ],
-    },
-    {
-        key: 'logs',
-        label: '日志管理',
-        items: [
-            { key: 'records', label: '搜索历史', icon: FileTextOutlined },
-            { key: 'auto-history', label: '转存历史', icon: HistoryOutlined },
-            { key: 'push-logs', label: '推送历史', icon: NotificationOutlined },
-            { key: 'drive-logs', label: '请求日志', icon: BarChartOutlined },
-        ],
-    },
-    {
-        key: 'sys',
-        label: '系统管理',
-        items: [
-            { key: 'accounts', label: '网盘连接', icon: DatabaseOutlined },
-            { key: 'cache-config', label: '缓存配置', icon: FolderOpenOutlined },
-            { key: 'queue-config', label: '队列配置', icon: FieldTimeOutlined },
-            { key: 'settings', label: '系统设置', icon: SettingOutlined },
-        ],
-    },
-];
-watch(() => route.fullPath, () => {
-    moreOpen.value = false;
-});
+
+/* 「更多」面板只收底栏没有的入口（转存配置/三网盘自动/系统管理四页），跳转复用 go() */
+const moreMenu: { key: string; label: string; items: MenuItem[] }[] = [
+  {
+    key: 'transfer',
+    label: '转存中心',
+    items: [{ key: 'default-dir', label: '转存配置', icon: FolderOutlined }],
+  },
+  {
+    key: 'auto',
+    label: '自动转存',
+    items: [
+      { key: 'auto-baidu', label: '百度网盘', icon: CloudOutlined, color: '#1677ff' },
+      { key: 'auto-quark', label: '夸克网盘', icon: CloudOutlined, color: '#13c2c2' },
+      { key: 'auto-115', label: '115 网盘', icon: CloudOutlined, color: '#722ed1' },
+    ],
+  },
+  {
+    key: 'logs',
+    label: '日志管理',
+    items: [
+      { key: 'records', label: '搜索历史', icon: FileTextOutlined },
+      { key: 'auto-history', label: '转存历史', icon: HistoryOutlined },
+      { key: 'push-logs', label: '推送历史', icon: NotificationOutlined },
+      { key: 'drive-logs', label: '请求日志', icon: BarChartOutlined },
+    ],
+  },
+  {
+    key: 'sys',
+    label: '系统管理',
+    items: [
+      { key: 'accounts', label: '网盘连接', icon: DatabaseOutlined },
+      { key: 'cache-config', label: '缓存配置', icon: FolderOpenOutlined },
+      { key: 'queue-config', label: '队列配置', icon: FieldTimeOutlined },
+      { key: 'settings', label: '系统设置', icon: SettingOutlined },
+    ],
+  },
+]
+
+// 路由一变就收面板（从面板跳页后面板不能盖在新页面上）
+watch(
+  () => route.fullPath,
+  () => {
+    moreOpen.value = false
+  },
+)
 </script>
 
 <template>
@@ -290,7 +321,7 @@ watch(() => route.fullPath, () => {
 
     <QueueBadge />
 
-    
+    <!-- ===== 以下为移动端专用（<768px 才显示，PC display:none） ===== -->
     <nav class="m-tabbar">
       <div v-for="t in tabs" :key="t.key" class="m-tab-wrap">
         <Transition name="msheet">

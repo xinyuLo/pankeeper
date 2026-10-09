@@ -1,243 +1,325 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
-import { useBackGuard } from '@/composables/useBackGuard';
-import { message } from 'ant-design-vue';
-import LazyDirTree from '@/components/LazyDirTree.vue';
-import PkPager from '@/components/PkPager.vue';
-import { useIsMobile } from '@/composables/useIsMobile';
-import { ddStore, ddFind } from '@/api/mock/dd';
-import { DD_MEDIA, MAIN_ORDER, DRIVE_META } from '@/api/mock/meta';
-import { accountStore } from '@/api/mock/accounts';
-import { getRootDirs } from '@/api/modules/accounts';
-import { saveDdItem, deleteDdItem, setDefaultDir, listDdItems, listQmsPaths } from '@/api/modules/dd';
-import { getSettings } from '@/api/modules/settings';
-import type { DdItem, DdQmsPath, MainDriveType } from '@/types/model';
-const active = ref<MainDriveType>('baidu');
-const isMobile = useIsMobile();
-const rows = computed<DdItem[]>(() => ddStore.items.filter((x) => x.type === active.value).sort((a, b) => (a.sort || 0) - (b.sort || 0)));
+/* =====================================================================
+ * 转存配置（默认目录）—— 原型 parts/page-default-dir.html 的 Vue3 还原。
+ * 「快速转存」的下拉项就来自这里，按 网盘 tab × 账号 两级隔离。
+ * dd- 前缀私有样式在本文件 <style scoped>；数据直接读写 ddStore（内存态），
+ * 增删改走 api/modules/dd.ts（mockDelay 包一层，后端就绪后只换实现）。
+ * ===================================================================== */
+import { computed, onMounted, ref, watch } from 'vue'
+import { useBackGuard } from '@/composables/useBackGuard'
+import { message } from 'ant-design-vue'
+import LazyDirTree from '@/components/LazyDirTree.vue'
+import PkPager from '@/components/PkPager.vue'
+import { useIsMobile } from '@/composables/useIsMobile'
+import { ddStore, ddFind } from '@/api/mock/dd'
+import { DD_MEDIA, MAIN_ORDER, DRIVE_META } from '@/api/mock/meta'
+import { accountStore } from '@/api/mock/accounts'
+import { getRootDirs } from '@/api/modules/accounts'
+import { saveDdItem, deleteDdItem, setDefaultDir, listDdItems, listQmsPaths, listStrmPaths } from '@/api/modules/dd'
+import { getSettings } from '@/api/modules/settings'
+import { pkQueueCfgFetch } from '@/queue/engine'
+import type { DdItem, DdQmsPath, DdStrmPath, MainDriveType } from '@/types/model'
+
+/* ===== 列表态 ===== */
+const active = ref<MainDriveType>('baidu')
+/* 手机（<768px）表格换卡片列表：横滑表格的「操作」列在窄屏上永远滑不到头 */
+const isMobile = useIsMobile()
+
+/** 当前 tab 的行，按 sort 升序（数字越小在快速转存下拉里越靠前） */
+const rows = computed<DdItem[]>(() =>
+  ddStore.items.filter((x) => x.type === active.value).sort((a, b) => (a.sort || 0) - (b.sort || 0)),
+)
+
 function countOf(t: MainDriveType): number {
-    return ddStore.items.filter((x) => x.type === t).length;
+  return ddStore.items.filter((x) => x.type === t).length
 }
-const page = ref(1);
-const size = ref(20);
-const pagedRows = computed(() => rows.value.slice((page.value - 1) * size.value, page.value * size.value));
-watch(() => active.value, () => (page.value = 1));
+
+/* ===== 分页（内存切片；切网盘 tab 回第 1 页） ===== */
+const page = ref(1)
+const size = ref(20)
+const pagedRows = computed(() => rows.value.slice((page.value - 1) * size.value, page.value * size.value))
+watch(() => active.value, () => (page.value = 1))
 watch(() => rows.value.length, () => {
-    const max = Math.max(1, Math.ceil(rows.value.length / size.value));
-    if (page.value > max)
-        page.value = max;
-});
+  const max = Math.max(1, Math.ceil(rows.value.length / size.value))
+  if (page.value > max) page.value = max
+})
+
+/** 账号 id → 展示名（真实账号：别名/昵称；查不到时兜底显示原始值） */
 function accLabel(acc: string): string {
-    const a = accountStore.accounts.find((x) => String(x.id) === String(acc));
-    return a ? a.alias || a.nickname || `${DRIVE_META[a.type].name}#${a.id}` : acc || '—';
+  const a = accountStore.accounts.find((x) => String(x.id) === String(acc))
+  return a ? a.alias || a.nickname || `${DRIVE_META[a.type].name}#${a.id}` : acc || '—'
 }
+
 function switchTab(t: MainDriveType) {
-    active.value = t;
+  active.value = t
 }
+
+/* ===== 行内操作 ===== */
 async function setDefault(it: DdItem) {
-    await setDefaultDir(it.id);
-    message.success(`已把「${it.name}」设为默认目录`);
+  // api 内部已保证同网盘 + 同账号下唯一
+  await setDefaultDir(it.id)
+  message.success(`已把「${it.name}」设为默认目录`)
 }
+
 async function doDelete(it: DdItem) {
-    await deleteDdItem(it.id);
-    message.success(`已删除「${it.name}」`);
+  await deleteDdItem(it.id)
+  message.success(`已删除「${it.name}」`)
 }
-const modalOpen = ref(false);
-useBackGuard(modalOpen);
-const editingId = ref<number | null>(null);
-const fName = ref('');
-const fMediaType = ref<'movie' | 'tv' | ''>('');
+
+/* ===== 新增 / 编辑弹窗 ===== */
+const modalOpen = ref(false)
+useBackGuard(modalOpen)
+const editingId = ref<number | null>(null) // null = 新增
+const fName = ref('')
+/** 目录类型（电影/电视节目）：**必填**——新建初始未选（淡红提醒），不选不能保存；
+ * 编辑存量老目录时按名称推断初值（含电视/剧 → 电视节目） */
+const fMediaType = ref<'movie' | 'tv' | ''>('')
 const MEDIA_TYPE_OPTS = [
-    { value: 'movie', label: '电影' },
-    { value: 'tv', label: '电视节目' },
-];
+  { value: 'movie', label: '电影' },
+  { value: 'tv', label: '电视节目' },
+]
+/** 按目录名推断类型（存量目录没标过时用） */
 function inferMediaType(name: string): 'movie' | 'tv' {
-    const n = (name || '').toLowerCase();
-    return n.includes('电视') || n.includes('剧') ? 'tv' : 'movie';
+  const n = (name || '').toLowerCase()
+  return n.includes('电视') || n.includes('剧') ? 'tv' : 'movie'
 }
-const fType = ref<MainDriveType>('baidu');
-const fAcc = ref('');
-const fPath = ref('');
-const fSort = ref(1);
-const fQmsOn = ref(false);
-const fQmsId = ref<number | undefined>(undefined);
-const fLpOn = ref(false);
-const fLpEvent = ref('');
-const fOnlyVideo = ref(true);
-const mediaBackend = ref<'qms' | 'litepan'>('qms');
-const typeOptions = MAIN_ORDER.map((k) => ({ value: k, label: DRIVE_META[k].full }));
-const accOptions = computed(() => accountStore.accounts
+const fType = ref<MainDriveType>('baidu')
+const fAcc = ref('')
+const fPath = ref('')
+const fSort = ref(1)
+const fQmsOn = ref(false)
+const fQmsId = ref<number | undefined>(undefined)
+/** STRM 同步路径（2026-10-09 恢复目录级可配）：不选 = 按 QMS 整理目标自动配对；选了 = 按指定的触发 */
+const fStrmId = ref<number | undefined>(undefined)
+/** QMS/STRM 反转（队列配置全局）：开启时联动 QMS 必须显式选 STRM 同步路径 */
+const reverseOn = ref(false)
+// LitePan 联动（media.backend=litepan 时替代 QMS 表单）：开关 + 事件名（输入框，等
+// LitePan 出接口后换下拉——2026-10-06 用户定稿）
+const fLpOn = ref(false)
+const fLpEvent = ref('')
+/** 过滤其他文件：默认开启（推荐），新增目录即开；编辑时读存量值 */
+const fOnlyVideo = ref(true)
+/** 当前联动后端：qms 显示 QMS 表单，litepan 显示 LitePan 表单（进页面拉一次） */
+const mediaBackend = ref<'qms' | 'litepan'>('qms')
+
+const typeOptions = MAIN_ORDER.map((k) => ({ value: k, label: DRIVE_META[k].full }))
+/** 所属账号：真实账号列表（网盘连接页配的），不是 mock 的假号 */
+const accOptions = computed(() =>
+  accountStore.accounts
     .filter((a) => a.type === fType.value)
-    .map((a) => ({ value: String(a.id), label: a.alias || a.nickname || `${DRIVE_META[a.type].name}#${a.id}` })));
-const qmsPaths = ref<DdQmsPath[]>([]);
-const qmsOptions = computed(() => qmsPaths.value.map((p) => ({ value: p.id, label: `#${p.id} · ${DD_MEDIA[p.media_type as 'tv'] || p.media_type} · ${p.source_path}` })));
+    .map((a) => ({ value: String(a.id), label: a.alias || a.nickname || `${DRIVE_META[a.type].name}#${a.id}` })),
+)
+/** QMS 刮削目录 / STRM 同步路径：打开弹窗时从 QMS 拉真实列表 */
+const qmsPaths = ref<DdQmsPath[]>([])
+const strmPaths = ref<DdStrmPath[]>([])
+// QMS 刮削目录下拉：#id · 类型 · 路径
+const qmsOptions = computed(() =>
+  qmsPaths.value.map((p) => ({ value: p.id, label: `#${p.id} · ${DD_MEDIA[p.media_type as 'tv'] || p.media_type} · ${p.source_path}` })),
+)
+// STRM 同步路径下拉：#id · 来源路径（与任务弹窗 TaskModal 的 strmLabel 口径一致）
+const strmOptions = computed(() =>
+  strmPaths.value.map((p) => ({ value: p.id, label: `#${p.id} · ${p.remote_path}` })),
+)
 async function loadQmsStrmPaths() {
-    qmsPaths.value = await listQmsPaths().catch(() => []);
+  // QMS 未启用/连不上时静默置空：下拉显示"暂无可选"，不挡住表单其他项。
+  // STRM 2026-10-09 恢复目录级下拉：不选仍走自动配对（整理目标根=同步路径来源）
+  qmsPaths.value = await listQmsPaths().catch(() => [])
+  strmPaths.value = await listStrmPaths().catch(() => [])
 }
-const bdOpen = ref(false);
-useBackGuard(bdOpen);
-const bdPath = ref('');
-const bdTree = ref<InstanceType<typeof LazyDirTree> | null>(null);
-const bdRefreshing = ref(false);
-const bdType = computed<MainDriveType>(() => fType.value);
+
+/* ===== 目录选择弹窗（与网盘连接页/任务弹窗统一）：LazyDirTree 真实目录，只显示文件夹 ===== */
+const bdOpen = ref(false)
+useBackGuard(bdOpen)
+const bdPath = ref('')
+const bdTree = ref<InstanceType<typeof LazyDirTree> | null>(null)
+const bdRefreshing = ref(false)
+const bdType = computed<MainDriveType>(() => fType.value)
 const bdAccId = computed<number | null>(() => {
-    const n = Number(fAcc.value);
-    return Number.isFinite(n) && n > 0 ? n : null;
-});
-const bdKey = computed(() => `${bdType.value}/${bdAccId.value ?? 'def'}`);
-const rootDirs = ref<Record<string, string>>({});
-const bdRootPath = computed(() => rootDirs.value[bdType.value] || '');
+  const n = Number(fAcc.value)
+  return Number.isFinite(n) && n > 0 ? n : null
+})
+/** LazyDirTree 的 key：类型/账号变了整树重建 */
+const bdKey = computed(() => `${bdType.value}/${bdAccId.value ?? 'def'}`)
+/** 根路径锁定：网盘连接页配置的「默认根目录」（root_cfg），目录弹窗只展示它的子目录 */
+const rootDirs = ref<Record<string, string>>({})
+const bdRootPath = computed(() => rootDirs.value[bdType.value] || '')
+
 function onBdPick(path: string) {
-    bdPath.value = path;
+  bdPath.value = path
 }
 async function onBdRefresh() {
-    bdRefreshing.value = true;
-    try {
-        await bdTree.value?.reload();
-    }
-    finally {
-        bdRefreshing.value = false;
-    }
+  bdRefreshing.value = true
+  try {
+    await bdTree.value?.reload()
+  } finally {
+    bdRefreshing.value = false
+  }
 }
 function onPickOk() {
-    if (!bdPath.value) {
-        message.warning('请先在树里选择一个目录');
-        return;
-    }
-    fPath.value = bdPath.value;
-    bdOpen.value = false;
+  if (!bdPath.value) {
+    message.warning('请先在树里选择一个目录')
+    return
+  }
+  fPath.value = bdPath.value
+  bdOpen.value = false
 }
+
+/** 打开目录树：编辑=已填路径自动展开选中；新增=不预选（树根仍是默认根目录） */
 function onBrowse() {
-    bdPath.value = fPath.value;
-    bdOpen.value = true;
+  bdPath.value = fPath.value
+  bdOpen.value = true
 }
+
 function openEditor(id: number | null) {
-    editingId.value = id;
-    const it = id != null ? ddFind(id) : null;
-    fType.value = it ? it.type : active.value;
-    const firstAcc = accountStore.accounts.find((a) => a.type === fType.value);
-    fAcc.value = it ? it.account : String(firstAcc?.id ?? '');
-    if (!it && !firstAcc)
-        message.warning(`该网盘还没有已连接的账号，请先到「网盘连接」配置`);
-    fPath.value = it ? it.path : '';
-    fName.value = it ? it.name : '';
-    fMediaType.value = it
-        ? (it.media_type === 'tv' || it.media_type === 'movie' ? it.media_type : inferMediaType(it.name))
-        : '';
-    fSort.value = it
-        ? it.sort
-        : ddStore.items.filter((x) => x.type === fType.value).reduce((m, x) => Math.max(m, x.sort || 0), 0) + 1;
-    fQmsOn.value = it ? !!it.qms_on : false;
-    fQmsId.value = it?.qms_id ?? undefined;
-    fLpOn.value = it ? !!it.lp_on : false;
-    fLpEvent.value = it?.lp_event || '';
-    fOnlyVideo.value = it ? !!it.only_video : true;
-    bdPath.value = fPath.value;
-    modalOpen.value = true;
-    loadQmsStrmPaths();
+  editingId.value = id
+  const it = id != null ? ddFind(id) : null
+  fType.value = it ? it.type : active.value
+  const firstAcc = accountStore.accounts.find((a) => a.type === fType.value)
+  fAcc.value = it ? it.account : String(firstAcc?.id ?? '')
+  if (!it && !firstAcc) message.warning(`该网盘还没有已连接的账号，请先到「网盘连接」配置`)
+  fPath.value = it ? it.path : ''
+  fName.value = it ? it.name : ''
+  fMediaType.value = it
+    ? (it.media_type === 'tv' || it.media_type === 'movie' ? it.media_type : inferMediaType(it.name))
+    : ''
+  // 新增时排序默认排到该网盘现有最大值 + 1（原型如此）
+  fSort.value = it
+    ? it.sort
+    : ddStore.items.filter((x) => x.type === fType.value).reduce((m, x) => Math.max(m, x.sort || 0), 0) + 1
+  fQmsOn.value = it ? !!it.qms_on : false
+  fQmsId.value = it?.qms_id ?? undefined
+  fStrmId.value = it?.strm_id ?? undefined
+  fLpOn.value = it ? !!it.lp_on : false
+  fLpEvent.value = it?.lp_event || ''
+  fOnlyVideo.value = it ? !!it.only_video : true
+  bdPath.value = fPath.value
+  modalOpen.value = true
+  loadQmsStrmPaths()
+  pkQueueCfgFetch().then((c) => (reverseOn.value = !!c.reverse)).catch(() => {})
 }
+
+/** 切换网盘：账号跟随切到该网盘第一个，已选路径/树展开态作废（跨网盘路径无意义） */
 function onTypeChange() {
-    const firstAcc = accountStore.accounts.find((a) => a.type === fType.value);
-    fAcc.value = String(firstAcc?.id ?? '');
-    fPath.value = '';
+  const firstAcc = accountStore.accounts.find((a) => a.type === fType.value)
+  fAcc.value = String(firstAcc?.id ?? '')
+  fPath.value = ''
 }
+
+/* ===== 目录树（dd-tnode 结构，扁平化渲染：缩进 = 深度 × 18px，视觉与原型嵌套版一致） ===== */
 interface FlatNode {
-    path: string;
-    name: string;
-    depth: number;
-    hasKids: boolean;
+  path: string
+  name: string
+  depth: number
+  hasKids: boolean
 }
-const expanded = ref(new Set<string>());
+const expanded = ref(new Set<string>())
+
+/* ===== 进页面：拉真实转存配置 + QMS/STRM 路径列表（此前页面渲染的一直是 mock 假数据） ===== */
 onMounted(async () => {
-    await listDdItems().catch(() => { });
-    rootDirs.value = await getRootDirs().catch(() => ({}));
-    loadQmsStrmPaths();
-    getSettings().then((d) => (mediaBackend.value = d.media?.backend || 'qms')).catch(() => { });
-});
+  await listDdItems().catch(() => {})
+  rootDirs.value = await getRootDirs().catch(() => ({}))
+  loadQmsStrmPaths()
+  // 联动后端决定弹窗里显示 QMS 还是 LitePan 表单（qms_on/lp_on 两套字段各自保存互不覆盖）
+  getSettings().then((d) => (mediaBackend.value = d.media?.backend || 'qms')).catch(() => {})
+})
+
+/* ===== 保存（校验全部不关弹窗，重名只在同网盘 + 同账号内拦截） ===== */
 async function confirmEditor() {
-    const name = fName.value.trim();
-    if (!name) {
-        message.error('请填写名称');
-        return;
-    }
-    if (!fMediaType.value) {
-        message.error('请选择目录类型（电影 / 电视节目）');
-        return;
-    }
-    if (!fPath.value) {
-        message.error('请选择网盘路径');
-        return;
-    }
-    if (!fSort.value || fSort.value < 1) {
-        message.error('排序请填正整数');
-        return;
-    }
-    if (!fAcc.value) {
-        message.error('请选择所属账号');
-        return;
-    }
-    const dup = ddStore.items.some((x) => x.type === fType.value && x.account === fAcc.value && x.name === name && x.id !== editingId.value);
-    if (dup) {
-        message.error(`该账号下已有同名目录「${name}」`);
-        return;
-    }
-    if (fQmsOn.value && fQmsId.value == null) {
-        message.error('联动 QMS 需选择整理目录');
-        return;
-    }
-    if (fLpOn.value && !fLpEvent.value.trim()) {
-        message.error('LitePan 联动需填写事件名（与 LitePan 自动化规则里配的一致）');
-        return;
-    }
-    const sharedFields = {
-        media_type: fMediaType.value,
-        only_video: fOnlyVideo.value,
-        qms_on: fQmsOn.value,
-        qms_id: fQmsOn.value && fQmsId.value != null ? fQmsId.value : null,
-        strm_id: null,
-        lp_on: fLpOn.value,
-        lp_event: fLpOn.value ? fLpEvent.value.trim() : fLpEvent.value.trim(),
-    };
-    const beforeCount = ddStore.items.filter((x) => x.type === fType.value && x.account === fAcc.value && x.id !== editingId.value).length;
-    if (editingId.value != null) {
-        const it = ddFind(editingId.value);
-        if (!it)
-            return;
-        const moved = it.type !== fType.value || it.account !== fAcc.value;
-        await saveDdItem({
-            ...it,
-            name,
-            sort: fSort.value,
-            path: fPath.value,
-            account: fAcc.value,
-            type: fType.value,
-            is_default: moved ? beforeCount === 0 : it.is_default,
-            ...sharedFields,
-        });
-        message.success(`已保存「${name}」`);
-    }
-    else {
-        await saveDdItem({
-            id: null,
-            type: fType.value,
-            account: fAcc.value,
-            sort: fSort.value,
-            name,
-            path: fPath.value,
-            is_default: beforeCount === 0,
-            ...sharedFields,
-        });
-        message.success(beforeCount === 0 ? `已新增「${name}」，并设为该账号默认` : `已新增「${name}」`);
-    }
-    active.value = fType.value;
-    modalOpen.value = false;
+  const name = fName.value.trim()
+  if (!name) {
+    message.error('请填写名称')
+    return
+  }
+  if (!fMediaType.value) {
+    message.error('请选择目录类型（电影 / 电视节目）')
+    return
+  }
+  if (!fPath.value) {
+    message.error('请选择网盘路径')
+    return
+  }
+  if (!fSort.value || fSort.value < 1) {
+    message.error('排序请填正整数')
+    return
+  }
+  if (!fAcc.value) {
+    message.error('请选择所属账号')
+    return
+  }
+  const dup = ddStore.items.some(
+    (x) => x.type === fType.value && x.account === fAcc.value && x.name === name && x.id !== editingId.value,
+  )
+  if (dup) {
+    message.error(`该账号下已有同名目录「${name}」`)
+    return
+  }
+  if (fQmsOn.value && fQmsId.value == null) {
+    message.error('联动 QMS 需选择整理目录')
+    return
+  }
+  if (fQmsOn.value && reverseOn.value && fStrmId.value == null) {
+    message.error('已开启 QMS/STRM 反转：必须选择 STRM 同步路径（可到「队列配置」关闭反转）')
+    return
+  }
+  if (fLpOn.value && !fLpEvent.value.trim()) {
+    message.error('LitePan 联动需填写事件名（与 LitePan 自动化规则里配的一致）')
+    return
+  }
+  const sharedFields = {
+    media_type: fMediaType.value,
+    only_video: fOnlyVideo.value,
+    qms_on: fQmsOn.value,
+    qms_id: fQmsOn.value && fQmsId.value != null ? fQmsId.value : null,
+    // STRM 跟 QMS 开关联动保存：不选=null（执行侧自动配对兜底），选了=按指定的触发
+    strm_id: fQmsOn.value && fStrmId.value != null ? fStrmId.value : null,
+    // LitePan 联动字段与 QMS 独立保存（切后端时另一套不丢配置）
+    lp_on: fLpOn.value,
+    lp_event: fLpOn.value ? fLpEvent.value.trim() : fLpEvent.value.trim(),
+  }
+  // 目标账号下（排除自己）已有多少条 —— 新增时第一条自动成为该账号默认
+  const beforeCount = ddStore.items.filter(
+    (x) => x.type === fType.value && x.account === fAcc.value && x.id !== editingId.value,
+  ).length
+
+  if (editingId.value != null) {
+    const it = ddFind(editingId.value)
+    if (!it) return
+    // 编辑换了账号且目标账号还是空的 → 顶上默认，保证「每账号唯一默认」不被搬家破坏
+    const moved = it.type !== fType.value || it.account !== fAcc.value
+    await saveDdItem({
+      ...it,
+      name,
+      sort: fSort.value,
+      path: fPath.value,
+      account: fAcc.value,
+      type: fType.value,
+      is_default: moved ? beforeCount === 0 : it.is_default,
+      ...sharedFields,
+    })
+    message.success(`已保存「${name}」`)
+  } else {
+    await saveDdItem({
+      id: null, // 新建：后端自增分配 id，不再用 0 当"新建"魔法值
+      type: fType.value,
+      account: fAcc.value,
+      sort: fSort.value,
+      name,
+      path: fPath.value,
+      is_default: beforeCount === 0,
+      ...sharedFields,
+    })
+    message.success(beforeCount === 0 ? `已新增「${name}」，并设为该账号默认` : `已新增「${name}」`)
+  }
+  // 编辑里换了网盘 → 跟着切到对应 tab（原型如此）
+  active.value = fType.value
+  modalOpen.value = false
 }
 </script>
 
 <template>
   <div class="dd-wrap">
     <div class="dd-card">
-      
+      <!-- 卡头：标题跟随当前 tab，右侧新增 -->
       <div class="dd-cardhd">
         <div class="dd-headtt">
           <h2>{{ DRIVE_META[active].full }} · 转存配置</h2>
@@ -252,7 +334,7 @@ async function confirmEditor() {
         </div>
       </div>
 
-      
+      <!-- 胶囊 tab：贴在卡头下方、表头之上，与卡片同宽 -->
       <div class="dd-tabsbar">
         <div class="tabs">
           <div v-for="k in MAIN_ORDER" :key="k" :class="{ on: active === k }" @click="switchTab(k)">
@@ -262,7 +344,7 @@ async function confirmEditor() {
         </div>
       </div>
 
-      
+      <!-- 表格：排序 / 名称+路径同格 / 所属账号 / 默认 / 操作（PC；手机换下方卡片列表） -->
       <div v-if="rows.length && !isMobile" class="pk-hscroll">
         <table class="dd-table">
           <thead>
@@ -307,7 +389,7 @@ async function confirmEditor() {
           </tbody>
         </table>
       </div>
-      
+      <!-- 手机卡片列表：一行 = 排序 + 名称 + 默认标记，次行路径，末行账号 + 操作 -->
       <div v-else-if="rows.length" class="dd-cards">
         <div v-for="it in pagedRows" :key="it.id" class="dd-mcard">
           <div class="dd-mtop">
@@ -342,7 +424,7 @@ async function confirmEditor() {
     </div>
   </div>
 
-  
+  <!-- 新增 / 编辑弹窗：限高 + 表体滚动（内容长时保存按钮不被顶出屏） -->
   <a-modal
     v-model:open="modalOpen"
     :title="editingId != null ? '编辑目录' : '新增目录'"
@@ -395,7 +477,7 @@ async function confirmEditor() {
       <div class="dd-tip">数字越小越靠前，「快速转存」的下拉框按这个顺序排。</div>
     </div>
 
-    
+    <!-- 过滤其他文件：目录级属性，转到此目录的转存（搜索/自动都算）只保留视频文件 -->
     <div class="dd-field">
       <div class="dd-qmsline">
         <a-switch v-model:checked="fOnlyVideo" />
@@ -404,7 +486,8 @@ async function confirmEditor() {
       <div class="dd-tip">开启后转到此目录只保存视频文件（推荐开启）。</div>
     </div>
 
-    
+    <!-- 联动区块按「系统设置 → 联动后端」切换：qms = QMS 表单，litepan = LitePan 表单。
+         两套字段（qms_on/lp_on）各自独立保存，切后端不丢另一套的配置。 -->
     <div v-if="mediaBackend === 'qms'" class="dd-field">
       <div class="dd-qmsline">
         <a-switch v-model:checked="fQmsOn" />
@@ -419,7 +502,18 @@ async function confirmEditor() {
           class="dd-sel"
           :placeholder="qmsOptions.length ? '请选择 QMS 整理目录' : 'QMS 暂无刮削目录，请先到 qmediasync 添加'"
         />
-        <div class="dd-tip dd-mt12">QMS 整理成功后会自动按整理结果生成 STRM，失败不生成（无需配置）。</div>
+        <label class="dd-label dd-mt12">STRM 同步路径</label>
+        <a-select
+          v-model:value="fStrmId"
+          :options="strmOptions"
+          class="dd-sel"
+          allow-clear
+          :placeholder="strmOptions.length ? '不选 = 按整理目标自动配对' : 'QMS 暂无 STRM 同步路径，不选则自动配对'"
+        />
+        <div class="dd-tip dd-mt12">
+          STRM 不选就自动配对（刮削目录的整理目标 = 某个同步路径的来源路径时生效）；选了就按指定的触发。
+          QMS 整理成功后才生成 STRM，失败不生成。
+        </div>
       </div>
     </div>
     <div v-else class="dd-field">
@@ -441,7 +535,7 @@ async function confirmEditor() {
       <a-button type="primary" @click="confirmEditor">保存</a-button>
     </template>
   </a-modal>
-    
+    <!-- 目录选择弹窗：与网盘连接页/任务弹窗同款（LazyDirTree，只显示文件夹，带刷新） -->
     <a-modal
       :open="bdOpen"
       :width="480"
@@ -458,7 +552,7 @@ async function confirmEditor() {
       <p class="small" style="color: var(--text3); margin-bottom: 10px">
         点文件夹名选中目标目录，点左侧箭头展开子目录。
       </p>
-      
+      <!-- 打开即沿已配置路径（默认目录）逐层展开并选中；根锁定：只显示默认目录的子目录 -->
       <LazyDirTree ref="bdTree" :key="bdKey" :type="bdType" :acc-id="bdAccId" :root-path="bdRootPath" :initial-path="bdPath" @select="onBdPick" />
       <p class="bd-picked">已选目录：<b>{{ bdPath || '/' }}</b></p>
     </a-modal>

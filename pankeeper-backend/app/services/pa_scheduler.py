@@ -1,3 +1,15 @@
+"""自动转存任务 cron 调度（M3）。
+
+设计要点
+--------
+- 每个启用了 cron 的 PaTask 一个 APScheduler job（5 段 cron，`from_crontab` 解析）；
+  任务的增删改/启停都会触发 `sync_jobs()` 全量重排（任务量个位数，重排零成本）。
+- 触发时只做三件事：校验（enabled/分享链接/是否已被熔断）→ 输入侧去重
+  （同一分享链接还有 wait/run 任务在队就不重复入队）→ 入队（source=auto）。
+  转存本身完全交给队列引擎，这里不做任何网盘请求——调度器和风控无关。
+- last_run/last_status 在**入队时**先置 running，完成/失败由引擎 `_sync_pa_task`
+  回写终态；这样「上次执行时间」反映的是调度时刻，与 cron 语义一致。
+"""
 from __future__ import annotations
 
 import json
@@ -14,7 +26,9 @@ _scheduler: BackgroundScheduler | None = None
 _lock = threading.Lock()
 JOB_PREFIX = "pa_task_"
 
+
 def start_pa_scheduler() -> None:
+    """应用启动时调用（幂等）。"""
     global _scheduler
     with _lock:
         if _scheduler is not None:
@@ -23,7 +37,9 @@ def start_pa_scheduler() -> None:
         _scheduler.start()
     sync_jobs()
 
+
 def sync_jobs() -> dict:
+    """按 PaTask 表现状重排所有 cron job（幂等，任务增删改/启停后调用）。"""
     if _scheduler is None:
         return {"scheduled": 0, "reason": "调度器未启动"}
     with SessionLocal() as s:
@@ -51,7 +67,12 @@ def sync_jobs() -> dict:
         print(f"[pa-sched] 自动任务排期：{len(scheduled)} 个生效" + (f"，{len(skipped)} 个 cron 非法跳过" if skipped else ""))
     return {"scheduled": scheduled, "skipped": skipped}
 
+
 def run_task(task_id: int, force: bool = False) -> dict:
+    """触发一次自动任务（cron 到点或前端「立即运行」）。
+
+    只入队不发网盘请求；返回 {queued, reason}。
+    """
     from ..queue.engine import get_engine
 
     with SessionLocal() as s:
@@ -68,7 +89,7 @@ def run_task(task_id: int, force: bool = False) -> dict:
 
         engine = get_engine()
         if not force:
-
+            # 输入侧去重：同一分享链接还有任务在队列里跑/等，就不再排一份
             for q in engine.snapshot()["tasks"]:
                 if q.get("status") in ("wait", "run") and q.get("shareUrl") == t.share_url:
                     return {"queued": False, "reason": "同一分享链接已在队列中，跳过本次"}
@@ -102,7 +123,9 @@ def run_task(task_id: int, force: bool = False) -> dict:
         s.commit()
         return {"queued": True, "task": t.name}
 
+
 def next_run_times() -> dict[int, str]:
+    """各自动任务的下一次执行时间（设置页展示）。"""
     if _scheduler is None:
         return {}
     out: dict[int, str] = {}

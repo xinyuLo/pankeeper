@@ -1,51 +1,62 @@
 <script setup lang="ts">
-import { ref } from 'vue';
-import type { TreeNode } from '@/types/model';
-const props = withDefaults(defineProps<{
-    nodes: TreeNode[];
-    selectable?: boolean;
-    defaultExpandDepth?: number;
-}>(), { selectable: true, defaultExpandDepth: 2 });
-const emit = defineEmits<{
-    (e: 'select', node: TreeNode): void;
-}>();
-const selectedPath = ref('');
-const opened = ref(new Set<string>());
+/* 通用目录树（原型 .tree/.tnode 结构的组件化）：展开/收起 + 可选单选高亮。
+ * 转存弹窗（选目标）、转存配置「浏览」、自动转存任务弹窗目录选择器共用。
+ * 分享树需要勾选框的场景请在本组件外包一层或局部扩展。 */
+import { ref } from 'vue'
+import type { TreeNode } from '@/types/model'
+
+const props = withDefaults(
+  defineProps<{
+    nodes: TreeNode[]
+    /** 点击节点是否高亮选中 */
+    selectable?: boolean
+    /** 默认展开层数（0 = 全收起） */
+    defaultExpandDepth?: number
+  }>(),
+  { selectable: true, defaultExpandDepth: 2 },
+)
+
+const emit = defineEmits<{ (e: 'select', node: TreeNode): void }>()
+
+const selectedPath = ref('')
+const opened = ref(new Set<string>())
+
 function keyOf(n: TreeNode, depth: number): string {
-    return (n.path || n.name) + '@' + depth;
+  return (n.path || n.name) + '@' + depth
 }
+
 function hasKids(n: TreeNode): boolean {
-    return !!(n.kids && n.kids.length);
+  return !!(n.kids && n.kids.length)
 }
+
 function isOpen(n: TreeNode, depth: number): boolean {
-    return opened.value.has(keyOf(n, depth));
+  return opened.value.has(keyOf(n, depth))
 }
+
 function toggle(n: TreeNode, depth: number) {
-    const k = keyOf(n, depth);
-    const s = new Set(opened.value);
-    if (s.has(k))
-        s.delete(k);
-    else
-        s.add(k);
-    opened.value = s;
+  const k = keyOf(n, depth)
+  const s = new Set(opened.value)
+  if (s.has(k)) s.delete(k)
+  else s.add(k)
+  opened.value = s
 }
+
 function clickNode(n: TreeNode, depth: number) {
-    if (props.selectable && n.path)
-        selectedPath.value = n.path;
-    emit('select', n);
-    if (hasKids(n))
-        toggle(n, depth);
+  if (props.selectable && n.path) selectedPath.value = n.path
+  emit('select', n)
+  if (hasKids(n)) toggle(n, depth)
 }
-;
-function initOpen(nodes: TreeNode[], depth: number) {
-    for (const n of nodes) {
-        if (hasKids(n) && depth < props.defaultExpandDepth) {
-            opened.value.add(keyOf(n, depth));
-            initOpen(n.kids!, depth + 1);
-        }
+
+// 初始展开前 N 层（对齐原型：mine 树默认展开两层）
+;function initOpen(nodes: TreeNode[], depth: number) {
+  for (const n of nodes) {
+    if (hasKids(n) && depth < props.defaultExpandDepth) {
+      opened.value.add(keyOf(n, depth))
+      initOpen(n.kids!, depth + 1)
     }
+  }
 }
-initOpen(props.nodes, 0);
+initOpen(props.nodes, 0)
 </script>
 
 <template>

@@ -1,325 +1,386 @@
 <script lang="ts">
+/* 视频扩展名（与后端 adapters/base.VIDEO_EXTS 同口径）：左栏清单禁选非视频文件用 */
 const VIDEO_EXTS = new Set([
-    '.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ts',
-    '.iso',
-]);
+  '.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ts',
+  '.iso', // 蓝光/DVD 原盘镜像（用户点名：iso 也是视频）
+])
 function isVideoFile(name: string): boolean {
-    const dot = name.lastIndexOf('.');
-    return dot >= 0 && VIDEO_EXTS.has(name.slice(dot).toLowerCase());
+  const dot = name.lastIndexOf('.')
+  return dot >= 0 && VIDEO_EXTS.has(name.slice(dot).toLowerCase())
 }
+
+/** 由搜索页行按钮带入的目标（网盘类型 + 资源名 + 体积）；供主页面拼参数用 */
 export interface TransferTarget {
-    type: 'baidu' | 'quark' | '115' | '123' | 'ali' | 'xunlei' | 'uc';
-    name: string;
-    size: string;
-    url?: string;
-    share_code?: string;
+  type: 'baidu' | 'quark' | '115' | '123' | 'ali' | 'xunlei' | 'uc'
+  name: string
+  size: string
+  /** 真实转存需要：分享链接与提取码 */
+  url?: string
+  share_code?: string
 }
 </script>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
-import { message } from 'ant-design-vue';
-import { FolderOutlined, ThunderboltOutlined } from '@ant-design/icons-vue';
-import PkTree from '@/components/PkTree.vue';
-import LazyDirTree from '@/components/LazyDirTree.vue';
-import { USE_MOCK } from '@/api/http';
-import { getRootDirs } from '@/api/modules/accounts';
-import { listDdItems, listQmsPaths } from '@/api/modules/dd';
-import { getSearchShareFiles } from '@/api/modules/search';
-import { recognizeShare, type RecognizeCandidate } from '@/api/modules/recognize';
-import { getSettings } from '@/api/modules/settings';
-import { ddStore } from '@/api/mock/dd';
-import RecognizePicker from '@/components/RecognizePicker.vue';
-import { pkQueue } from '@/queue/engine';
-import { DRIVE_META } from '@/api/mock/meta';
-import { MINE_TREE } from '@/api/mock/tree';
-import type { DdItem, DdQmsPath, MainDriveType, TreeNode } from '@/types/model';
-import { useBackGuard } from '@/composables/useBackGuard';
-const props = defineProps<{
-    open: boolean;
-    target: TransferTarget | null;
-}>();
-const emit = defineEmits<{
-    (e: 'update:open', v: boolean): void;
-}>();
-useBackGuard(() => props.open, () => emit('update:open', false));
-const DEFAULT_DIR = USE_MOCK ? '/我的资源/影视/电视剧/国产剧' : '/';
-const rootDir = ref('');
-const rootDirs = ref<Record<string, string>>({});
-const rootReady = ref(false);
-const isMainDrive = computed(() => !!props.target && (['baidu', 'quark', '115'] as string[]).includes(props.target.type));
-const mineTree = ref<InstanceType<typeof LazyDirTree> | null>(null);
-const treeRefreshing = ref(false);
+/* 转存弹窗（原型 _shell.html 的 transferMask 移植）。
+ * 分享内容收成一行摘要，「查看」展开分享树勾选可只转存部分；
+ * 「保存到我的网盘」目录树选目标位置；选项：包含子目录 / 文件夹更名 /
+ * QMS·STRM 显式下拉（默认按目标目录前缀自动带出，可改「不触发」）。
+ * 「开始转存」= pkQueue.enqueue 入队即走，绝无内联进度条。 */
+import { computed, ref, watch } from 'vue'
+import { message } from 'ant-design-vue'
+import { FolderOutlined, ThunderboltOutlined } from '@ant-design/icons-vue'
+import PkTree from '@/components/PkTree.vue'
+import LazyDirTree from '@/components/LazyDirTree.vue'
+import { USE_MOCK } from '@/api/http'
+import { getRootDirs } from '@/api/modules/accounts'
+import { listDdItems, listQmsPaths, listStrmPaths } from '@/api/modules/dd'
+import { getSearchShareFiles } from '@/api/modules/search'
+import { recognizeShare, type RecognizeCandidate } from '@/api/modules/recognize'
+import { getSettings } from '@/api/modules/settings'
+import { pkQueueCfgFetch } from '@/queue/engine'
+import { ddStore } from '@/api/mock/dd'
+import RecognizePicker from '@/components/RecognizePicker.vue'
+import { pkQueue } from '@/queue/engine'
+import { DRIVE_META } from '@/api/mock/meta'
+import { MINE_TREE } from '@/api/mock/tree'
+import type { DdItem, DdQmsPath, DdStrmPath, MainDriveType, TreeNode } from '@/types/model'
+
+import { useBackGuard } from '@/composables/useBackGuard'
+const props = defineProps<{ open: boolean; target: TransferTarget | null }>()
+const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>()
+useBackGuard(() => props.open, () => emit('update:open', false))
+
+const DEFAULT_DIR = USE_MOCK ? '/我的资源/影视/电视剧/国产剧' : '/'
+
+/** 真实模式的目录树落点：网盘连接页配置了「默认根目录」就以它为根，只显示其子目录 */
+const rootDir = ref('')
+const rootDirs = ref<Record<string, string>>({})
+/** 本次打开的根目录配置是否已就绪：没就绪先不渲染树（不然按真根白列一轮，等锁定了又重列） */
+const rootReady = ref(false)
+/** 只有三大盘支持真实目录浏览；其余盘允许直接转存（目标目录自动创建） */
+const isMainDrive = computed(() => !!props.target && (['baidu', 'quark', '115'] as string[]).includes(props.target.type))
+
+/* 真实目录树刷新：绕过后端缓存直连重拉根层 */
+const mineTree = ref<InstanceType<typeof LazyDirTree> | null>(null)
+const treeRefreshing = ref(false)
 async function onRefreshTree() {
-    treeRefreshing.value = true;
-    try {
-        await mineTree.value?.reload();
-    }
-    finally {
-        treeRefreshing.value = false;
-    }
+  treeRefreshing.value = true
+  try {
+    await mineTree.value?.reload()
+  } finally {
+    treeRefreshing.value = false
+  }
 }
-const meta = computed(() => (props.target ? DRIVE_META[props.target.type] : null));
-const sumMeta = computed(() => `12 项 · ${props.target?.size || '82.4 GB'}`);
-const RECOGNIZE_STAGES: Array<[
-    number,
-    string
-]> = [
-    [3000, '正在查询相关年份…'],
-    [6000, '正在比对候选准确率…'],
-    [9000, '正在整理候选结果…'],
-];
+
+const meta = computed(() => (props.target ? DRIVE_META[props.target.type] : null))
+/** 分享摘要行：资源名 + 「N 项 · X GB」跟着资源走（项数 mock 固定 12） */
+const sumMeta = computed(() => `12 项 · ${props.target?.size || '82.4 GB'}`)
+
+/** 识别分阶段提示：后端并行搜 TMDB 也要 2~3s（走代理），按耗时轮换文案让用户知道在动 */
+const RECOGNIZE_STAGES: Array<[number, string]> = [
+  [3000, '正在查询相关年份…'],
+  [6000, '正在比对候选准确率…'],
+  [9000, '正在整理候选结果…'],
+]
 function recognizeTipStart() {
-    message.loading({ content: '正在识别…', key: 'recognize', duration: 0 });
-    return RECOGNIZE_STAGES.map(([ms, text]) => window.setTimeout(() => {
-        message.loading({ content: text, key: 'recognize', duration: 0 });
-    }, ms));
+  message.loading({ content: '正在识别…', key: 'recognize', duration: 0 })
+  return RECOGNIZE_STAGES.map(([ms, text]) => window.setTimeout(() => {
+    message.loading({ content: text, key: 'recognize', duration: 0 })
+  }, ms))
 }
 function recognizeTipDone(timers: number[], ok: boolean, text: string) {
-    timers.forEach((t) => window.clearTimeout(t));
-    if (ok)
-        message.success({ content: text, key: 'recognize', duration: 3 });
-    else
-        message.warning({ content: text, key: 'recognize', duration: 4 });
+  timers.forEach((t) => window.clearTimeout(t))
+  if (ok) message.success({ content: text, key: 'recognize', duration: 3 })
+  else message.warning({ content: text, key: 'recognize', duration: 4 })
 }
-const recognizing = ref(false);
-const pickerOpen = ref(false);
-const pickerCands = ref<RecognizeCandidate[]>([]);
+
+/** 一键识别：资源名 → TMDB → 回填「文件夹更名」（识别器后端无关，QMS/LitePan 模式都可用）。
+ * 置信度高直接回填；歧义（同名剧/电影，实锤：狂飙 vs F1：狂飙飞车）弹候选卡片让用户挑。 */
+const recognizing = ref(false)
+const pickerOpen = ref(false)
+const pickerCands = ref<RecognizeCandidate[]>([])
 async function onRecognize() {
-    const src = (props.target?.name || '').trim();
-    if (!src) {
-        message.warning('没有可识别的资源名');
-        return;
+  const src = (props.target?.name || '').trim()
+  if (!src) {
+    message.warning('没有可识别的资源名')
+    return
+  }
+  if (recognizing.value) return
+  recognizing.value = true
+  const timers = recognizeTipStart()
+  try {
+    const r = await recognizeShare(src, src, { share_type: props.target?.type || '', share_url: props.target?.url || '', share_code: props.target?.share_code || '' })
+    if (r.ok && r.media_name) {
+      if (r.confident) {
+        renameInput.value = r.media_name
+        recognizeTipDone(timers, true, r.doubt ? `已识别（存疑，请确认）：${r.media_name}` : `已识别：${r.media_name}`)
+      } else {
+        recognizeTipDone(timers, true, `识别到 ${r.candidates?.length || 0} 个候选，请选择`)
+        pickerCands.value = r.candidates || []
+        pickerOpen.value = true
+      }
+    } else {
+      recognizeTipDone(timers, false, r.message || '未识别到 TMDB 条目')
     }
-    if (recognizing.value)
-        return;
-    recognizing.value = true;
-    const timers = recognizeTipStart();
-    try {
-        const r = await recognizeShare(src, src, { share_type: props.target?.type || '', share_url: props.target?.url || '', share_code: props.target?.share_code || '' });
-        if (r.ok && r.media_name) {
-            if (r.confident) {
-                renameInput.value = r.media_name;
-                recognizeTipDone(timers, true, r.doubt ? `已识别（存疑，请确认）：${r.media_name}` : `已识别：${r.media_name}`);
-            }
-            else {
-                recognizeTipDone(timers, true, `识别到 ${r.candidates?.length || 0} 个候选，请选择`);
-                pickerCands.value = r.candidates || [];
-                pickerOpen.value = true;
-            }
-        }
-        else {
-            recognizeTipDone(timers, false, r.message || '未识别到 TMDB 条目');
-        }
-    }
-    catch {
-        recognizeTipDone(timers, false, '识别失败，请稍后重试');
-    }
-    finally {
-        recognizing.value = false;
-    }
+  } catch {
+    recognizeTipDone(timers, false, '识别失败，请稍后重试')
+  } finally {
+    recognizing.value = false
+  }
 }
 function onPickCandidate(c: RecognizeCandidate) {
-    renameInput.value = c.year ? `${c.title} (${c.year})` : c.title;
+  renameInput.value = c.year ? `${c.title} (${c.year})` : c.title
 }
-interface FileRow {
-    path: string;
-    name: string;
-    size: number;
-}
-const filesLoading = ref(false);
-const filesFailed = ref(false);
-const fileRows = ref<FileRow[]>([]);
-const selPaths = ref<string[]>([]);
-const detectDone = ref(false);
-const detectBad = computed(() => detectDone.value && (filesFailed.value || fileRows.value.length === 0));
+
+/* ---- 分享文件多选（左栏，必选）：真实清单（share_list_cache 联动，点过查看文件秒开）。
+ * 文件检测是**最终守门**（2026-10-08 用户定稿）：没过（拉取失败/清单为空=坏链）→
+ * 开始转存一直灰，不许再"整包转存"兜底。 ---- */
+interface FileRow { path: string; name: string; size: number }
+const filesLoading = ref(false)
+const filesFailed = ref(false)
+const fileRows = ref<FileRow[]>([])
+const selPaths = ref<string[]>([])
+/** 检测已完成且未通过：清单拉取失败，或成功但 0 个文件（空分享=坏链） */
+const detectDone = ref(false)
+const detectBad = computed(() => detectDone.value && (filesFailed.value || fileRows.value.length === 0))
+
 function fmtSize(n: number): string {
-    if (!n)
-        return '—';
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    let x = n;
-    let i = 0;
-    while (x >= 1024 && i < units.length - 1) {
-        x /= 1024;
-        i++;
-    }
-    return `${i === 0 || x >= 100 ? Math.round(x) : x.toFixed(1)} ${units[i]}`;
+  if (!n) return '—'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let x = n
+  let i = 0
+  while (x >= 1024 && i < units.length - 1) { x /= 1024; i++ }
+  return `${i === 0 || x >= 100 ? Math.round(x) : x.toFixed(1)} ${units[i]}`
 }
 async function loadShareFiles() {
-    filesLoading.value = true;
-    filesFailed.value = false;
-    detectDone.value = false;
-    fileRows.value = [];
-    selPaths.value = [];
-    try {
-        const meta = await getSearchShareFiles(props.target!.type, props.target!.url || '', props.target!.share_code || '');
-        fileRows.value = (meta.files || [])
-            .filter((f) => !f.is_dir)
-            .map((f) => ({ path: f.path, name: f.name, size: f.size }));
-    }
-    catch {
-        filesFailed.value = true;
-    }
-    finally {
-        filesLoading.value = false;
-        detectDone.value = true;
-    }
+  filesLoading.value = true
+  filesFailed.value = false
+  detectDone.value = false
+  fileRows.value = []
+  selPaths.value = []
+  try {
+    const meta = await getSearchShareFiles(props.target!.type, props.target!.url || '', props.target!.share_code || '')
+    fileRows.value = (meta.files || [])
+      .filter((f) => !f.is_dir)
+      .map((f) => ({ path: f.path, name: f.name, size: f.size }))
+  } catch {
+    filesFailed.value = true // 清单拉不到 = 检测未通过：开始转存保持灰，不许转
+  } finally {
+    filesLoading.value = false
+    detectDone.value = true
+  }
 }
-const selectableRows = computed(() => (onlyVideo.value ? fileRows.value.filter((f) => isVideoFile(f.name)) : fileRows.value));
+/** 可勾选的文件：过滤其他文件开着时只放行视频（非视频行禁用） */
+const selectableRows = computed(() => (onlyVideo.value ? fileRows.value.filter((f) => isVideoFile(f.name)) : fileRows.value))
 function toggleAllFiles(e: Event) {
-    selPaths.value = (e.target as HTMLInputElement).checked ? selectableRows.value.map((f) => f.path) : [];
+  selPaths.value = (e.target as HTMLInputElement).checked ? selectableRows.value.map((f) => f.path) : []
 }
 function toggleFile(path: string) {
-    selPaths.value = selPaths.value.includes(path)
-        ? selPaths.value.filter((x) => x !== path)
-        : [...selPaths.value, path];
+  selPaths.value = selPaths.value.includes(path)
+    ? selPaths.value.filter((x) => x !== path)
+    : [...selPaths.value, path]
 }
-const allSelected = computed(() => selectableRows.value.length > 0 && selPaths.value.length === selectableRows.value.length);
+const allSelected = computed(() => selectableRows.value.length > 0 && selPaths.value.length === selectableRows.value.length)
+/** 已选文件总大小：勾了算勾选的；一个没勾按整包算（参考值） */
 const selTotal = computed(() => {
-    const m = new Map(fileRows.value.map((f) => [f.path, f.size]));
-    const picked = selPaths.value.length ? selPaths.value : fileRows.value.map((f) => f.path);
-    return picked.reduce((s, p) => s + (m.get(p) || 0), 0);
-});
-const selectedDir = ref(DEFAULT_DIR);
+  const m = new Map(fileRows.value.map((f) => [f.path, f.size]))
+  const picked = selPaths.value.length ? selPaths.value : fileRows.value.map((f) => f.path)
+  return picked.reduce((s, p) => s + (m.get(p) || 0), 0)
+})
+
+/* ---- 目标目录树 ---- */
+const selectedDir = ref(DEFAULT_DIR)
 function onPick(node: TreeNode) {
-    if (node.path)
-        selectedDir.value = node.path;
+  // 只认有 path 的节点（分享树式节点没有 path，这里树里都有）
+  if (node.path) selectedDir.value = node.path
 }
-const includeSub = ref(true);
-const renameInput = ref('');
-const mediaOn = ref(true);
-const qmsSel = ref<number | null>(null);
-const onlyVideo = ref(true);
+
+/* ---- 选项（手动转存没有 Server 酱推送，别加回来） ---- */
+const includeSub = ref(true)
+/* 文件夹更名：非空 = 在目标目录下按此名新建文件夹、分享内容剥壳转入 */
+const renameInput = ref('')
+
+/* ---- QMS 联动（对齐任务弹窗样式：开关 + 全宽下拉）。
+ *  STRM 2026-10-09 恢复弹窗可选：不选 = 目录值 → 自动配对兜底；选了 = 按指定的触发。
+ *  下拉默认按目标位置前缀自动带出；用户手动改过就不再自动覆盖。
+ *  开关关 = 明确不联动（media_off，连目录匹配都不做）。 ---- */
+const mediaOn = ref(true)
+const qmsSel = ref<number | null>(null)
+const strmSel = ref<number | null>(null)
+/** 过滤其他文件：默认开——本次转存只保存视频文件（mkv/mp4/iso 等），nfo/图片等杂件直接跳过 */
+const onlyVideo = ref(true)
+// 开「过滤其他文件」的瞬间：把已勾选的非视频路径剔掉（否则禁选行还挂着勾、计数也错）
 watch(onlyVideo, (v) => {
-    if (v)
-        selPaths.value = selPaths.value.filter((p) => fileRows.value.some((f) => f.path === p && isVideoFile(f.name)));
-});
-const lpOn = ref(true);
-const lpEvent = ref('');
-const mediaBackend = ref<'qms' | 'litepan'>('qms');
+  if (v) selPaths.value = selPaths.value.filter((p) => fileRows.value.some((f) => f.path === p && isVideoFile(f.name)))
+})
+// LitePan 模式：联动行换成「推 LitePan」开关 + 事件名输入框（空=按转存配置目录/全局默认）
+const lpOn = ref(true)
+const lpEvent = ref('')
+const mediaBackend = ref<'qms' | 'litepan'>('qms')
+/** QMS/STRM 反转（队列配置全局）：开启时联动 QMS 必须选 STRM 同步路径 */
+const reverseOn = ref(false)
+/** 转存路径 = 目标位置 + 壳名（更名值优先，回落资源名） */
 const savePath = computed(() => {
-    const dir = (selectedDir.value || '').replace(/\/+$/, '');
-    const shell = renameInput.value.trim() || props.target?.name || '';
-    return `${dir}/${shell}`;
-});
-const qmsPaths = ref<DdQmsPath[]>([]);
-const pathsLoading = ref(false);
-const mediaTouched = ref(false);
-const qmsOpts = computed(() => qmsPaths.value.map((p) => ({ value: p.id, label: `#${p.id} · ${p.source_path}` })));
+  const dir = (selectedDir.value || '').replace(/\/+$/, '')
+  const shell = renameInput.value.trim() || props.target?.name || ''
+  return `${dir}/${shell}`
+})
+const qmsPaths = ref<DdQmsPath[]>([])
+const strmPaths = ref<DdStrmPath[]>([])
+const pathsLoading = ref(false)
+const mediaTouched = ref(false)
+
+const qmsOpts = computed(() => qmsPaths.value.map((p) => ({ value: p.id, label: `#${p.id} · ${p.source_path}` })))
+const strmOpts = computed(() => strmPaths.value.map((p) => ({ value: p.id, label: `#${p.id} · ${p.remote_path}` })))
+
+/** 目标目录命中的转存配置（最长前缀优先，对齐后端 _match_dd_link 语义） */
 function hitDd(pred: (d: DdItem) => boolean): DdItem | null {
-    const t = props.target;
-    if (!t)
-        return null;
-    const dir = selectedDir.value;
-    return ((ddStore.items as DdItem[])
-        .filter((d) => d.type === t.type && pred(d) && (dir === d.path || dir.startsWith((d.path || '').replace(/\/+$/, '') + '/')))
-        .sort((a, b) => b.path.length - a.path.length)[0] || null);
+  const t = props.target
+  if (!t) return null
+  const dir = selectedDir.value
+  return (
+    (ddStore.items as DdItem[])
+      .filter((d) => d.type === t.type && pred(d) && (dir === d.path || dir.startsWith((d.path || '').replace(/\/+$/, '') + '/')))
+      .sort((a, b) => b.path.length - a.path.length)[0] || null
+  )
 }
-const qmsHit = computed(() => hitDd((d) => !!d.qms_on && !!d.qms_id));
-const lpHit = computed(() => hitDd((d) => !!d.lp_on));
+/** 目录配置命中（用于**初始状态**：目标目录开了联动 → 开关默认开、带出目录配的目标；
+ *  之后用户随便切——2026-10-07 用户定稿：弹窗里永远可选，不再因「没配目录」禁用。
+ *  QMS 下拉显式选了就直传后端；LitePan 输入框填了事件名 = 一次性联动，不要求目录配过）。 */
+const qmsHit = computed(() => hitDd((d) => !!d.qms_on && !!d.qms_id))
+const lpHit = computed(() => hitDd((d) => !!d.lp_on))
+
+/** 打开弹窗：重置为「联动开 + 目录默认值」（2026-10-08 用户定稿：默认打开） */
 function resetMedia() {
-    mediaOn.value = true;
-    lpOn.value = true;
-    qmsSel.value = qmsHit.value?.qms_id ?? null;
-    lpEvent.value = lpHit.value?.lp_event || '';
+  mediaOn.value = true
+  lpOn.value = true
+  qmsSel.value = qmsHit.value?.qms_id ?? null
+  strmSel.value = qmsHit.value?.strm_id ?? null
+  lpEvent.value = lpHit.value?.lp_event || ''
 }
+/** 点目录跟随带出联动目标（对齐后端 _match_dd_link 语义）。
+ *  ⚠️ 联动开关**关着时什么都不动**——用户关了就是关了，点目录不许重新打开/覆盖
+ *  （2026-10-08 用户实锤）；开着才跟随目录切换带出该目录配的默认值。 */
 function autoMatchMedia() {
-    if (mediaBackend.value === 'qms') {
-        if (mediaOn.value)
-            qmsSel.value = qmsHit.value?.qms_id ?? null;
+  if (mediaBackend.value === 'qms') {
+    if (mediaOn.value) {
+      qmsSel.value = qmsHit.value?.qms_id ?? null
+      strmSel.value = qmsHit.value?.strm_id ?? null
     }
-    else if (lpOn.value) {
-        lpEvent.value = lpHit.value?.lp_event || '';
-    }
+  } else if (lpOn.value) {
+    lpEvent.value = lpHit.value?.lp_event || ''
+  }
 }
 watch(selectedDir, () => {
-    if (!mediaTouched.value)
-        autoMatchMedia();
-});
+  if (!mediaTouched.value) autoMatchMedia()
+})
+// 关掉再打开：目录默认值立刻带回来（下拉没被手动改过时）
 watch(mediaOn, (v) => {
-    if (v && !mediaTouched.value && mediaBackend.value === 'qms')
-        qmsSel.value = qmsHit.value?.qms_id ?? null;
-});
+  if (v && !mediaTouched.value && mediaBackend.value === 'qms') {
+    qmsSel.value = qmsHit.value?.qms_id ?? null
+    strmSel.value = qmsHit.value?.strm_id ?? null
+  }
+})
 watch(lpOn, (v) => {
-    if (v && !mediaTouched.value && mediaBackend.value === 'litepan')
-        lpEvent.value = lpHit.value?.lp_event || '';
-});
-watch(() => props.open, async (v) => {
-    if (!v)
-        return;
-    selPaths.value = [];
-    renameInput.value = '';
-    detectDone.value = false;
-    if (props.target?.url)
-        void loadShareFiles();
-    rootReady.value = false;
-    if (!USE_MOCK)
-        rootDirs.value = await getRootDirs().catch(() => ({}));
-    rootDir.value = rootDirs.value[props.target?.type || ''] || '';
-    rootReady.value = true;
-    selectedDir.value = rootDir.value || DEFAULT_DIR;
-    includeSub.value = true;
-    getSettings().then((d) => (mediaBackend.value = d.media?.backend || 'qms')).catch(() => { });
-    onlyVideo.value = true;
-    mediaTouched.value = false;
+  if (v && !mediaTouched.value && mediaBackend.value === 'litepan') lpEvent.value = lpHit.value?.lp_event || ''
+})
+
+/** 每次打开重置：分享树收起、勾选清空、目标位置回默认国产剧 */
+  watch(
+  () => props.open,
+  async (v) => {
+    if (!v) return
+    selPaths.value = []
+    renameInput.value = ''
+    detectDone.value = false
+    if (props.target?.url) void loadShareFiles() // 左栏文件清单（缓存联动秒开）
+    // 打开即选中锁定根（默认根目录）；没配置就回退原来的默认
+    rootReady.value = false
+    if (!USE_MOCK) rootDirs.value = await getRootDirs().catch(() => ({}))
+    rootDir.value = rootDirs.value[props.target?.type || ''] || ''
+    rootReady.value = true
+    selectedDir.value = rootDir.value || DEFAULT_DIR
+    includeSub.value = true
+    getSettings().then((d) => (mediaBackend.value = d.media?.backend || 'qms')).catch(() => {})
+    pkQueueCfgFetch().then((c) => (reverseOn.value = !!c.reverse)).catch(() => {})
+    onlyVideo.value = true
+    mediaTouched.value = false
+    // QMS/STRM 目录清单后台拉（QMS 在 NAS 上，秒级）；到货后按目标目录带默认值
     if (!USE_MOCK) {
-        listDdItems().catch(() => { });
-        pathsLoading.value = true;
-        const qs = await listQmsPaths().catch(() => []);
-        pathsLoading.value = false;
-        qmsPaths.value = qs;
+      listDdItems().catch(() => {})
+      pathsLoading.value = true
+      const qs = await listQmsPaths().catch(() => [])
+      strmPaths.value = await listStrmPaths().catch(() => [])
+      pathsLoading.value = false
+      qmsPaths.value = qs
     }
-    resetMedia();
-});
+    resetMedia()
+  },
+)
+
 function close() {
-    emit('update:open', false);
+  emit('update:open', false)
 }
+
+/** 入队即走：toast 报位次、弹窗立即关闭。
+ * 必选：左栏至少勾一个文件（清单可用时）+ 右栏目标位置。
+ * 填了更名 = 建壳承接、只转勾选文件（单文件夹单/少文件，正合刮削要求）；
+ * 没填更名 = 按勾选路径直接转（子目录结构保留）。清单失败回退"全转"老行为。 */
 function start() {
-    const t = props.target;
-    if (!t)
-        return;
-    if (filesLoading.value) {
-        message.warning('正在检测资源，请稍候…');
-        return;
-    }
-    if (detectBad.value) {
-        message.error('文件检测未通过（链接可能已失效），无法转存');
-        return;
-    }
-    if (!selectedDir.value) {
-        message.warning('请先在右侧选择目标位置');
-        return;
-    }
-    const picked = selPaths.value;
-    if (fileRows.value.length && !picked.length) {
-        message.warning('请先在左侧勾选要转存的文件');
-        return;
-    }
-    const rename = renameInput.value.trim();
-    const files = fileRows.value.length;
-    const pos = pkQueue.enqueue({
-        name: t.name,
-        type: t.type,
-        path: selectedDir.value,
-        files,
-        size: t.size,
-        share_url: t.url,
-        share_code: t.share_code,
-        rename,
-        with_shell: !!rename,
-        file_paths: picked,
-        include_subdirs: includeSub.value || picked.some((x) => x.includes('/')),
-        media_off: mediaBackend.value === 'litepan' ? !lpOn.value : !mediaOn.value,
-        qms_id: mediaBackend.value === 'qms' && mediaOn.value ? qmsSel.value : null,
-        lp_event: mediaBackend.value === 'litepan' && lpOn.value ? lpEvent.value.trim() : '',
-        only_video: onlyVideo.value,
-    });
-    if (pos < 0) {
-        message.warning('该分享已在转存队列中，勿重复添加');
-        return;
-    }
-    message.success(`已加入转存队列 · 当前第 ${pos} 位，完成后去右下角队列抽屉看日志`);
-    close();
+  const t = props.target
+  if (!t) return
+  if (filesLoading.value) {
+    message.warning('正在检测资源，请稍候…')
+    return
+  }
+  if (detectBad.value) {
+    message.error('文件检测未通过（链接可能已失效），无法转存')
+    return
+  }
+  if (!selectedDir.value) {
+    message.warning('请先在右侧选择目标位置')
+    return
+  }
+  const picked = selPaths.value
+  if (fileRows.value.length && !picked.length) {
+    message.warning('请先在左侧勾选要转存的文件')
+    return
+  }
+  const rename = renameInput.value.trim()
+  const files = fileRows.value.length
+  if (mediaBackend.value === 'qms' && mediaOn.value && reverseOn.value && strmSel.value == null) {
+    message.warning('已开启 QMS/STRM 反转：请选择 STRM 同步路径（可到「队列配置」关闭反转）')
+    return
+  }
+  const pos = pkQueue.enqueue({
+    name: t.name,
+    type: t.type,
+    path: selectedDir.value,
+    files,
+    size: t.size,
+    share_url: t.url,
+    share_code: t.share_code,
+    /* 更名填了 = 建壳承接（更名文件夹 + 只转勾选文件）；没填 = 按勾选路径直接转 */
+    rename,
+    with_shell: !!rename,
+    file_paths: picked,
+    /* 勾选了嵌套路径时必须带子目录列举，否则 only_paths 找不到文件 */
+    include_subdirs: includeSub.value || picked.some((x) => x.includes('/')),
+    /* 联动：开关关 = 明确不触发；开 = 用下拉选的 QMS（默认按目标位置自动带出）。
+       STRM 同款：弹窗选了就直传，没选 = 后端目录值 → 自动配对兜底，刮削成功才生成。
+       LitePan 模式：lp_event 带弹窗填的事件名（后端按 media.backend 分流，qms 时忽略） */
+    media_off: mediaBackend.value === 'litepan' ? !lpOn.value : !mediaOn.value,
+    qms_id: mediaBackend.value === 'qms' && mediaOn.value ? qmsSel.value : null,
+    strm_id: mediaBackend.value === 'qms' && mediaOn.value ? strmSel.value : null,
+    lp_event: mediaBackend.value === 'litepan' && lpOn.value ? lpEvent.value.trim() : '',
+    only_video: onlyVideo.value,
+  })
+  if (pos < 0) {
+    message.warning('该分享已在转存队列中，勿重复添加')
+    return
+  }
+  message.success(`已加入转存队列 · 当前第 ${pos} 位，完成后去右下角队列抽屉看日志`)
+  close()
 }
 </script>
 
@@ -340,13 +401,13 @@ function start() {
     </template>
 
     <div v-if="target" class="tm-body">
-      
+      <!-- 转存路径：目标位置 + 壳名（更名值/资源名），随选择实时更新 -->
       <div class="tm-savepath">
         <span class="tm-savepath-label">转存路径</span>
         <span class="tm-savepath-val" :title="savePath">{{ savePath }}</span>
       </div>
 
-      
+      <!-- 文件夹更名：撑满整行；「识别」= TMDB 识别回填（子目录开关挪到联动框里） -->
       <div class="tm-rename">
         <label>文件夹更名</label>
         <a-input v-model:value="renameInput" :maxlength="80" placeholder="留空则用资源名新建文件夹" allow-clear>
@@ -359,7 +420,7 @@ function start() {
         </a-input>
       </div>
 
-      
+      <!-- 联动：按「系统设置 → 联动后端」切换 QMS / LitePan 表单 -->
       <div class="tm-media">
         <template v-if="mediaBackend === 'qms'">
           <label class="tm-media-switch">
@@ -386,8 +447,18 @@ function start() {
               allow-clear
               @change="mediaTouched = true"
             />
+            <a-select
+              v-model:value="strmSel"
+              :options="strmOpts"
+              style="width: 100%; margin-top: 10px"
+              :loading="pathsLoading"
+              :placeholder="pathsLoading ? '正在加载 STRM 同步路径…' : strmPaths.length ? '选择 STRM 同步路径（可选）' : 'QMS 暂无 STRM 同步路径，不选则自动配对'"
+              allow-clear
+              @change="mediaTouched = true"
+            />
             <div class="tm-hint">
-              默认按目标位置自动带出。QMS 整理成功后自动生成 STRM，失败不生成；不需要就清空。
+              默认按目标位置自动带出。STRM 不选 = 自动配对（同步路径的来源 = QMS 整理目标时生效），选了 = 按指定的触发；
+              QMS 整理成功才生成 STRM，失败不生成。
             </div>
           </template>
           <div v-else class="tm-hint">
@@ -426,7 +497,7 @@ function start() {
         </template>
       </div>
 
-      
+      <!-- 双栏：左=分享文件多选（必选）/ 右=目标位置目录树（必选，无新建文件夹） -->
       <div class="tm-split">
         <div class="tm-col">
           <div class="tm-col-hd">
@@ -513,7 +584,7 @@ function start() {
       >开始转存</a-button>
     </div>
 
-    
+    <!-- 识别歧义候选（同名剧/电影时让用户挑，回填「文件夹更名」） -->
     <RecognizePicker v-model:open="pickerOpen" :candidates="pickerCands" :source-name="target?.name" @pick="onPickCandidate" />
   </a-modal>
 </template>

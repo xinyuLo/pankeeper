@@ -1,16 +1,22 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
-import { useBackGuard } from '@/composables/useBackGuard';
-import { useIsMobile } from '@/composables/useIsMobile';
-import { queueView, isAutoQueued } from '@/queue/engine';
-import QueueBoard from '@/queue/QueueBoard.vue';
-const isMobile = useIsMobile();
-const open = ref(false);
-useBackGuard(open);
-const manual = computed(() => queueView.tasks.filter((t) => !isAutoQueued(t)));
-const active = computed(() => manual.value.filter((t) => t.status === 'wait' || t.status === 'run').length);
-const running = computed(() => manual.value.filter((t) => t.status === 'run').length);
-const visible = computed(() => manual.value.length > 0);
+/* 右下角「转存队列」浮标 —— 全站常驻（队列有任务才显示），点击开侧边抽屉。
+ * 看板本体在 QueueBoard（原记录页队列段同一组件），规则一致：日志单选、进度跟随。
+ * 记录页的队列 tab 已撤，这里就是队列的唯一入口。 */
+import { computed, ref } from 'vue'
+import { useBackGuard } from '@/composables/useBackGuard'
+import { useIsMobile } from '@/composables/useIsMobile'
+import { queueView, isAutoQueued } from '@/queue/engine'
+import QueueBoard from '@/queue/QueueBoard.vue'
+
+const isMobile = useIsMobile()
+const open = ref(false)
+useBackGuard(open)
+/* 浮标只统计手动（搜索转存）任务——自动转存走「转存历史」页，不进这块浮标（前台分区，用户要求） */
+const manual = computed(() => queueView.tasks.filter((t) => !isAutoQueued(t)))
+const active = computed(() => manual.value.filter((t) => t.status === 'wait' || t.status === 'run').length)
+const running = computed(() => manual.value.filter((t) => t.status === 'run').length)
+/* 队列里有任何手动任务（含 1 小时内的完成/失败）都显示——刚收尾的任务也能点开看日志 */
+const visible = computed(() => manual.value.length > 0)
 </script>
 
 <template>
