@@ -185,8 +185,9 @@ class QueueEngine:
                 "rename": clean_rename,
                 "withShell": bool(item.get("with_shell", False)),
                 # 显式联动目标（普通转存弹窗下拉）：不持久化（同 rename/withShell 生命周期）。
-                # STRM 不再透传——后端按 QMS 自动配对（2026-10-04 用户定稿）
+                # STRM 2026-10-09 恢复弹窗可选：不传/空 = 目录值 → 自动配对兜底
                 "qmsId": item.get("qms_id"),
+                "strmId": item.get("strm_id"),
                 "mediaOff": bool(item.get("media_off", False)),
                 # LitePan 事件名（弹窗覆盖；空=回退目录/全局默认）。不持久化（同 qmsId 生命周期）
                 "lpEvent": (item.get("lp_event") or item.get("lpEvent") or "").strip(),

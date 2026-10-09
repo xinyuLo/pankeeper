@@ -16,6 +16,7 @@ import { recordsStore } from '@/api/mock/records'
 import type { RecordRow } from '@/api/mock/records'
 import { listQmsPaths, listStrmPaths } from '@/api/modules/dd'
 import { getSettings } from '@/api/modules/settings'
+import { pkQueueCfgFetch } from '@/queue/engine'
 import {
   clearRecords,
   deleteRecord,
@@ -220,6 +221,8 @@ async function onRowDelete(r: RecordRow) {
 const trigOpen = ref(false)
 const trigQms = ref('')
 const trigStrm = ref('')
+/** QMS/STRM 反转（队列配置全局）：两个都选时 STRM 先行、QMS 隔 15 秒跟上 */
+const trigReverse = ref(false)
 const qmsPaths = ref<DdQmsPath[]>([])
 const strmPaths = ref<DdStrmPath[]>([])
 
@@ -258,6 +261,7 @@ async function openTrig() {
   trigQms.value = ''
   trigStrm.value = ''
   trigOpen.value = true
+  pkQueueCfgFetch().then((c) => (trigReverse.value = !!c.reverse)).catch(() => {})
   if (qmsPaths.value.length) return
   pathsLoading.value = true
   const got = await fetchPathsSafe()
@@ -278,6 +282,18 @@ async function confirmTrig() {
   const qTxt = q ? qmsLabel(q) : ''
   const sTxt = s ? strmLabel(s) : ''
   trigOpen.value = false
+  if (q && s && trigReverse.value) {
+    // 反转模式（队列配置）：STRM 先行，QMS 隔 15 秒跟上（与默认顺序对偶）
+    await triggerStrm(s.id, sTxt)
+    message.success('已触发 STRM 生成 → ' + sTxt + '（反转模式：先行）')
+    recordsStore.strmPending = true
+    window.setTimeout(async () => {
+      recordsStore.strmPending = false
+      await triggerQms(q.id, qTxt)
+      message.success(`已触发 QMS 刮削 → ${qTxt}（与 STRM 间隔 15 秒，反转模式）`)
+    }, 15000)
+    return
+  }
   if (q) {
     await triggerQms(q.id, qTxt)
     message.success('已触发 QMS 刮削 → ' + qTxt)
@@ -503,7 +519,9 @@ async function confirmTrig() {
     <!-- 手动触发弹窗：QMS / STRM 都可空，选哪个触发哪个；都选时隔 10 秒触发第二个 -->
     <a-modal v-model:open="trigOpen" title="手动触发" :width="480" ok-text="立即触发" cancel-text="取消" @ok="confirmTrig">
       <div class="rk-tip">
-        选择要触发的目标，<b>可以选空</b>；两个都选时先触发 QMS，间隔 15 秒后自动触发 STRM。
+        选择要触发的目标，<b>可以选空</b>；
+        <template v-if="trigReverse">已开启 <b>QMS/STRM 反转</b>：两个都选时先触发 STRM，间隔 15 秒后自动触发 QMS。</template>
+        <template v-else>两个都选时先触发 QMS，间隔 15 秒后自动触发 STRM。</template>
       </div>
       <div class="rk-field">
         <label>QMS 刮削目录</label>

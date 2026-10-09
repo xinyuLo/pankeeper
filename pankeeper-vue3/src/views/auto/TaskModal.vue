@@ -14,6 +14,7 @@ import { DD_MEDIA, DRIVE_META } from '@/api/mock/meta'
 import { accountStore } from '@/api/mock/accounts'
 import { listDdItems, listQmsPaths, listStrmPaths } from '@/api/modules/dd'
 import { getSettings } from '@/api/modules/settings'
+import { pkQueueCfgFetch } from '@/queue/engine'
 import {
   cronHuman,
   extractShareCode,
@@ -41,6 +42,8 @@ const saveDir = ref('')
 const comparePath = ref('')
 const includeSub = ref(true)
 const postQms = ref(false) // QMS 联动开关（原「完成后动作 · 触发 QMS 刮削」与其同状态，UI 已合并到这一处）
+/** QMS/STRM 反转（队列配置全局）：开启时联动 QMS 必须显式选 STRM 同步路径 */
+const reverseOn = ref(false)
 const qmsId = ref<number | null>(null)
 // LitePan 联动（media.backend=litepan 时替代 QMS 区块）：开关 + 事件名输入框
 // （先输入框，LitePan 出接口后换下拉——2026-10-06 用户定稿）
@@ -158,6 +161,7 @@ watch(
     postLp.value = Boolean((ex.lp_event || '').trim())  // 有事件名=开（litepan 无独立任务开关列，用事件名有无表达）
     lpEvent.value = ex.lp_event || ''
     getSettings().then((d) => (mediaBackend.value = d.media?.backend || 'qms')).catch(() => {})
+    pkQueueCfgFetch().then((c) => (reverseOn.value = !!c.reverse)).catch(() => {})
     // 目录关了 QMS / 所选目录已从 QMS 消失 → 清空选择（用户定稿：等同于"没配"）
     void syncMediaSelection(t)
   },
@@ -229,6 +233,10 @@ async function onSave() {
   }
   if (accId.value == null) {
     message.error(`该网盘还没有已连接的账号，请先到「网盘连接」配置`)
+    return
+  }
+  if (postQms.value && mediaBackend.value === 'qms' && reverseOn.value && strmId.value == null) {
+    message.error('已开启 QMS/STRM 反转：必须选择 STRM 同步路径（可到「队列配置」关闭反转）')
     return
   }
   const t = props.task

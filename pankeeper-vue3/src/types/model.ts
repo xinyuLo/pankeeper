@@ -91,6 +91,8 @@ export interface QueueCfg {
   qms: number
   /** QMS→STRM 延迟秒 */
   strm: number
+  /** QMS/STRM 反转：转存完成后先生成 STRM、再触发 QMS 刮削（不等刮削完成） */
+  reverse: boolean
 }
 
 /** ===== 转存配置目录（docs/02 §4，快速转存的依据） ===== */

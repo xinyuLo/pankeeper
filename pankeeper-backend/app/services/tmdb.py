@@ -102,17 +102,26 @@ def _build_clients(qms_cfg: dict | None = None, timeout: float = 15.0) -> list[t
 
 def _get(path: str, params: dict | None = None, qms_cfg: dict | None = None) -> dict | None:
     """候选依次试：连接层失败（连不上/超时）换下一个（host 多 IP 换下一行）；
-    链路通但响应不对（401/5xx）换 IP 也救不了，直接失败。"""
+    链路通但响应不对（401/5xx）换 IP 也救不了，直接失败。
+    2026-10-09 加**一次** 0.5s 退避重试：代理链路（proxy 模式单候选）瞬态抖动很常见——
+    超时/连接被重置/429/5xx 大多是秒级瞬态，原地重试一次能扛掉大半，仍失败再换候选/放弃。"""
     for c, sni, _target, _desc in _build_clients(qms_cfg):
         try:
-            resp = c.get(path, params=params, extensions={"sni_hostname": sni} if sni else None)
-            if resp.status_code == 200:
-                return resp.json()
-            return None
-        except httpx.TransportError:
-            continue
-        except httpx.HTTPError:
-            return None
+            for attempt in range(2):
+                try:
+                    resp = c.get(path, params=params, extensions={"sni_hostname": sni} if sni else None)
+                except httpx.TransportError:
+                    if attempt:
+                        break  # 重试过仍连不上：换下一个候选
+                    time.sleep(0.5)
+                    continue
+                except httpx.HTTPError:
+                    return None
+                if resp.status_code == 200:
+                    return resp.json()
+                if resp.status_code not in (429, 500, 502, 503, 504) or attempt:
+                    return None  # 401/404 等换候选也没用；重试过仍瞬态错误 → 放弃
+                time.sleep(0.5)
         finally:
             c.close()
     return None
