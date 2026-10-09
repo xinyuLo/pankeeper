@@ -4,6 +4,8 @@
 
 单容器、单端口、一个 SQLite 文件，不需要外部数据库。Web 界面适配桌面与手机。
 
+> 📘 **新用户请从[《使用说明》](docs/USAGE.md)开始**：全部页面的功能与操作详解——搜索转存 / 自动转存 / 转存配置 / 网盘连接 / 系统设置 / 日志管理，以及「一次转存背后发生了什么」与常见问题。
+
 ## 功能特性
 
 - **多网盘适配**：百度网盘 / 夸克 / 115，统一抽象（列目录、分享解析、转存、改名、目录管理），内置每账号限速闸与连败熔断
@@ -25,42 +27,70 @@
 
 ## 部署
 
-**方式一：预构建镜像（推荐）**
+镜像发布在 GHCR 与 Docker Hub（amd64 / arm64 双架构，push 自动构建）：
+
+- GHCR：`ghcr.io/xinyulo/pankeeper:latest`
+- Docker Hub：`7yueyue/pankeeper:latest`
+
+### 方式一：docker run 直接运行
 
 ```bash
-mkdir pankeeper && cd pankeeper
-curl -o docker-compose.yml https://raw.githubusercontent.com/xinyuLo/pankeeper/main/docker-compose.yml
-docker compose pull && docker compose up -d
+docker run -d \
+  --name pankeeper \
+  --restart unless-stopped \
+  -p 8031:8000 \
+  -e TZ=Asia/Shanghai \
+  -v /your/path/pankeeper/data:/app/data \
+  ghcr.io/xinyulo/pankeeper:latest
 ```
 
-**方式二：源码构建**（仓库自带前后端同构 Dockerfile，前端构建产物由 FastAPI 托管，同源零反代）：
+**数据映射说明**：容器的 `/app/data` 是唯一的持久化目录，必须挂载到宿主机，否则容器重建后数据全部丢失。目录里包含：
 
-```bash
-git clone https://your-git-host/your-name/pankeeper-git.git
-cd pankeeper-git
-docker compose up -d --build
-```
+| 文件 | 内容 |
+| --- | --- |
+| `pankeeper.db` | SQLite 主库：账号、系统设置、转存配置、转存记录 |
+| `jwt.key` | 登录令牌签名密钥 |
+| `cred.key` | 网盘凭据加密密钥（Fernet） |
 
-`docker-compose.yml`（放在仓库根目录）：
+> ⚠️ 备份 `data` 目录时请**三个文件一起备份**——只备份数据库不备份两个密钥文件，已保存的网盘凭据将无法解密。
+
+用 Docker Hub 镜像的话把最后一行换成 `7yueyue/pankeeper:latest` 即可。
+
+### 方式二：docker compose
+
+新建 `docker-compose.yml`（仓库根目录已自带一份，可直接用）：
 
 ```yaml
 services:
   pankeeper:
-    build:
-      context: ./pankeeper-backend
-      additional_contexts:
-        frontend: ./pankeeper-vue3
+    image: ghcr.io/xinyulo/pankeeper:latest   # Docker Hub 用户可改为 7yueyue/pankeeper:latest
     container_name: pankeeper
     restart: unless-stopped
     ports:
       - "8031:8000"
     volumes:
       - ./data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
+```
+
+```bash
+mkdir data && docker compose up -d
 ```
 
 启动后访问 `http://<主机IP>:8031`，默认账号 `admin / admin#123`（**登录后请立即修改**，系统设置 → 账号安全）。
 
 数据（SQLite + 加密密钥）全部在 `data/` 目录，备份它即备份一切。
+
+### 源码构建（可选）
+
+monorepo 自带前后端同构 Dockerfile（前端构建产物由 FastAPI 托管，同源零反代），前端源码通过额外构建上下文注入：
+
+```bash
+docker buildx build \
+  --build-context frontend=./pankeeper-vue3 \
+  -t pankeeper:local ./pankeeper-backend
+```
 
 ## 本地开发
 
