@@ -81,7 +81,8 @@ def create_app() -> FastAPI:
 
         @app.get("/", include_in_schema=False)
         def _index():
-            return FileResponse(WEB_DIR / "index.html")
+            # 同上：入口 HTML 不缓存，避免重建后客户端拿旧 HTML 引用失效的旧产物
+            return FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-cache"})
 
         # favicon.ico 显式 content-type：桌面/面板类工具抓图标只认 <site>/favicon.ico
         # 且不认 SVG——没有真 .ico 时该请求会落进 SPA 回退返回 HTML，图标获取直接失败
