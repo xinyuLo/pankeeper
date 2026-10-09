@@ -1,0 +1,16 @@
+services:
+  pankeeper:
+    image: ghcr.io/xinyulo/pankeeper:latest
+    # 源码构建：注释掉上面 image，改用下面 build 段（需完整仓库）
+    # build:
+    #   context: ./pankeeper-backend
+    #   additional_contexts:
+    #     frontend: ./pankeeper-vue3
+    container_name: pankeeper
+    restart: unless-stopped
+    ports:
+      - "8031:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TZ=Asia/Shanghai

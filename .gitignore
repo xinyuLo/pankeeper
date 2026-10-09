@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node / 前端构建
+node_modules/
+dist/
+*.tsbuildinfo
+
+# 运行数据与本地产物
+data/
+*.log
+*.db
+*.db-shm
+*.db-wal
+.env.local
