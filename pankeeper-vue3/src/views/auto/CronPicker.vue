@@ -1,99 +1,105 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
-import { cronHuman } from '@/api/modules/tasks';
-import { useBackGuard } from '@/composables/useBackGuard';
-const props = defineProps<{
-    open: boolean;
-    cron: string;
-}>();
-const emit = defineEmits<{
-    (e: 'update:open', v: boolean): void;
-    (e: 'save', cron: string): void;
-}>();
-useBackGuard(() => props.open, () => emit('update:open', false));
-type Mode = 'daily' | 'weekly' | 'hourly' | 'everyn' | 'custom';
-const mode = ref<Mode>('daily');
-const time = ref('03:00');
-const weekdays = ref<number[]>([1]);
-const everyN = ref<number>(30);
-const custom = ref('');
+/* cron 选择弹窗（交互模式参考开源 no-vue3-cron / JeecgBoot 的页签式生成器）：
+ * 页签 = 模式（每天/每周/每小时/每 N 分钟/自定义），控件全用 ant-design-vue 组件。
+ * 底部实时预览表达式 + 人话；确定回写给任务弹窗的定时表达式输入框。样式自包含。 */
+import { computed, ref, watch } from 'vue'
+import { cronHuman } from '@/api/modules/tasks'
+
+import { useBackGuard } from '@/composables/useBackGuard'
+const props = defineProps<{ open: boolean; cron: string }>()
+const emit = defineEmits<{ (e: 'update:open', v: boolean): void; (e: 'save', cron: string): void }>()
+useBackGuard(() => props.open, () => emit('update:open', false))
+
+type Mode = 'daily' | 'weekly' | 'hourly' | 'everyn' | 'custom'
+const mode = ref<Mode>('daily')
+const time = ref('03:00') // HH:mm（daily/weekly 共用，a-time-picker valueFormat 直出字符串）
+const weekdays = ref<number[]>([1]) // 1=周一 … 0=周日
+const everyN = ref<number>(30)
+const custom = ref('')
+
 const WEEK_OPTS = [
-    { v: 1, label: '周一' },
-    { v: 2, label: '周二' },
-    { v: 3, label: '周三' },
-    { v: 4, label: '周四' },
-    { v: 5, label: '周五' },
-    { v: 6, label: '周六' },
-    { v: 0, label: '周日' },
-];
-const N_OPTS = [5, 10, 15, 20, 30].map((v) => ({ value: v, label: `${v} 分钟` }));
+  { v: 1, label: '周一' },
+  { v: 2, label: '周二' },
+  { v: 3, label: '周三' },
+  { v: 4, label: '周四' },
+  { v: 5, label: '周五' },
+  { v: 6, label: '周六' },
+  { v: 0, label: '周日' },
+]
+const N_OPTS = [5, 10, 15, 20, 30].map((v) => ({ value: v, label: `${v} 分钟` }))
+
 function pad(v: string | number) {
-    return String(v).padStart(2, '0');
+  return String(v).padStart(2, '0')
 }
 const timeCron = computed(() => {
-    const [mm = '0', hh = '3'] = (time.value || '').split(':');
-    return `0 ${pad(mm)} ${pad(hh)}`;
-});
+  const [mm = '0', hh = '3'] = (time.value || '').split(':')
+  return `0 ${pad(mm)} ${pad(hh)}`
+})
+
+/** 当前模式下产出的表达式 */
 const expr = computed(() => {
-    if (mode.value === 'daily')
-        return timeCron.value + ' * * *';
-    if (mode.value === 'weekly') {
-        const days = [...weekdays.value].sort((a, b) => a - b);
-        if (!days.length)
-            return '';
-        return timeCron.value + ' * * ' + days.join(',');
-    }
-    if (mode.value === 'hourly')
-        return '0 * * * *';
-    if (mode.value === 'everyn')
-        return `*/${everyN.value} * * * *`;
-    return custom.value.trim();
-});
-const exprHuman = computed(() => (expr.value ? cronHuman(expr.value, '') : ''));
+  if (mode.value === 'daily') return timeCron.value + ' * * *'
+  if (mode.value === 'weekly') {
+    const days = [...weekdays.value].sort((a, b) => a - b)
+    if (!days.length) return ''
+    return timeCron.value + ' * * ' + days.join(',')
+  }
+  if (mode.value === 'hourly') return '0 * * * *'
+  if (mode.value === 'everyn') return `*/${everyN.value} * * * *`
+  return custom.value.trim()
+})
+
+const exprHuman = computed(() => (expr.value ? cronHuman(expr.value, '') : ''))
+
+/** 打开时：把已有表达式尽量解析成模式；解析不了落「自定义」 */
 function parseCron(cron: string) {
-    custom.value = cron || '';
-    const p = (cron || '').trim().split(/\s+/);
-    if (p.length !== 5) {
-        mode.value = 'custom';
-        return;
+  custom.value = cron || ''
+  const p = (cron || '').trim().split(/\s+/)
+  if (p.length !== 5) {
+    mode.value = 'custom'
+    return
+  }
+  const [m, h, dom, mon, dow] = p
+  if (dom === '*' && mon === '*' && dow === '*') {
+    if (m === '0' && h === '*') {
+      mode.value = 'hourly'
+      return
     }
-    const [m, h, dom, mon, dow] = p;
-    if (dom === '*' && mon === '*' && dow === '*') {
-        if (m === '0' && h === '*') {
-            mode.value = 'hourly';
-            return;
-        }
-        if (m.startsWith('*/') && h === '*' && /^\d+$/.test(m.slice(2))) {
-            mode.value = 'everyn';
-            everyN.value = Math.min(59, Math.max(1, parseInt(m.slice(2), 10)));
-            return;
-        }
-        if (/^\d+$/.test(m) && /^\d+$/.test(h)) {
-            mode.value = 'daily';
-            time.value = `${pad(h)}:${pad(m)}`;
-            return;
-        }
+    if (m.startsWith('*/') && h === '*' && /^\d+$/.test(m.slice(2))) {
+      mode.value = 'everyn'
+      everyN.value = Math.min(59, Math.max(1, parseInt(m.slice(2), 10)))
+      return
     }
-    if (dom === '*' && mon === '*' && /^\d+(,\d+)*$/.test(dow) && /^\d+$/.test(m) && /^\d+$/.test(h)) {
-        mode.value = 'weekly';
-        weekdays.value = dow.split(',').map(Number);
-        time.value = `${pad(h)}:${pad(m)}`;
-        return;
+    if (/^\d+$/.test(m) && /^\d+$/.test(h)) {
+      mode.value = 'daily'
+      time.value = `${pad(h)}:${pad(m)}`
+      return
     }
-    mode.value = 'custom';
+  }
+  if (dom === '*' && mon === '*' && /^\d+(,\d+)*$/.test(dow) && /^\d+$/.test(m) && /^\d+$/.test(h)) {
+    mode.value = 'weekly'
+    weekdays.value = dow.split(',').map(Number)
+    time.value = `${pad(h)}:${pad(m)}`
+    return
+  }
+  mode.value = 'custom'
 }
-watch(() => props.open, (v) => {
-    if (v)
-        parseCron(props.cron);
-});
+
+watch(
+  () => props.open,
+  (v) => {
+    if (v) parseCron(props.cron)
+  },
+)
+
 function ok() {
-    if (!expr.value)
-        return;
-    emit('save', expr.value);
-    emit('update:open', false);
+  if (!expr.value) return
+  emit('save', expr.value)
+  emit('update:open', false)
 }
+
 function close() {
-    emit('update:open', false);
+  emit('update:open', false)
 }
 </script>
 

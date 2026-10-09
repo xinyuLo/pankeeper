@@ -1,29 +1,35 @@
 <script setup lang="ts">
-import { computed } from 'vue';
-import { message } from 'ant-design-vue';
-import type { RecognizeCandidate } from '@/api/modules/recognize';
-import { useBackGuard } from '@/composables/useBackGuard';
+/* 识别候选选择弹窗（转存弹窗「识别」按钮的歧义解法，2026-10-06）：
+ * 名字有歧义时（同名剧/电影、别名）不再让算法赌热度，候选卡片按可信度排序，
+ * 用户点哪张回填哪个「标题 (年份)」。两个转存弹窗共用这一份。 */
+import { computed } from 'vue'
+import { message } from 'ant-design-vue'
+import type { RecognizeCandidate } from '@/api/modules/recognize'
+
+import { useBackGuard } from '@/composables/useBackGuard'
 const props = defineProps<{
-    open: boolean;
-    candidates: RecognizeCandidate[];
-    sourceName?: string;
-}>();
-const emit = defineEmits<{
-    (e: 'update:open', v: boolean): void;
-    (e: 'pick', c: RecognizeCandidate): void;
-}>();
-useBackGuard(() => props.open, () => emit('update:open', false));
-const TYPE_TXT: Record<string, string> = { movie: '电影', tv: '剧集' };
+  open: boolean
+  candidates: RecognizeCandidate[]
+  /** 识别源名字（弹窗标题里显示上下文） */
+  sourceName?: string
+}>()
+const emit = defineEmits<{ (e: 'update:open', v: boolean): void; (e: 'pick', c: RecognizeCandidate): void }>()
+useBackGuard(() => props.open, () => emit('update:open', false))
+
+const TYPE_TXT: Record<string, string> = { movie: '电影', tv: '剧集' }
+
 function pick(c: RecognizeCandidate) {
-    const name = c.year ? `${c.title} (${c.year})` : c.title;
-    emit('pick', c);
-    emit('update:open', false);
-    message.success(`已选择：${name}`);
+  const name = c.year ? `${c.title} (${c.year})` : c.title
+  emit('pick', c)
+  emit('update:open', false)
+  message.success(`已选择：${name}`)
 }
+
+/* 卡片里回填用的标准名（标题 (年份)）——展示层提示用 */
 function fullName(c: RecognizeCandidate) {
-    return c.year ? `${c.title} (${c.year})` : c.title;
+  return c.year ? `${c.title} (${c.year})` : c.title
 }
-const hint = computed(() => props.sourceName ? `识别源「${props.sourceName}」有多个匹配结果，请选择实际要保存的条目` : '有多个匹配结果，请选择实际要保存的条目');
+const hint = computed(() => props.sourceName ? `识别源「${props.sourceName}」有多个匹配结果，请选择实际要保存的条目` : '有多个匹配结果，请选择实际要保存的条目')
 </script>
 
 <template>

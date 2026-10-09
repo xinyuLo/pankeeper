@@ -1,3 +1,7 @@
+"""自动转存任务 CRUD（执行调度在 M3，这里先把数据接口补齐）。
+
+前端契约：docs/api-contract.md §5；扩展字段（正则/下钻/QMS·STRM 目录）已并进任务表。
+"""
 from __future__ import annotations
 
 import json
@@ -11,11 +15,14 @@ from ..models import PaTask, RunHistory
 
 router = APIRouter(prefix="/api/pa", tags=["pa"])
 
+
 def _loads(raw: str, fallback=None):
+    """json.loads 防御：脏数据回落默认值。"""
     try:
         return json.loads(raw or "")
     except ValueError:
         return [] if fallback is None else fallback
+
 
 def _row(t: PaTask) -> dict:
     try:
@@ -43,20 +50,21 @@ def _row(t: PaTask) -> dict:
         "last_result": t.last_result,
         "post_qms": t.post_qms,
         "post_notify": t.post_notify,
-
+        # 扩展字段（原内存 map 已并表）
         "qms_id": t.qms_id,
         "strm_id": t.strm_id,
         "lp_event": t.lp_event or "",
         "regex_pattern": t.regex_pattern or "",
         "regex_replace": t.regex_replace or "",
-        "drill_on": bool(t.drill_on),
+        "drill_on": bool(t.drill_on),  # 下钻：字段保留、配置不丢；功能短期不实现（2026-10-03 定）
         "drill": json.loads(t.drill_json or "[]"),
         "ban_reason": t.ban_reason or "",
     }
 
+
 class PaBody(BaseModel):
     type: str = "baidu"
-    acc_id: int | None = None
+    acc_id: int | None = None  # 用哪个账号跑；空=该类型默认账号
     name: str
     enabled: bool = True
     share_url: str = ""
@@ -74,6 +82,7 @@ class PaBody(BaseModel):
     drill: list[str] = []
     post_qms: bool = False
     post_notify: bool = True
+
 
 def _apply(t: PaTask, body: PaBody) -> None:
     t.type = body.type
@@ -96,6 +105,7 @@ def _apply(t: PaTask, body: PaBody) -> None:
     t.post_qms = body.post_qms
     t.post_notify = body.post_notify
 
+
 @router.get("/tasks")
 def list_tasks(type: str = "", _user=CurrentUser):
     with SessionLocal() as db:
@@ -103,6 +113,7 @@ def list_tasks(type: str = "", _user=CurrentUser):
         if type:
             q = q.filter(PaTask.type == type)
         return [_row(t) for t in q.all()]
+
 
 @router.post("/tasks")
 def create_task(body: PaBody, _user=CurrentUser):
@@ -113,6 +124,7 @@ def create_task(body: PaBody, _user=CurrentUser):
         db.commit()
         _reschedule()
         return _row(t)
+
 
 @router.put("/tasks/{task_id}")
 def update_task(task_id: int, body: PaBody, _user=CurrentUser):
@@ -125,8 +137,16 @@ def update_task(task_id: int, body: PaBody, _user=CurrentUser):
         _reschedule()
         return _row(t)
 
+
 @router.get("/tasks/{task_id}/share-files")
 def task_share_files(task_id: int, refresh: bool = False, filtered: bool = False, _user=CurrentUser):
+    """分享链接内文件树（「查看」/排除清单数据源）。
+
+    走独立的分享清单缓存（share_cache，与目录缓存不同逻辑）：转存每跑完一次刷新一次，
+    两次转存之间命中缓存秒开；?refresh=1 忽略缓存直连重拉。
+    filtered=true（排除清单用）：按任务的正则过滤后返回候选——正则匹配不上的文件
+    本来就不会被转存，进排除清单纯属噪音（bdsavePro filtered-files 同语义）。
+    缓存里存的是全量清单，正则在出缓存后现筛，不产生额外网盘请求。"""
     import re as _re
 
     from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, TaskSpec
@@ -168,7 +188,7 @@ def task_share_files(task_id: int, refresh: bool = False, filtered: bool = False
                 rex = _re.compile(regex_used)
                 files = [f for f in files if rex.search(f.get("name") or "")]
             except _re.error:
-                pass
+                pass  # 正则非法降级不过滤（与转存链路同语义）
     finally:
         db.close()
     return {
@@ -179,13 +199,17 @@ def task_share_files(task_id: int, refresh: bool = False, filtered: bool = False
         "fresh": pulled,
     }
 
+
 class ExcludeBody(BaseModel):
+    """排除清单回写：文件名 + MD5 双清单（转存时任一命中即排除）。"""
 
     names: list[str] = []
     md5s: list[str] = []
 
+
 @router.post("/tasks/{task_id}/exclude")
 def task_exclude(task_id: int, body: ExcludeBody, _user=CurrentUser):
+    """排除清单确定：回写 exclude_json/exclude_md5_json/exclude_count。"""
     with SessionLocal() as db:
         t = db.get(PaTask, task_id)
         if t is None:
@@ -198,13 +222,20 @@ def task_exclude(task_id: int, body: ExcludeBody, _user=CurrentUser):
         db.commit()
     return {"count": len(names)}
 
+
 class ParseBody(BaseModel):
     type: str = "baidu"
     share_url: str = ""
     share_code: str = ""
 
+
 @router.post("/parse-share")
 def parse_share(body: ParseBody, _user=CurrentUser):
+    """解析分享链接：验证有效性并返回文件数（任务弹窗「解析」按钮数据源）。
+
+    只列分享根一层（include_subdirs=False），控制请求量——这里只是「验一下链接活没活」，
+    完整清单是转存执行时的事。
+    """
     from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, TaskSpec
     from ..deps import make_adapter_for
 
@@ -224,6 +255,7 @@ def parse_share(body: ParseBody, _user=CurrentUser):
         db.close()
     return {"count": sum(1 for f in files if not f.is_dir), "total": len(files)}
 
+
 @router.delete("/tasks/{task_id}")
 def delete_task(task_id: int, _user=CurrentUser):
     with SessionLocal() as db:
@@ -234,13 +266,16 @@ def delete_task(task_id: int, _user=CurrentUser):
     _reschedule()
     return {"ok": True}
 
+
 def _reschedule() -> None:
     from ..services.pa_scheduler import sync_jobs
 
     sync_jobs()
 
+
 @router.post("/tasks/{task_id}/run")
 def run_task_now(task_id: int, _user=CurrentUser):
+    """立即运行一次（忽略 enabled/熔断，但不忽略输入侧去重之外的东西——手动点就是要跑）。"""
     from ..services.pa_scheduler import run_task
 
     res = run_task(task_id, force=True)
@@ -248,8 +283,19 @@ def run_task_now(task_id: int, _user=CurrentUser):
         raise HTTPException(status_code=400, detail=res["reason"])
     return res
 
+
 @router.post("/tasks/{task_id}/retrigger-qms")
 def retrigger_task_qms(task_id: int, _user=CurrentUser):
+    """重新触发 QMS 刮削（手动补救链路，2026-10-04 用户定稿）：
+
+    ① **门禁**：只有最新一次运行是「QMS 失败」（快照 cls=t-bad / 任务行"部分失败"）才允许点，
+       没失败时重刷无意义（QMS 还会按文件去重挡掉）；
+    ② **清失败记录**：按本次转存文件的记录 ID 精确删除（`DELETE /api/scrape/records?ids=`）——
+       QMS 按文件去重，失败记录不删就不会重刮（用户实测踩过）；
+    ③ **重新触发**：`POST /api/scrape/pathes/start {id}`（目录匹配规则同自动流程）；
+    ④ **STRM**：该目录配了 strm_id 就等「队列配置」的 strm 秒数后触发 STRM 同步；
+    ⑤ 挂 run_watch 回填（只认删除后的新记录），刮好了这次运行自动改判成功。
+    """
     from ..services import qms, run_watch
     from ..services.settings_svc import get_group
     from ..transfer.auto import resolve_media_link
@@ -273,29 +319,35 @@ def retrigger_task_qms(task_id: int, _user=CurrentUser):
         latest_names = json.loads(latest.transferred_json or "[]") if latest else []
         latest_snap = _safe_snap(getattr(latest, "qms_json", "")) if latest else None
 
+    # 联动目标：**任务弹窗里配的 qms_id/strm_id 优先**，没配才按保存目录落回「转存配置」目录
+    # （历史 bug：执行侧只读目录级，任务弹窗配的 STRM 形同虚设，2026-10-04 用户实拍发现）
     link = resolve_media_link(save_dir, task_id)
     if link is None:
         return {"ok": False, "message": "该任务没配 QMS 联动（任务弹窗里选 QMS 目录，或去「转存配置」给目录打开 QMS）"}
     qms_id = link["qms_id"]
     strm_id = link["strm_id"]
-
+    # ① 门禁
     if not (latest_snap and latest_snap.get("cls") == "t-bad"):
         return {"ok": False, "message": "当前没有需要重刷的 QMS 失败（只有刮削失败的运行才需要重刷）"}
     if not latest_names:
         return {"ok": False, "message": "最新一次运行没有转存文件，无从重刷"}
 
+    # ② 清掉本次文件的失败记录（只删失败态；成功记录不动，免得已整理的又被重新刮）
     fp = run_watch.record_fingerprint(latest_names)
     failed_ids = [v[0] for v in fp.values() if v and v[1] in run_watch.FAILED_STATUS]
     ok, msg = qms.clear_scrape_records(failed_ids)
     if not ok:
         return {"ok": False, "message": f"清除 QMS 失败记录失败：{msg}"}
 
+    # ③ 重新触发
     ok, msg = qms.trigger_scrape(qms_id)
     if not ok:
         return {"ok": False, "message": f"QMS 触发失败：{msg}"}
 
+    # ⑤ 回填（删除后的指纹：任何再次出现的记录都算新）
     run_watch.watch_qms(latest_id, task_name, latest_names, run_watch.record_fingerprint(latest_names))
 
+    # ④ STRM：配了才做——**等 QMS 刮削真跑完**（轮询 pathes/{id}）再等队列配置的间隔秒数触发
     delay = int(get_group("queue_cfg").get("strm", 10))
     if strm_id:
         run_watch.trigger_strm_after_scrape(latest_id, int(qms_id), int(strm_id), delay)
@@ -304,11 +356,14 @@ def retrigger_task_qms(task_id: int, _user=CurrentUser):
     parts.append(f"；STRM 同步（#{strm_id}）将在刮削完成后 +{delay}s 触发" if strm_id else "；该目录未配 STRM，跳过")
     return {"ok": True, "qms_id": qms_id, "cleared": len(failed_ids), "strm_id": strm_id, "message": "".join(parts)}
 
+
 @router.get("/next-runs")
 def next_runs(_user=CurrentUser):
+    """各自动任务的下一次 cron 执行时间。"""
     from ..services.pa_scheduler import next_run_times
 
     return next_run_times()
+
 
 @router.put("/tasks/{task_id}/enabled")
 def toggle_task(task_id: int, _user=CurrentUser):
@@ -321,8 +376,10 @@ def toggle_task(task_id: int, _user=CurrentUser):
         _reschedule()
         return {"enabled": t.enabled}
 
+
 @router.delete("/runs")
 def clear_runs(before: str = "", _user=CurrentUser):
+    """清空转存历史（RunHistory）。before = 'YYYY-MM-DD HH:MM:SS'（与 started 同格式），空 = 全部。"""
     with SessionLocal() as db:
         q = db.query(RunHistory)
         if before:
@@ -330,6 +387,7 @@ def clear_runs(before: str = "", _user=CurrentUser):
         n = q.delete(synchronize_session=False)
         db.commit()
     return {"count": n}
+
 
 @router.get("/runs")
 def all_runs(
@@ -341,6 +399,10 @@ def all_runs(
     page_size: int = 20,
     _user=CurrentUser,
 ):
+    """转存历史：所有自动任务的历史执行记录（新→旧，分页 + 筛选）。
+
+    与「转存记录」页刻意分开：那边只看手动查询转存（records.source=search），
+    自动转存的执行历史统一在这里看（任务内的「转存日志」是同一份数据的单任务视图）。"""
     from sqlalchemy import or_
 
     page = max(1, page)
@@ -369,7 +431,7 @@ def all_runs(
                 "started": r.started,
                 "finished": r.finished,
                 "status": r.status,
-
+                # 整单结果：转存 + QMS 合成（只看转存会把"QMS 失败"误报成成功）
                 "overall": overall_of(r.status, _safe_snap(getattr(r, "qms_json", ""))),
                 "add": r.add,
                 "skip": r.skip,
@@ -386,8 +448,10 @@ def all_runs(
         ]
     return {"total": total, "items": items}
 
+
 @router.get("/tasks/{task_id}/runs")
 def task_runs(task_id: int, _user=CurrentUser):
+    """转存日志列表：该任务的 RunHistory 卡片（新→旧）。"""
     with SessionLocal() as db:
         rows = (
             db.query(RunHistory)
@@ -415,8 +479,10 @@ def task_runs(task_id: int, _user=CurrentUser):
             )
     return out
 
+
 @router.get("/runs/{run_id}")
 def run_detail(run_id: int, _user=CurrentUser):
+    """转存日志详情：执行信息 + 统计 + 转存/排除文件清单 + 完整日志。"""
     with SessionLocal() as db:
         r = db.get(RunHistory, run_id)
         if r is None:
@@ -432,7 +498,7 @@ def run_detail(run_id: int, _user=CurrentUser):
             "started": r.started,
             "finished": r.finished,
             "status": r.status,
-
+            # 整单结果（转存 + QMS 合成）；与列表同一份口径
             "overall": overall_of(r.status, qms_snap),
             "message": r.message or "",
             "add": r.add,
@@ -450,15 +516,17 @@ def run_detail(run_id: int, _user=CurrentUser):
             "transferred": json.loads(r.transferred_json or "[]"),
             "excluded": json.loads(r.excluded_json or "[]"),
             "regex_hit": json.loads(r.regex_hit_json or "[]"),
-
+            # MD5 去重命中的文件名（旧记录为空——早于本功能上线的运行没存这个字段）
             "md5_skipped": json.loads(getattr(r, "md5_skipped_json", "") or "[]"),
-
+            # QMS/STRM 联动结果快照；旧记录为空串 → None，前端显示「—」
             "qms": _safe_snap(getattr(r, "qms_json", "")),
             "strm": _safe_snap(getattr(r, "strm_json", "")),
             "logs": json.loads(r.logs_json or "[]"),
         }
 
+
 def _safe_snap(raw: str) -> dict | None:
+    """联动快照解析：空串/坏 JSON 都回 None（旧记录没有这个字段，别让详情 500）。"""
     if not raw:
         return None
     try:

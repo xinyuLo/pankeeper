@@ -1,103 +1,110 @@
-import { del, get, mockDelay, post, USE_MOCK } from '../http';
-import { recordLogOf, recordsStore } from '../mock/records';
-import type { RecordRow } from '../mock/records';
-import type { QueueLogLine } from '@/types/model';
-import type { ShareFilesMeta } from './tasks';
+/**
+ * 转存记录领域 API —— 双模式：mock（内存 store）/ 真实（后端 /api/records）。
+ * 记录是快照数据：列表 + 详情日志 + 清理 + 重试/触发动作。
+ */
+import { del, get, mockDelay, post, USE_MOCK } from '../http'
+import { recordLogOf, recordsStore } from '../mock/records'
+import type { RecordRow } from '../mock/records'
+import type { QueueLogLine } from '@/types/model'
+import type { ShareFilesMeta } from './tasks'
+
+/** 记录行「查看文件」：按记录存的分享链接拉文件树（同走分享清单缓存，转存后自动刷新） */
 export function getRecordShareFiles(recordId: number, refresh = false): Promise<ShareFilesMeta> {
-    if (USE_MOCK)
-        return Promise.resolve({ total: 0, tree: [], files: [], cached_at: 0, fresh: false });
-    return get<ShareFilesMeta>(`/records/${recordId}/share-files`, { params: { refresh } });
+  if (USE_MOCK) return Promise.resolve({ total: 0, tree: [], files: [], cached_at: 0, fresh: false })
+  return get<ShareFilesMeta>(`/records/${recordId}/share-files`, { params: { refresh } })
 }
+
 export function listRecords(): Promise<RecordRow[]> {
-    if (USE_MOCK)
-        return mockDelay(recordsStore.items);
-    return get<RecordRow[]>('/records').then((rows) => {
-        recordsStore.items.splice(0, recordsStore.items.length, ...rows);
-        return rows;
-    });
+  if (USE_MOCK) return mockDelay(recordsStore.items)
+  // 真实模式：后端灌回 recordsStore（记录页读的是 store）
+  return get<RecordRow[]>('/records').then((rows) => {
+    recordsStore.items.splice(0, recordsStore.items.length, ...rows)
+    return rows
+  })
 }
+
 export function getRecordLog(r: RecordRow): Promise<QueueLogLine[]> {
-    if (USE_MOCK)
-        return mockDelay(recordLogOf(r));
-    return get<QueueLogLine[]>(`/records/${r.id}/logs`);
+  if (USE_MOCK) return mockDelay(recordLogOf(r))
+  return get<QueueLogLine[]>(`/records/${r.id}/logs`)
 }
+
 export async function deleteRecord(id: number): Promise<void> {
-    if (USE_MOCK) {
-        recordsStore.items = recordsStore.items.filter((x) => x.id !== id);
-        return mockDelay(undefined);
-    }
-    await del(`/records/${id}`);
-    recordsStore.items = recordsStore.items.filter((x) => x.id !== id);
+  if (USE_MOCK) {
+    recordsStore.items = recordsStore.items.filter((x) => x.id !== id)
+    return mockDelay(undefined)
+  }
+  await del(`/records/${id}`)
+  recordsStore.items = recordsStore.items.filter((x) => x.id !== id)
 }
+
+/** 清空三月前记录，返回清掉的条数（0 = 没有三月前数据，页面据此提示） */
+/** 清空搜索历史记录：before = 'MM-DD HH:MM'（该时刻之前），空串 = 全部。返回清除条数。 */
 export async function clearRecords(before: string): Promise<number> {
-    if (USE_MOCK) {
-        let removed = 0;
-        if (!before) {
-            removed = recordsStore.items.length;
-            recordsStore.items = [];
-        }
-        else {
-            const y = new Date().getFullYear();
-            const keep: RecordRow[] = [];
-            for (const r of recordsStore.items) {
-                const t = new Date(`${y}-${before.replace(' ', 'T')}`).getTime();
-                const m = /^(\d{2})-(\d{2}) (\d{2}):(\d{2})$/.exec(r.tm);
-                const rt = m ? new Date(y, Number(m[1]) - 1, Number(m[2]), Number(m[3]), Number(m[4])).getTime() : 0;
-                if (rt && rt < t)
-                    removed++;
-                else
-                    keep.push(r);
-            }
-            recordsStore.items = keep;
-        }
-        return mockDelay(removed);
+  if (USE_MOCK) {
+    let removed = 0
+    if (!before) {
+      removed = recordsStore.items.length
+      recordsStore.items = []
+    } else {
+      const y = new Date().getFullYear()
+      const keep: RecordRow[] = []
+      for (const r of recordsStore.items) {
+        const t = new Date(`${y}-${before.replace(' ', 'T')}`).getTime()
+        const m = /^(\d{2})-(\d{2}) (\d{2}):(\d{2})$/.exec(r.tm)
+        const rt = m ? new Date(y, Number(m[1]) - 1, Number(m[2]), Number(m[3]), Number(m[4])).getTime() : 0
+        if (rt && rt < t) removed++
+        else keep.push(r)
+      }
+      recordsStore.items = keep
     }
-    const { count } = await del<{
-        count: number;
-    }>(`/records?before=${encodeURIComponent(before)}`);
-    recordsStore.items = recordsStore.items.filter((x) => (before ? x.tm < before : false));
-    await listRecords();
-    return count;
+    return mockDelay(removed)
+  }
+  const { count } = await del<{ count: number }>(`/records?before=${encodeURIComponent(before)}`)
+  recordsStore.items = recordsStore.items.filter((x) => (before ? x.tm < before : false))
+  await listRecords() // 回读对齐 store
+  return count
 }
+
+/** 重试失败项：真实模式把记录重新入队，返回排队位次（页面 toast 用） */
 export async function retryFailedItems(r: RecordRow): Promise<number> {
-    if (USE_MOCK) {
-        const m = /(\d+)\s*\/\s*(\d+)/.exec(r.st);
-        return mockDelay(m ? Math.max(0, Number(m[2]) - Number(m[1])) : 0);
-    }
-    const { count } = await post<{
-        count: number;
-    }>(`/records/${r.id}/retry-failed`);
-    return count;
+  if (USE_MOCK) {
+    const m = /(\d+)\s*\/\s*(\d+)/.exec(r.st)
+    return mockDelay(m ? Math.max(0, Number(m[2]) - Number(m[1])) : 0)
+  }
+  const { count } = await post<{ count: number }>(`/records/${r.id}/retry-failed`)
+  return count
 }
+
+/** 抽屉里「再次触发 QMS」 */
 export async function retrigQms(r: RecordRow): Promise<void> {
-    if (USE_MOCK) {
-        void r;
-        return mockDelay(undefined);
-    }
-    await post(`/records/${r.id}/retrigger-qms`);
+  if (USE_MOCK) {
+    void r
+    return mockDelay(undefined)
+  }
+  await post(`/records/${r.id}/retrigger-qms`)
 }
-export async function retriggerRecord(recordId: number): Promise<{
-    ok: boolean;
-    message: string;
-}> {
-    if (USE_MOCK)
-        return mockDelay({ ok: true, message: '（mock）已触发' });
-    return post<{
-        ok: boolean;
-        message: string;
-    }>(`/records/${recordId}/retrigger`);
+
+/** 行级「触发」：按联动后端分流重新触发（litepan=重发 Webhook / qms=重触发刮削）。
+ * 未配联动时后端 400 + detail（调用方展示）。 */
+export async function retriggerRecord(recordId: number): Promise<{ ok: boolean; message: string }> {
+  if (USE_MOCK) return mockDelay({ ok: true, message: '（mock）已触发' })
+  return post<{ ok: boolean; message: string }>(`/records/${recordId}/retrigger`)
 }
+
+/** 手动触发弹窗：触发 QMS 刮削。label 只做留痕 */
 export async function triggerQms(qmsId: number, label: string): Promise<void> {
-    if (USE_MOCK) {
-        recordsStore.trigLog.push('QMS → ' + label);
-        return mockDelay(undefined);
-    }
-    await post('/qms/trigger', { id: qmsId });
+  if (USE_MOCK) {
+    recordsStore.trigLog.push('QMS → ' + label)
+    return mockDelay(undefined)
+  }
+  await post('/qms/trigger', { id: qmsId })
 }
+
+/** 手动触发弹窗：触发 STRM 生成 */
 export async function triggerStrm(strmId: number, label: string): Promise<void> {
-    if (USE_MOCK) {
-        recordsStore.trigLog.push('STRM → ' + label);
-        return mockDelay(undefined);
-    }
-    await post('/strm/trigger', { id: strmId });
+  if (USE_MOCK) {
+    recordsStore.trigLog.push('STRM → ' + label)
+    return mockDelay(undefined)
+  }
+  await post('/strm/trigger', { id: strmId })
 }

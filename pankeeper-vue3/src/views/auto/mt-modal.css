@@ -1,4 +1,11 @@
+/* =====================================================================
+ * 自动转存四个弹窗（mt-）的共享外观 —— 原型 parts/modal-task.html 移植。
+ * 原型里弹窗自带 --mt-* 变量，这里按约定简化成全局令牌（--text/--border/…），
+ * 浅/暗两套自动生效；被四个弹窗组件各自 `<style scoped src="./mt-modal.css">`
+ * 引入，避免每个组件复制一份。
+ * ===================================================================== */
 
+/* ===== 遮罩 + 弹窗外壳 ===== */
 .mt-mask {
   position: fixed;
   inset: 0;
@@ -63,6 +70,8 @@
   flex: 0 0 auto;
   background: var(--surface-2);
 }
+
+/* ===== 表单行 ===== */
 .mt-form-row { display: flex; align-items: flex-start; margin-bottom: 14px; }
 .mt-label {
   width: 130px;
@@ -99,6 +108,8 @@
   padding: 0 4px;
 }
 .mt-hint-strong { color: var(--primary); }
+
+/* ===== 按钮（行内解析/浏览必须与 34px 输入框等高，别用 mt-btn-sm 挤成两行） ===== */
 .mt-btn {
   height: 34px;
   padding: 0 16px;
@@ -127,6 +138,7 @@
   min-width: 0;
   justify-content: center;
 }
+/* 输入框旁边的动作钮（解析/浏览）：无边框淡蓝 chip，轻、不抢输入框的戏 */
 .mt-btn-soft {
   background: rgba(22, 119, 255, 0.08);
   border: none;
@@ -156,6 +168,8 @@ html[data-theme='dark'] .mt-btn-soft:hover { background: rgba(64, 150, 255, 0.26
 }
 .mt-icon-btn:hover { border-color: var(--error); }
 .mt-icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ===== 开关（下钻/QMS 总控） ===== */
 .mt-switch { position: relative; display: inline-block; width: 42px; height: 22px; cursor: pointer; flex: 0 0 auto; }
 .mt-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
 .mt-switch-slider { position: absolute; inset: 0; background: #ccc; border-radius: 22px; transition: 0.2s; }
@@ -175,6 +189,8 @@ html[data-theme='dark'] .mt-switch-slider { background: var(--border); }
 .mt-switch input:checked + .mt-switch-slider::before { transform: translateX(20px); }
 .mt-switch-row { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; }
 .mt-switch-row .mt-switch-label { line-height: 1; font-size: 13.5px; }
+
+/* ===== 横向勾选条（选项/完成后动作一行收完） ===== */
 .mt-opts {
   display: flex;
   align-items: center;
@@ -197,6 +213,7 @@ html[data-theme='dark'] .mt-switch-slider { background: var(--border); }
   position: relative;
 }
 .mt-opt input { position: absolute; opacity: 0; width: 0; height: 0; }
+/* 自绘勾选框：不同内核/主题下原生 checkbox 长相不一致，统一画 16px 圆角方块 */
 .mt-opt .mt-box {
   position: relative;
   width: 16px;
@@ -224,10 +241,14 @@ html[data-theme='dark'] .mt-switch-slider { background: var(--border); }
 }
 .mt-opt input:checked + .mt-box { background: var(--primary); border-color: var(--primary); }
 .mt-opt input:checked + .mt-box::after { opacity: 1; transform: rotate(45deg) scale(1); }
+
+/* ===== 分区块 ===== */
 .mt-section { border: 1px solid var(--split); border-radius: 10px; padding: 14px 16px; margin-top: 6px; }
 .mt-section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .mt-section-title { font-weight: 600; font-size: 14px; }
 .mt-section-tip { font-size: 12px; color: var(--text3); }
+
+/* ===== 复选列表（排除清单 / 下钻子目录） ===== */
 .mt-check-list {
   max-height: 168px;
   overflow: auto;
@@ -250,13 +271,19 @@ html[data-theme='dark'] .mt-switch-slider { background: var(--border); }
   white-space: nowrap;
 }
 html[data-theme='dark'] .mt-tag { background: rgba(250, 173, 20, 0.16); color: #ffc53d; }
+/* 正则外：紫标——不会转存、展示只为可取消勾选；与琥珀「无 MD5」区分开 */
 .mt-tag-dim { background: rgba(114, 46, 209, 0.08); color: #722ed1; }
 html[data-theme='dark'] .mt-tag-dim { background: rgba(114, 46, 209, 0.2); color: #b37feb; }
 .mt-list-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-size: 13px; color: var(--text2); }
 .mt-list-warn { font-size: 12px; color: var(--warning); text-align: right; }
 .mt-dt-size { font-size: 12px; color: var(--text3); flex: 0 0 auto; }
+
+/* ===== 标题行动作钮组（排除清单：勾选 MD5 / 刷新并排上移） ===== */
 .mt-head-btns { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 .mt-head-btns.busy .mt-btn { opacity: 0.6; pointer-events: none; }
+
+/* ===== 清单缓存状态条：纯状态展示（刷新钮已上移标题行），文字做成状态胶囊 =====
+   命中绿=吃缓存、刚拉取橙=刚出网盘；文字 flex:0 1 auto + min-width:0 可压缩打省略号。 */
 .mt-listcache { display: flex; align-items: center; margin: 8px 0 6px; }
 .mt-listcache-txt {
   flex: 0 1 auto;
@@ -287,7 +314,11 @@ html[data-theme='dark'] .mt-listcache-txt.cold { color: #ffc069; background: rgb
 }
 html[data-theme='dark'] .mt-spin { border-color: rgba(255, 255, 255, 0.2); }
 @keyframes mtSpin { to { transform: rotate(360deg); } }
+
+/* ===== 下钻工具条 ===== */
 .mt-tree-toolbar { display: flex; align-items: center; gap: 8px; margin: 10px 0 6px; }
+
+/* ===== 目录树选择器（单选） ===== */
 .mt-tree { max-height: 300px; overflow: auto; border: 1px solid var(--split); border-radius: 8px; padding: 6px 4px; }
 .mt-tree-row {
   display: flex;
@@ -327,6 +358,11 @@ html[data-theme='dark'] .mt-dir-bar { color: #ffc069; }
   color: var(--primary);
   overflow-wrap: anywhere;
 }
+
+/* ===== 执行监控 ===== */
+/* 不定量 loading 条（2026-10-04 用户要求）——
+   队列引擎没有细粒度进度，百分比其实在骗人（QMS 阶段数字停在 100% 但活还在跑）。
+   改成"流动条"：只表达"还在跑"，不假装知道进度。跑完 → is-done 变实心绿，一眼看出结束。 */
 .mt-progress { position: relative; height: 8px; background: var(--split); border-radius: 8px; overflow: hidden; margin: 4px 0 12px; }
 .mt-progress::after {
   content: '';
@@ -354,37 +390,47 @@ html[data-theme='dark'] .mt-dir-bar { color: #ffc069; }
 .mt-stat-excl .mt-stat-num { color: var(--warning); }
 .mt-runlog { height: 230px; max-height: none; }
 .mt-run-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; font-size: 13px; color: var(--text2); }
+
+/* =====================================================================
+ * 移动端（<768px）：弹窗改为近全屏卡片，表单从「左标签右控件」叠成上下结构
+ * ===================================================================== */
 @media (max-width: 767px) {
-  .mt-mask { align-items: flex-end; } 
+  .mt-mask { align-items: flex-end; } /* 底部滑入更像 iOS 弹窗 */
   .mt-dialog {
-    width: 100vw !important; 
+    width: 100vw !important; /* 覆盖四个弹窗各自内联的 width:xxx */
     max-width: 100vw;
     max-height: 94dvh;
     border-radius: 16px 16px 0 0;
   }
   .mt-dialog-head { padding: 13px 16px; }
   .mt-dialog-title { font-size: 15px; }
-  .mt-dialog-sub { display: none; } 
+  .mt-dialog-sub { display: none; } /* 窄屏省空间，标题色点已能区分 */
   .mt-dialog-body { padding: 14px 14px 18px; }
   .mt-dialog-foot { padding: 10px 14px calc(var(--sab, 0px) + 10px); }
-  
+
+  /* 标签行改上下结构：130px 右对齐标签在窄屏太浪费 */
   .mt-form-row { display: block; margin-bottom: 14px; }
   .mt-label { width: auto; flex: none; text-align: left; padding-right: 0; line-height: 1.6; margin-bottom: 6px; display: block; }
-  
+
+  /* 焦点输入框 ≥16px 防 iOS 聚焦缩放（请假项目同款坑） */
   .mt-input,
   .mt-select { font-size: 16px; height: 38px; }
+
   .mt-btn { height: 38px; }
   .mt-btn-inline { height: 38px; }
   .mt-icon-btn { width: 38px; height: 38px; flex: 0 0 38px; }
-  
+
+  /* 正则两段输入窄屏改竖排（并排每个只剩 120px 没法用） */
   .mt-regex-row { flex-wrap: wrap; }
   .mt-regex-row .mt-input { flex: 1 1 100%; }
   .mt-regex-sep { display: none; }
-  
+
+  /* 执行监控统计四卡 → 两列 */
   .mt-stats { grid-template-columns: repeat(2, 1fr); gap: 8px; }
   .mt-stat-card { padding: 10px; }
   .mt-runlog { height: 180px; }
-  
+
+  /* 排除清单缓存状态条允许换行；标题行标题+双钮太宽时也换行 */
   .mt-listcache { flex-wrap: wrap; }
   .mt-section-head { flex-wrap: wrap; row-gap: 8px; }
 }

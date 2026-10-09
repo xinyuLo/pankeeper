@@ -1,3 +1,9 @@
+"""全局配置：数据目录、数据库、密钥管理。
+
+密钥分两把，首次启动自动生成、持久化在 data/ 下：
+- jwt.key   登录令牌签名
+- cred.key  网盘凭据列加密（Fernet）
+"""
 from __future__ import annotations
 
 import os
@@ -13,6 +19,7 @@ DB_URL = f"sqlite:///{DB_PATH}"
 JWT_KEY_FILE = DATA_DIR / "jwt.key"
 CRED_KEY_FILE = DATA_DIR / "cred.key"
 
+
 def _ensure_key(file: Path, generator) -> bytes:
     if file.exists():
         return file.read_bytes().strip()
@@ -20,8 +27,10 @@ def _ensure_key(file: Path, generator) -> bytes:
     file.write_bytes(key)
     return key
 
+
 def jwt_secret() -> bytes:
     return _ensure_key(JWT_KEY_FILE, lambda: secrets.token_hex(32).encode())
+
 
 def cred_key() -> bytes:
     from cryptography.fernet import Fernet

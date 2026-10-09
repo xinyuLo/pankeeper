@@ -1,46 +1,49 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
-import { useRouter } from 'vue-router';
-import { message } from 'ant-design-vue';
-import { useAuthStore } from '@/store/auth';
-import { useThemeStore } from '@/store/theme';
-import { hydrateAll } from '@/api/bootstrap';
-const router = useRouter();
-const auth = useAuthStore();
-const theme = useThemeStore();
-const username = ref('');
-const password = ref('');
-const loading = ref(false);
+/* 登录页 —— W1「霓虹暗夜」（2026-09-28 用户定稿）：黑底紫/青/粉光斑 + 暗玻璃卡。
+ * 单卡版式 PC/手机同一结构（手机近全宽）；页面自身固定深色玻璃风，
+ * antd 输入框做了页内玻璃化覆盖，不随全局主题翻面。
+ * mock 登录走 auth store（任意输入可登录），真实模式 401/网络错误就地提示。 */
+import { onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { message } from 'ant-design-vue'
+import { useAuthStore } from '@/store/auth'
+import { useThemeStore } from '@/store/theme'
+import { hydrateAll } from '@/api/bootstrap'
+
+const router = useRouter()
+const auth = useAuthStore()
+const theme = useThemeStore()
+
+/* 不预填账号密码，仅用 placeholder 提示 */
+const username = ref('')
+const password = ref('')
+const loading = ref(false)
+
 async function onLogin() {
-    if (loading.value)
-        return;
-    loading.value = true;
-    try {
-        await auth.login(username.value, password.value);
-        hydrateAll();
-        message.success('欢迎回来，' + auth.username);
-        router.push('/dashboard');
-    }
-    catch (e: unknown) {
-        const detail = (e as {
-            response?: {
-                data?: {
-                    detail?: string;
-                };
-            };
-        })?.response?.data?.detail;
-        message.error(detail || '登录失败，请检查用户名或密码');
-    }
-    finally {
-        loading.value = false;
-    }
+  if (loading.value) return
+  loading.value = true
+  try {
+    await auth.login(username.value, password.value)
+    hydrateAll() // 启动期未登录时灌注会 401，登录成功这里必须补一次
+    message.success('欢迎回来，' + auth.username)
+    router.push('/dashboard')
+  } catch (e: unknown) {
+    // 真实模式：401/网络错误在此提示（mock 模式不会抛）
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '登录失败，请检查用户名或密码')
+  } finally {
+    loading.value = false
+  }
 }
-onMounted(() => theme.apply());
+
+/* 持久化主题目前没有统一的应用入口（store 只有 toggle 时才 apply），
+ * 登录页是应用第一入口，这里兜底同步一次（幂等），保证刷新后暗色仍生效。 */
+onMounted(() => theme.apply())
 </script>
 
 <template>
   <div class="login">
-    
+    <!-- 右上角浮动主题切换：玻璃化独立配色，不随页面主题变量翻面 -->
     <button
       class="login-theme-btn"
       :title="theme.isDark ? '切到日间模式' : '切到夜间模式'"
@@ -49,10 +52,10 @@ onMounted(() => theme.apply());
       {{ theme.isDark ? '☀ 日间' : '☾ 夜间' }}
     </button>
 
-    
+    <!-- 霓虹光斑背景（纯 CSS，零图片资源） -->
     <div class="neon-bg" aria-hidden="true"></div>
 
-    
+    <!-- 居中暗玻璃卡 -->
     <div class="card">
       <div class="brand"><i></i>PanKeeper</div>
       <h1>登录</h1>
