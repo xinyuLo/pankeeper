@@ -213,6 +213,10 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
         })
         return {"st": "未执行", "cls": "t-off"}, {"st": "未执行", "cls": "t-off"}
     link = resolve_media_link(t["path"], t.get("paTaskId"))
+    # 反转开关（队列配置全局）：先生成 STRM 再触发 QMS。挂 t 上，_sync_pa_task 落库后
+    # 据此跳过「等刮削→触发 STRM」的后台线程（反转时 STRM 已经触发过）
+    reverse = bool(get_group("queue_cfg").get("reverse"))
+    t["_media_reverse"] = reverse
     qms_snap = {"st": "未配置", "cls": "t-off"}
     strm_snap = {"st": "未配置", "cls": "t-off"}
     if link is None:
@@ -225,7 +229,21 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
         _push_log(t, "INFO", "没有新增文件，不触发 QMS（在库文件刮削无意义）")
         return qms_snap, strm_snap
 
-    _sleep_phase(eng, t, "waitqms", int(cfg.get("qms", 10)), f"等待 {cfg.get('qms', 10)} 秒后触发 QMS 刮削")
+    strm_id = link.get("strm_id")
+    if reverse and strm_id is not None:
+        # 反转：先 STRM（扫的是转存原目录，不等刮削）、隔 strm 秒再触发 QMS
+        _sleep_phase(eng, t, "waitqms", int(cfg.get("qms", 10)), f"等待 {cfg.get('qms', 10)} 秒后触发 STRM 同步（反转模式：先生成 STRM）")
+        t["phase"] = "strm"
+        t["phaseStart"] = int(time.time() * 1000)
+        ok_s, msg_s = qms.trigger_strm(int(strm_id))
+        strm_snap = {"st": "已触发（反转·先行）" if ok_s else f"失败 · {msg_s}", "cls": "t-ok" if ok_s else "t-bad"}
+        _push_log(t, "INFO" if ok_s else "ERROR", f"（反转）STRM 同步 #{strm_id} 先行触发{'成功' if ok_s else '失败'}：{msg_s or '详见 QMS 侧日志'}")
+        _sleep_phase(eng, t, "waitstrm", int(cfg.get("strm", 10)), f"等待 {cfg.get('strm', 10)} 秒后触发 QMS 刮削（反转模式）")
+    else:
+        if reverse:
+            # 校验在前端拦了，这里是执行侧兜底：没 STRM 就按默认顺序走，不把联动弄丢
+            _push_log(t, "WARN", "反转模式需要 STRM 同步路径，该目录没选——退回默认顺序（先 QMS 后 STRM）")
+        _sleep_phase(eng, t, "waitqms", int(cfg.get("qms", 10)), f"等待 {cfg.get('qms', 10)} 秒后触发 QMS 刮削")
     t["phase"] = "qms"
     t["phaseStart"] = int(time.time() * 1000)
     # 触发**前**抓记录指纹：回填/推送只认本次触发产生的新记录（去重不重刮不冒充、
@@ -243,7 +261,7 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
     # （run_watch.trigger_strm_after_scrape：轮询 /api/scrape/pathes/{id} 到 is_running=0
     #  && is_scraping=false && updated_at>=触发时刻）。放这里会**堵住队列 worker 好几分钟**，
     # 所以改为收尾落库后由 _sync_pa_task 挂后台线程（2026-10-04 用户要求对齐 bdsavepro 语义）。
-    if link.get("strm_id"):
+    if link.get("strm_id") and not reverse:
         strm_snap = {"st": "等待刮削完成…", "cls": "t-off"}
         _push_log(t, "STEP", f"STRM 联动已挂后台（同步目录 #{link['strm_id']}）：QMS 刮削成功后自动触发定向同步临时任务（成功才生成）")
 
@@ -301,7 +319,8 @@ def resolve_media_link(path: str, task_id: int | None = None) -> dict | None:
        哪怕任务弹窗里显式选了 QMS/STRM 目录也不联动（否则会出现"目录明明关了、任务还在偷偷联动"
        这种没人能预期的事）；
     ② 总闸开着（或 `save_dir` 没命中任何目录）时：**任务弹窗里选的 `qms_id`/`strm_id` 优先**，
-       没填的字段各自回退到命中目录的值。
+       没填的字段各自回退到命中目录的值（目录级 STRM 下拉 2026-10-09 恢复）；
+    ③ 两级都没填 STRM：按「刮削目录整理目标根 = 同步路径来源路径」自动配对（strm_id_for_qms）。
 
     历史：执行侧原只读目录级 DdItem，任务弹窗配的 `strm_id` 被无视 —— 用户任务 1 配了 5，
     代码却拿到目录的 None，STRM 永远不触发（2026-10-04 用户实拍发现）。
@@ -323,7 +342,8 @@ def resolve_media_link(path: str, task_id: int | None = None) -> dict | None:
         return None
     rs = strm_id if strm_id is not None else ds
     if rs is None:
-        # STRM 跟随 QMS 自动配对（2026-10-04 定稿：转存配置里不再单独选 STRM）
+        # STRM 自动配对兜底（2026-10-09 恢复目录级 STRM 下拉后为最后一级）：
+        # 目录级和任务级都没填时，按「刮削目录整理目标根 = 同步路径来源路径」配对
         from .qms import strm_id_for_qms
         rs = strm_id_for_qms(rq)
     return {"qms_id": rq, "strm_id": rs}
@@ -527,7 +547,8 @@ def _sync_pa_task(t: dict, status: str, result, qms_snap: dict | None = None, st
         )
         link = resolve_media_link(t["path"], t.get("paTaskId"))
         strm_plan = None
-        if link and link.get("strm_id"):
+        if link and link.get("strm_id") and not t.get("_media_reverse"):
+            # 反转模式 STRM 已先行触发过，不再挂「等刮削→触发 STRM」的后台线程
             delay = int(get_group("queue_cfg").get("strm", 10))
             strm_plan = {"strm_id": int(link["strm_id"]), "delay": delay}
             run_watch.trigger_strm_after_scrape(run_id_new, int(link["qms_id"]), int(link["strm_id"]), delay)

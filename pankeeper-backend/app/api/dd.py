@@ -54,7 +54,10 @@ class DdBody(BaseModel):
     path: str
     qms_on: bool = False
     qms_id: int | None = None
-    # strm_id 不再由前端写入（2026-10-04 定稿：STRM 跟随 QMS 自动配对）；列保留为历史值
+    # STRM 同步路径（2026-10-09 恢复目录级可配）：不填(null) = 执行侧按 QMS 整理目标自动配对
+    # （resolve_media_link → strm_id_for_qms）；填了 = 按指定的同步路径触发。
+    # 优先级：任务弹窗选择的 strm_id > 这里的目录级值 > 自动配对。
+    strm_id: int | None = None
     # LitePan 联动（media.backend=litepan 时用）：事件名空 = 用设置页的全局默认
     lp_on: bool = False
     lp_event: str = ""
@@ -97,8 +100,8 @@ def update_item(item_id: int, body: DdBody, _user=CurrentUser):
         # id 是主键：body 里未传时 model_dump 会带 id=None，setattr 会把 rowid 写 NULL
         # （sqlite 报 datatype mismatch）——更新语义下必须跳过。
         for k, v in body.model_dump().items():
-            if k in ("id", "strm_id"):
-                continue  # strm_id 为历史列，前端不再写
+            if k == "id":
+                continue
             setattr(row, k, v)
         db.commit()
         return _row(row)

@@ -15,9 +15,10 @@ import { ddStore, ddFind } from '@/api/mock/dd'
 import { DD_MEDIA, MAIN_ORDER, DRIVE_META } from '@/api/mock/meta'
 import { accountStore } from '@/api/mock/accounts'
 import { getRootDirs } from '@/api/modules/accounts'
-import { saveDdItem, deleteDdItem, setDefaultDir, listDdItems, listQmsPaths } from '@/api/modules/dd'
+import { saveDdItem, deleteDdItem, setDefaultDir, listDdItems, listQmsPaths, listStrmPaths } from '@/api/modules/dd'
 import { getSettings } from '@/api/modules/settings'
-import type { DdItem, DdQmsPath, MainDriveType } from '@/types/model'
+import { pkQueueCfgFetch } from '@/queue/engine'
+import type { DdItem, DdQmsPath, DdStrmPath, MainDriveType } from '@/types/model'
 
 /* ===== 列表态 ===== */
 const active = ref<MainDriveType>('baidu')
@@ -88,6 +89,10 @@ const fPath = ref('')
 const fSort = ref(1)
 const fQmsOn = ref(false)
 const fQmsId = ref<number | undefined>(undefined)
+/** STRM 同步路径（2026-10-09 恢复目录级可配）：不选 = 按 QMS 整理目标自动配对；选了 = 按指定的触发 */
+const fStrmId = ref<number | undefined>(undefined)
+/** QMS/STRM 反转（队列配置全局）：开启时联动 QMS 必须显式选 STRM 同步路径 */
+const reverseOn = ref(false)
 // LitePan 联动（media.backend=litepan 时替代 QMS 表单）：开关 + 事件名（输入框，等
 // LitePan 出接口后换下拉——2026-10-06 用户定稿）
 const fLpOn = ref(false)
@@ -106,14 +111,20 @@ const accOptions = computed(() =>
 )
 /** QMS 刮削目录 / STRM 同步路径：打开弹窗时从 QMS 拉真实列表 */
 const qmsPaths = ref<DdQmsPath[]>([])
+const strmPaths = ref<DdStrmPath[]>([])
 // QMS 刮削目录下拉：#id · 类型 · 路径
 const qmsOptions = computed(() =>
   qmsPaths.value.map((p) => ({ value: p.id, label: `#${p.id} · ${DD_MEDIA[p.media_type as 'tv'] || p.media_type} · ${p.source_path}` })),
 )
+// STRM 同步路径下拉：#id · 来源路径（与任务弹窗 TaskModal 的 strmLabel 口径一致）
+const strmOptions = computed(() =>
+  strmPaths.value.map((p) => ({ value: p.id, label: `#${p.id} · ${p.remote_path}` })),
+)
 async function loadQmsStrmPaths() {
   // QMS 未启用/连不上时静默置空：下拉显示"暂无可选"，不挡住表单其他项。
-  // STRM 不再在此配置（2026-10-04 定稿：跟随 QMS 自动配对，整理目标根=同步路径）
+  // STRM 2026-10-09 恢复目录级下拉：不选仍走自动配对（整理目标根=同步路径来源）
   qmsPaths.value = await listQmsPaths().catch(() => [])
+  strmPaths.value = await listStrmPaths().catch(() => [])
 }
 
 /* ===== 目录选择弹窗（与网盘连接页/任务弹窗统一）：LazyDirTree 真实目录，只显示文件夹 ===== */
@@ -177,12 +188,14 @@ function openEditor(id: number | null) {
     : ddStore.items.filter((x) => x.type === fType.value).reduce((m, x) => Math.max(m, x.sort || 0), 0) + 1
   fQmsOn.value = it ? !!it.qms_on : false
   fQmsId.value = it?.qms_id ?? undefined
+  fStrmId.value = it?.strm_id ?? undefined
   fLpOn.value = it ? !!it.lp_on : false
   fLpEvent.value = it?.lp_event || ''
   fOnlyVideo.value = it ? !!it.only_video : true
   bdPath.value = fPath.value
   modalOpen.value = true
   loadQmsStrmPaths()
+  pkQueueCfgFetch().then((c) => (reverseOn.value = !!c.reverse)).catch(() => {})
 }
 
 /** 切换网盘：账号跟随切到该网盘第一个，已选路径/树展开态作废（跨网盘路径无意义） */
@@ -244,6 +257,10 @@ async function confirmEditor() {
     message.error('联动 QMS 需选择整理目录')
     return
   }
+  if (fQmsOn.value && reverseOn.value && fStrmId.value == null) {
+    message.error('已开启 QMS/STRM 反转：必须选择 STRM 同步路径（可到「队列配置」关闭反转）')
+    return
+  }
   if (fLpOn.value && !fLpEvent.value.trim()) {
     message.error('LitePan 联动需填写事件名（与 LitePan 自动化规则里配的一致）')
     return
@@ -253,7 +270,8 @@ async function confirmEditor() {
     only_video: fOnlyVideo.value,
     qms_on: fQmsOn.value,
     qms_id: fQmsOn.value && fQmsId.value != null ? fQmsId.value : null,
-    strm_id: null, // 此表单只管 QMS；STRM 目录在任务弹窗里配（DdItemDraft 要求字段存在）
+    // STRM 跟 QMS 开关联动保存：不选=null（执行侧自动配对兜底），选了=按指定的触发
+    strm_id: fQmsOn.value && fStrmId.value != null ? fStrmId.value : null,
     // LitePan 联动字段与 QMS 独立保存（切后端时另一套不丢配置）
     lp_on: fLpOn.value,
     lp_event: fLpOn.value ? fLpEvent.value.trim() : fLpEvent.value.trim(),
@@ -484,7 +502,18 @@ async function confirmEditor() {
           class="dd-sel"
           :placeholder="qmsOptions.length ? '请选择 QMS 整理目录' : 'QMS 暂无刮削目录，请先到 qmediasync 添加'"
         />
-        <div class="dd-tip dd-mt12">QMS 整理成功后会自动按整理结果生成 STRM，失败不生成（无需配置）。</div>
+        <label class="dd-label dd-mt12">STRM 同步路径</label>
+        <a-select
+          v-model:value="fStrmId"
+          :options="strmOptions"
+          class="dd-sel"
+          allow-clear
+          :placeholder="strmOptions.length ? '不选 = 按整理目标自动配对' : 'QMS 暂无 STRM 同步路径，不选则自动配对'"
+        />
+        <div class="dd-tip dd-mt12">
+          STRM 不选就自动配对（刮削目录的整理目标 = 某个同步路径的来源路径时生效）；选了就按指定的触发。
+          QMS 整理成功后才生成 STRM，失败不生成。
+        </div>
       </div>
     </div>
     <div v-else class="dd-field">
