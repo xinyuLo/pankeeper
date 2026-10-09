@@ -69,7 +69,11 @@ img_url 修好后用户终于走到识别候选卡这一步，立刻踩到第二
 
 - ghcr.io/xinyulo/pankeeper:1.0.1 带护栏 bug（已发布数小时），1.0.2 为修复版；
   1.0.1 标签要不要删由用户决定
-- Docker Hub 推送：NAS 到 registry-1.docker.io 被墙，24h 自动重试循环挂在
+- ✅ Docker Hub/ghcr 已全部推完（1.0.3 = 单例护栏版，digest 050b64a5，双仓库一致）。
+  **关键：给 NAS docker 守护进程配了 systemd 代理**（/etc/systemd/system/docker.service.d/proxy.conf
+  → 127.0.0.1:7890，NO_PROXY=localhost,127.0.0.1），push/pull 全走 clash；live-restore 下重启
+  docker 零闪断。**代理挂了 docker 拉推会跟着失败**，删除该 conf + daemon-reload + restart 即恢复直连
+- （已解决）Docker Hub 推送：NAS 到 registry-1.docker.io 被墙，24h 自动重试循环挂在
   /tmp/dh_push_retry.sh（日志 /tmp/dh_push_retry.log），通了自动推 1.0.2+latest；
   用户也可在昨晚推成功过的那台电脑手动 push
 - ghcr 包默认私有，开源需在 GitHub Packages 设置改 Public
