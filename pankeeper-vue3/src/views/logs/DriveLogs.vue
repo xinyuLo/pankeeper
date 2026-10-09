@@ -1,197 +1,220 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import * as echarts from 'echarts/core';
-import { LineChart } from 'echarts/charts';
-import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components';
-import { CanvasRenderer } from 'echarts/renderers';
-import { DRIVE_META, MAIN_ORDER } from '@/api/mock/meta';
-import { LEVEL_META, getDriveLogs, type DriveLogData, type LogLevel } from '@/api/modules/driveLogs';
-import { useThemeStore } from '@/store/theme';
-echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer]);
-const theme = useThemeStore();
-const days = ref(7);
-const loading = ref(true);
-const err = ref('');
-const data = ref<DriveLogData | null>(null);
+/* 网盘日志 —— 请求量监控。
+ * 顶部：每个网盘今日请求次数 + 档位标签（正常/偏多/频繁 → 绿/橙/红），卡片铺品牌色渐变底。
+ * 中部：echarts 折线图（**按需引入**，只打包 line/grid/tooltip/legend，不引整包）。
+ * 底部：统计口径与档位说明，补上页面下方留白。
+ * 数据源：后端仅按「日期 + 网盘」累计计数，不含请求明细。 */
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import * as echarts from 'echarts/core'
+import { LineChart } from 'echarts/charts'
+import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
+import { DRIVE_META, MAIN_ORDER } from '@/api/mock/meta'
+import { LEVEL_META, getDriveLogs, type DriveLogData, type LogLevel } from '@/api/modules/driveLogs'
+import { useThemeStore } from '@/store/theme'
+
+echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
+
+const theme = useThemeStore()
+
+const days = ref(7)
+const loading = ref(true)
+const err = ref('')
+const data = ref<DriveLogData | null>(null)
+
 async function load() {
-    loading.value = true;
-    err.value = '';
-    try {
-        data.value = await getDriveLogs(days.value);
-    }
-    catch (e: unknown) {
-        const detail = (e as {
-            response?: {
-                data?: {
-                    detail?: string;
-                };
-            };
-        })?.response?.data?.detail;
-        err.value = detail || '加载失败';
-    }
-    finally {
-        loading.value = false;
-    }
+  loading.value = true
+  err.value = ''
+  try {
+    data.value = await getDriveLogs(days.value)
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    err.value = detail || '加载失败'
+  } finally {
+    loading.value = false
+  }
 }
+
 function setDays(d: number) {
-    if (days.value === d)
-        return;
-    days.value = d;
-    load();
+  if (days.value === d) return
+  days.value = d
+  load()
 }
-onMounted(load);
+
+onMounted(load)
+
+/* ===== 展示辅助 ===== */
 function meta(drive: string) {
-    return DRIVE_META[drive as keyof typeof DRIVE_META] || { name: drive, full: drive, color: '#8c8c8c' };
+  return DRIVE_META[drive as keyof typeof DRIVE_META] || { name: drive, full: drive, color: '#8c8c8c' }
 }
 function levelMeta(l: LogLevel) {
-    return LEVEL_META[l] || LEVEL_META.ok;
+  return LEVEL_META[l] || LEVEL_META.ok
 }
 function shortDate(d: string) {
-    return d.slice(5).replace('-', '/');
+  return d.slice(5).replace('-', '/')
 }
+
+/** #rrggbb → rgba(...)：把品牌色兑成浅底/渐变用 */
 function tint(hex: string, alpha: number) {
-    const n = parseInt(hex.replace('#', ''), 16);
-    const r = (n >> 16) & 255;
-    const g = (n >> 8) & 255;
-    const b = n & 255;
-    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  const n = parseInt(hex.replace('#', ''), 16)
+  const r = (n >> 16) & 255
+  const g = (n >> 8) & 255
+  const b = n & 255
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
+/** 卡片底色：品牌色浅渐变，让三张卡各有身份而不是一律白底 */
 function cardStyle(drive: string) {
-    const c = meta(drive).color;
-    return {
-        background: `linear-gradient(135deg, ${tint(c, 0.12)}, ${tint(c, 0.03)} 62%, transparent)`,
-        borderColor: tint(c, 0.2),
-    };
+  const c = meta(drive).color
+  return {
+    background: `linear-gradient(135deg, ${tint(c, 0.12)}, ${tint(c, 0.03)} 62%, transparent)`,
+    borderColor: tint(c, 0.2),
+  }
 }
-const chartEl = ref<HTMLDivElement | null>(null);
-let chart: ReturnType<typeof echarts.init> | null = null;
+
+/* ===== 折线图 ===== */
+const chartEl = ref<HTMLDivElement | null>(null)
+let chart: ReturnType<typeof echarts.init> | null = null
+
 function cssVar(name: string, fallback: string) {
-    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-    return v || fallback;
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  return v || fallback
 }
+
 function buildOption() {
-    const trend = data.value?.trend || [];
-    const axisColor = cssVar('--text3', '#8c8c8c');
-    const splitColor = cssVar('--split', 'rgba(0,0,0,0.06)');
-    const cardBg = cssVar('--card', '#ffffff');
-    const textColor = cssVar('--text2', '#4b5563');
-    const series = MAIN_ORDER.map((t) => ({
-        name: DRIVE_META[t]?.full || t,
-        color: DRIVE_META[t]?.color || '#8c8c8c',
-        values: trend.map((d) => d.by[t] || 0),
-    })).filter((s) => s.values.some((v) => v > 0));
-    return {
-        animationDuration: 420,
-        grid: { left: 4, right: 18, top: 40, bottom: 2, containLabel: true },
-        tooltip: {
-            trigger: 'axis',
-            backgroundColor: cardBg,
-            borderColor: splitColor,
-            textStyle: { color: textColor, fontSize: 12 },
-            axisPointer: { type: 'line', lineStyle: { color: splitColor } },
-            valueFormatter: (v: number) => `${v} 次`,
+  const trend = data.value?.trend || []
+  const axisColor = cssVar('--text3', '#8c8c8c')
+  const splitColor = cssVar('--split', 'rgba(0,0,0,0.06)')
+  const cardBg = cssVar('--card', '#ffffff')
+  const textColor = cssVar('--text2', '#4b5563')
+
+  // 只画有数据的网盘：全程为 0 的（如未配置的 115）不占图例
+  const series = MAIN_ORDER.map((t) => ({
+    name: DRIVE_META[t]?.full || t,
+    color: DRIVE_META[t]?.color || '#8c8c8c',
+    values: trend.map((d) => d.by[t] || 0),
+  })).filter((s) => s.values.some((v) => v > 0))
+
+  return {
+    animationDuration: 420,
+    grid: { left: 4, right: 18, top: 40, bottom: 2, containLabel: true },
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: cardBg,
+      borderColor: splitColor,
+      textStyle: { color: textColor, fontSize: 12 },
+      axisPointer: { type: 'line', lineStyle: { color: splitColor } },
+      valueFormatter: (v: number) => `${v} 次`,
+    },
+    legend: {
+      top: 0,
+      right: 0,
+      icon: 'roundRect',
+      itemWidth: 10,
+      itemHeight: 10,
+      itemGap: 14,
+      textStyle: { color: axisColor, fontSize: 12 },
+    },
+    xAxis: {
+      type: 'category',
+      boundaryGap: false,
+      data: trend.map((d) => shortDate(d.date)),
+      axisLine: { lineStyle: { color: splitColor } },
+      axisTick: { show: false },
+      axisLabel: { color: axisColor, fontSize: 11.5 },
+    },
+    yAxis: {
+      type: 'value',
+      minInterval: 1,
+      splitLine: { lineStyle: { color: splitColor } },
+      axisLabel: { color: axisColor, fontSize: 11.5 },
+    },
+    series: series.map((s) => ({
+      name: s.name,
+      type: 'line',
+      smooth: 0.35,
+      symbol: 'circle',
+      symbolSize: 6,
+      // 30/90 天点位太密会糊成一条线，只在短周期画点
+      showSymbol: trend.length <= 31,
+      data: s.values,
+      itemStyle: { color: s.color },
+      lineStyle: { width: 2.5, color: s.color },
+      areaStyle: {
+        color: {
+          type: 'linear',
+          x: 0,
+          y: 0,
+          x2: 0,
+          y2: 1,
+          colorStops: [
+            { offset: 0, color: tint(s.color, 0.26) },
+            { offset: 1, color: tint(s.color, 0.01) },
+          ],
         },
-        legend: {
-            top: 0,
-            right: 0,
-            icon: 'roundRect',
-            itemWidth: 10,
-            itemHeight: 10,
-            itemGap: 14,
-            textStyle: { color: axisColor, fontSize: 12 },
-        },
-        xAxis: {
-            type: 'category',
-            boundaryGap: false,
-            data: trend.map((d) => shortDate(d.date)),
-            axisLine: { lineStyle: { color: splitColor } },
-            axisTick: { show: false },
-            axisLabel: { color: axisColor, fontSize: 11.5 },
-        },
-        yAxis: {
-            type: 'value',
-            minInterval: 1,
-            splitLine: { lineStyle: { color: splitColor } },
-            axisLabel: { color: axisColor, fontSize: 11.5 },
-        },
-        series: series.map((s) => ({
-            name: s.name,
-            type: 'line',
-            smooth: 0.35,
-            symbol: 'circle',
-            symbolSize: 6,
-            showSymbol: trend.length <= 31,
-            data: s.values,
-            itemStyle: { color: s.color },
-            lineStyle: { width: 2.5, color: s.color },
-            areaStyle: {
-                color: {
-                    type: 'linear',
-                    x: 0,
-                    y: 0,
-                    x2: 0,
-                    y2: 1,
-                    colorStops: [
-                        { offset: 0, color: tint(s.color, 0.26) },
-                        { offset: 1, color: tint(s.color, 0.01) },
-                    ],
-                },
-            },
-        })),
-    };
+      },
+    })),
+  }
 }
+
 function renderChart() {
-    if (!chartEl.value || !data.value)
-        return;
-    if (!chart)
-        chart = echarts.init(chartEl.value);
-    chart.setOption(buildOption(), true);
-    chart.resize();
+  if (!chartEl.value || !data.value) return
+  if (!chart) chart = echarts.init(chartEl.value)
+  chart.setOption(buildOption(), true)
+  chart.resize()
 }
+
 watch(data, async () => {
-    await nextTick();
-    renderChart();
-});
-watch(() => theme.isDark, async () => {
-    await nextTick();
-    renderChart();
-});
+  await nextTick()
+  renderChart()
+})
+// 主题切换重绘：颜色是从 CSS 变量读的，不重绘会留在旧主题
+watch(
+  () => theme.isDark,
+  async () => {
+    await nextTick()
+    renderChart()
+  },
+)
+
 function onResize() {
-    chart?.resize();
+  chart?.resize()
 }
-window.addEventListener('resize', onResize);
+window.addEventListener('resize', onResize)
+
 onBeforeUnmount(() => {
-    window.removeEventListener('resize', onResize);
-    chart?.dispose();
-    chart = null;
-});
+  window.removeEventListener('resize', onResize)
+  chart?.dispose()
+  chart = null
+})
+
+/* ===== 底部说明 ===== */
 const notes = computed(() => [
-    {
-        t: '统计口径',
-        d: '只统计 PanKeeper 自己发往网盘的请求（探活、检测连通、转存全过程）。你在网盘网页或 App 里的手动操作不计入。',
-    },
-    {
-        t: '为什么要盯这个数',
-        d: '请求过密是 Cookie 被平台判定为「非真人」的主要原因。夸克这类平台有设备指纹与频率限制，调得越勤，反而可能越快失效。',
-    },
-    {
-        t: '建议区间',
-        d: `自用场景（每天 1–3 个转存 + 一次探活）通常在 ${data.value?.thresholds.warn ?? 150} 次/天以内。越过这条线就该看看是不是任务跑重了。`,
-    },
-    {
-        t: '每日探活会跳过忙碌的网盘',
-        d: '当天已经产生过请求的网盘，探活会自动跳过——那次请求本身就是凭据有效的证明，没必要再问一遍。',
-    },
-    {
-        t: '数据保留',
-        d: `请求统计默认保留 ${data.value?.retain_days ?? 180} 天（半年），超期由每日定时任务自动清理。`,
-    },
-]);
+  {
+    t: '统计口径',
+    d: '只统计 PanKeeper 自己发往网盘的请求（探活、检测连通、转存全过程）。你在网盘网页或 App 里的手动操作不计入。',
+  },
+  {
+    t: '为什么要盯这个数',
+    d: '请求过密是 Cookie 被平台判定为「非真人」的主要原因。夸克这类平台有设备指纹与频率限制，调得越勤，反而可能越快失效。',
+  },
+  {
+    t: '建议区间',
+    d: `自用场景（每天 1–3 个转存 + 一次探活）通常在 ${data.value?.thresholds.warn ?? 150} 次/天以内。越过这条线就该看看是不是任务跑重了。`,
+  },
+  {
+    t: '每日探活会跳过忙碌的网盘',
+    d: '当天已经产生过请求的网盘，探活会自动跳过——那次请求本身就是凭据有效的证明，没必要再问一遍。',
+  },
+  {
+    t: '数据保留',
+    d: `请求统计默认保留 ${data.value?.retain_days ?? 180} 天（半年），超期由每日定时任务自动清理。`,
+  },
+])
 </script>
 
 <template>
   <div>
-    
+    <!-- 顶部：网盘请求量卡片 -->
     <div class="lg-grid">
       <div
         v-for="c in data?.today.drives || []"
@@ -210,7 +233,7 @@ const notes = computed(() => [
           <b>{{ c.count }}</b><span>次 · 今日请求</span>
         </div>
       </div>
-      
+      <!-- 骨架：数据未到时占位，避免卡片区高度跳动 -->
       <template v-if="loading && !data">
         <div v-for="i in 3" :key="'sk' + i" class="card lg-card">
           <div class="lg-hd"><span class="lg-skel" style="width: 120px"></span></div>
@@ -219,7 +242,7 @@ const notes = computed(() => [
       </template>
     </div>
 
-    
+    <!-- 趋势：折线图 -->
     <div class="card lg-chart-card">
       <div class="lg-chart-hd">
         <div>
@@ -247,7 +270,7 @@ const notes = computed(() => [
       </div>
     </div>
 
-    
+    <!-- 说明区 -->
     <div class="lg-notes">
       <div v-for="n in notes" :key="n.t" class="lg-note">
         <h4>{{ n.t }}</h4>

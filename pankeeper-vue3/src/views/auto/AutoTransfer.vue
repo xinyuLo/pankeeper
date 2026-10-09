@@ -1,188 +1,231 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
-import { useBackGuard } from '@/composables/useBackGuard';
-import { useRoute } from 'vue-router';
-import { message } from 'ant-design-vue';
-import { CaretRightOutlined, EditOutlined, MinusCircleOutlined, ProfileOutlined, FileTextOutlined, DeleteOutlined, FolderOpenOutlined, ExportOutlined, CopyOutlined, SyncOutlined, } from '@ant-design/icons-vue';
-import LogBox from '@/components/LogBox.vue';
-import PkPager from '@/components/PkPager.vue';
-import TaskModal from './TaskModal.vue';
-import RunModal from './RunModal.vue';
-import RunHistoryModal from './RunHistoryModal.vue';
-import ExclModal from './ExclModal.vue';
-import { useIsMobile } from '@/composables/useIsMobile';
-import { DRIVE_META } from '@/api/mock/meta';
-import { cronHuman, deletePaTask, getPaDetailLog, listPaTasks, retriggerTaskQms, togglePaTask, } from '@/api/modules/tasks';
-import type { MainDriveType, PaTask, QueueLogLine } from '@/types/model';
-import ShareFilesModal from './ShareFilesModal.vue';
-const route = useRoute();
-const type = computed(() => (route.params.type as MainDriveType) || 'baidu');
-const meta = computed(() => DRIVE_META[type.value]);
-const isMobile = useIsMobile();
-const tasks = ref<PaTask[]>([]);
+/* 自动转存页（/auto/:type，百度/夸克/115 三路由共用一个组件）—— 原型 parts/page-auto.html 移植。
+ * 工具条 + 任务表 8 列 + 五色行操作 + 设计说明；四个弹窗拆成独立组件：
+ * TaskModal（任务配置，含叠加的 DirModal）/ RunModal（执行监控）/ ExclModal（排除清单）。
+ * 互斥规则：开执行监控关掉其余弹窗；Esc 逐层关。排除入口在任务行（不在编辑弹窗里）。 */
+import { computed, onMounted, ref, watch } from 'vue'
+import { useBackGuard } from '@/composables/useBackGuard'
+import { useRoute } from 'vue-router'
+import { message } from 'ant-design-vue'
+import {
+  CaretRightOutlined,
+  EditOutlined,
+  MinusCircleOutlined,
+  ProfileOutlined,
+  FileTextOutlined,
+  DeleteOutlined,
+  FolderOpenOutlined,
+  ExportOutlined,
+  CopyOutlined,
+  SyncOutlined,
+} from '@ant-design/icons-vue'
+import LogBox from '@/components/LogBox.vue'
+import PkPager from '@/components/PkPager.vue'
+import TaskModal from './TaskModal.vue'
+import RunModal from './RunModal.vue'
+import RunHistoryModal from './RunHistoryModal.vue'
+import ExclModal from './ExclModal.vue'
+import { useIsMobile } from '@/composables/useIsMobile'
+import { DRIVE_META } from '@/api/mock/meta'
+import {
+  cronHuman,
+  deletePaTask,
+  getPaDetailLog,
+  listPaTasks,
+  retriggerTaskQms,
+  togglePaTask,
+} from '@/api/modules/tasks'
+import type { MainDriveType, PaTask, QueueLogLine } from '@/types/model'
+import ShareFilesModal from './ShareFilesModal.vue'
+
+const route = useRoute()
+const type = computed(() => (route.params.type as MainDriveType) || 'baidu')
+const meta = computed(() => DRIVE_META[type.value])
+/* 手机（<768px）8 列任务表换卡片列表，动作按钮一行铺开 */
+const isMobile = useIsMobile()
+
+/* ===== 任务列表：随路由参数切网盘 ===== */
+const tasks = ref<PaTask[]>([])
 async function reload() {
-    tasks.value = await listPaTasks(type.value);
+  tasks.value = await listPaTasks(type.value)
 }
-watch(type, reload);
-onMounted(reload);
-const page = ref(1);
-const size = ref(20);
-const pagedTasks = computed(() => tasks.value.slice((page.value - 1) * size.value, page.value * size.value));
-watch(type, () => (page.value = 1));
-watch(() => tasks.value.length, () => {
-    const max = Math.max(1, Math.ceil(tasks.value.length / size.value));
-    if (page.value > max)
-        page.value = max;
-});
+watch(type, reload)
+onMounted(reload)
+
+/* ===== 分页（内存切片；切网盘回第 1 页） ===== */
+const page = ref(1)
+const size = ref(20)
+const pagedTasks = computed(() => tasks.value.slice((page.value - 1) * size.value, page.value * size.value))
+watch(type, () => (page.value = 1))
+watch(
+  () => tasks.value.length,
+  () => {
+    const max = Math.max(1, Math.ceil(tasks.value.length / size.value))
+    if (page.value > max) page.value = max
+  },
+)
+
+/* ===== 表格展示助手 ===== */
 function linkTrunc(url: string): string {
-    return url.length > 18 ? url.slice(0, 18) + '…' : url;
+  // 18 字符封顶：链接列只要够认出是哪条分享即可，完整 URL 在 title 与「复制」里
+  return url.length > 18 ? url.slice(0, 18) + '…' : url
 }
+/* 最近结果压缩显示：后端格式是「新增 N / 跳过 N / 失败 N」，跳过为 0 时是纯噪音，
+   失败必须留（非 0 才显示）——压到一行「新增 106」量级，整格一行放得下（用户要求） */
 function compactResult(s: string): string {
-    const m = /新增\s*(\d+)\s*\/\s*跳过\s*(\d+)\s*\/\s*失败\s*(\d+)/.exec(s || '');
-    if (!m)
-        return s || '';
-    const fail = Number(m[3]);
-    return fail ? `新增 ${m[1]} / 失败 ${m[3]}` : `新增 ${m[1]}`;
+  const m = /新增\s*(\d+)\s*\/\s*跳过\s*(\d+)\s*\/\s*失败\s*(\d+)/.exec(s || '')
+  if (!m) return s || ''
+  const fail = Number(m[3])
+  return fail ? `新增 ${m[1]} / 失败 ${m[3]}` : `新增 ${m[1]}`
 }
 function cronText(cron: string): string {
-    return cronHuman(cron, '仅手动');
+  return cronHuman(cron, '仅手动')
 }
 const STATUS_TEXT: Record<PaTask['last_status'], string> = {
-    success: '成功',
-    partial: '部分失败',
-    fail: '失败',
-    running: '执行中',
-    never: '从未执行',
-};
+  success: '成功',
+  partial: '部分失败',
+  fail: '失败',
+  running: '执行中',
+  never: '从未执行',
+}
+
+/* ===== 行操作 ===== */
 async function onToggle(t: PaTask) {
-    const on = await togglePaTask(t.id);
-    message.success(on ? '已启用任务' : '已暂停任务');
+  const on = await togglePaTask(t.id)
+  message.success(on ? '已启用任务' : '已暂停任务')
 }
-const sfOpen = ref(false);
-const sfTask = ref<PaTask | null>(null);
+
+/* ===== 分享链接三按钮：查看（实时文件树）/ 跳转 / 复制 ===== */
+const sfOpen = ref(false)
+const sfTask = ref<PaTask | null>(null)
+
 function onViewFiles(t: PaTask) {
-    sfTask.value = t;
-    sfOpen.value = true;
+  sfTask.value = t
+  sfOpen.value = true
 }
+
 function onJump(t: PaTask) {
-    if (!t.share_url) {
-        message.warning('该任务没有分享链接');
-        return;
-    }
-    window.open(t.share_url, '_blank');
+  if (!t.share_url) {
+    message.warning('该任务没有分享链接')
+    return
+  }
+  window.open(t.share_url, '_blank')
 }
+
 async function onCopy(t: PaTask) {
-    try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-            await navigator.clipboard.writeText(t.share_url);
-        }
-        else {
-            const ta = document.createElement('textarea');
-            ta.value = t.share_url;
-            document.body.appendChild(ta);
-            ta.select();
-            document.execCommand('copy');
-            document.body.removeChild(ta);
-        }
-        message.success('已复制分享链接');
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(t.share_url)
+    } else {
+      // 非安全上下文（http 部署）兜底：临时 textarea + execCommand
+      const ta = document.createElement('textarea')
+      ta.value = t.share_url
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
     }
-    catch {
-        message.error('复制失败');
-    }
+    message.success('已复制分享链接')
+  } catch {
+    message.error('复制失败')
+  }
 }
+
 async function onDel(t: PaTask) {
-    await deletePaTask(t.id);
-    message.success(`已删除任务「${t.name}」`);
-    await reload();
+  await deletePaTask(t.id)
+  message.success(`已删除任务「${t.name}」`)
+  await reload()
 }
-const reQmsId = ref<number | null>(null);
+
+/* ===== 重新触发 QMS：QMS 侧刮失败后手动重刷（联动目标=任务配置优先、转存目录兜底；不动任务配置） ===== */
+const reQmsId = ref<number | null>(null)
 async function onRetriggerQms(t: PaTask) {
-    if (reQmsId.value)
-        return;
-    reQmsId.value = t.id;
-    try {
-        const r = await retriggerTaskQms(t.id);
-        if (r.ok)
-            message.success(r.message || '已触发 QMS 刮削');
-        else
-            message.warning(r.message || '触发失败');
-    }
-    catch (e) {
-        const detail = (e as {
-            response?: {
-                data?: {
-                    detail?: string;
-                };
-            };
-        })?.response?.data?.detail;
-        message.error(detail || '触发失败，详见服务端日志');
-    }
-    finally {
-        reQmsId.value = null;
-    }
+  if (reQmsId.value) return // 防连点
+  reQmsId.value = t.id
+  try {
+    const r = await retriggerTaskQms(t.id)
+    if (r.ok) message.success(r.message || '已触发 QMS 刮削')
+    else message.warning(r.message || '触发失败')
+  } catch (e) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '触发失败，详见服务端日志')
+  } finally {
+    reQmsId.value = null
+  }
 }
+
 function onCheckAll() {
-    message.info(`已开始检查「${meta.value.full}」全部任务`);
+  message.info(`已开始检查「${meta.value.full}」全部任务`)
 }
-const taskOpen = ref(false);
-useBackGuard(taskOpen);
-const editing = ref<PaTask | null>(null);
+
+/* ===== 任务弹窗（新增/编辑） ===== */
+const taskOpen = ref(false)
+useBackGuard(taskOpen)
+const editing = ref<PaTask | null>(null)
 function openAdd() {
-    editing.value = null;
-    taskOpen.value = true;
+  editing.value = null
+  taskOpen.value = true
 }
 function openEdit(t: PaTask) {
-    editing.value = t;
-    taskOpen.value = true;
+  editing.value = t
+  taskOpen.value = true
 }
 function onSaved() {
-    reload();
+  reload() // toast 在弹窗里发过；这里只刷表
 }
-const runOpen = ref(false);
-useBackGuard(runOpen);
-const runTask = ref<PaTask | null>(null);
+
+/* ===== 执行（paRun）：开监控（互斥：关掉其余弹窗）。排除清单缓存由后端转存时自动刷新 ===== */
+const runOpen = ref(false)
+useBackGuard(runOpen)
+const runTask = ref<PaTask | null>(null)
 function openRun(t: PaTask) {
-    runTask.value = t;
-    taskOpen.value = false;
-    exclOpen.value = false;
-    runOpen.value = true;
+  runTask.value = t
+  taskOpen.value = false
+  exclOpen.value = false
+  runOpen.value = true
 }
 function onRunFinished() {
-    reload();
+  reload() // last_run/last_status/last_result 已回写，刷新让表格变色
 }
-const exclOpen = ref(false);
-useBackGuard(exclOpen);
-const exclTask = ref<PaTask | null>(null);
+
+/* ===== 排除清单：行内直开（不经过编辑弹窗） ===== */
+const exclOpen = ref(false)
+useBackGuard(exclOpen)
+const exclTask = ref<PaTask | null>(null)
 function openExcl(t: PaTask) {
-    exclTask.value = t;
-    exclOpen.value = true;
+  exclTask.value = t
+  exclOpen.value = true
 }
 function onExclCommitted() {
-    reload();
+  reload()
 }
-const detailOpen = ref(false);
-useBackGuard(detailOpen);
-const detailTask = ref<PaTask | null>(null);
-const detailLog = ref<QueueLogLine[]>([]);
+
+/* ===== 任务详情抽屉（原型 openTaskDetail：快照字段 + 执行日志） ===== */
+const detailOpen = ref(false)
+useBackGuard(detailOpen)
+const detailTask = ref<PaTask | null>(null)
+const detailLog = ref<QueueLogLine[]>([])
 async function openDetail(t: PaTask) {
-    detailTask.value = t;
-    detailOpen.value = true;
-    detailLog.value = await getPaDetailLog();
+  detailTask.value = t
+  detailOpen.value = true
+  detailLog.value = await getPaDetailLog()
 }
-const runHistOpen = ref(false);
-const runHistTask = ref<PaTask | null>(null);
+
+/* ===== 转存日志（RunHistory 卡片列表） ===== */
+const runHistOpen = ref(false)
+const runHistTask = ref<PaTask | null>(null)
 function openRunHistory(t: PaTask) {
-    runHistTask.value = t;
-    runHistOpen.value = true;
+  runHistTask.value = t
+  runHistOpen.value = true
 }
 function detailCron(c: string): string {
-    return cronHuman(c, '未开启定时');
+  return cronHuman(c, '未开启定时')
 }
 </script>
 
 <template>
   <div class="pa-wrap">
-    
+    <!-- 工具条 -->
     <div class="pa-toolbar">
       <div class="pa-left">
         <h2 class="pa-title">{{ meta.full }} · 自动转存</h2>
@@ -194,9 +237,9 @@ function detailCron(c: string): string {
       </div>
     </div>
 
-    
+    <!-- 任务表：PC 表格 / 手机卡片列表互斥 -->
     <div class="pa-card">
-      
+      <!-- 横向滚动兜底：表格自带 min-width，窗口过窄时滚列而不是毁列宽 -->
       <div v-if="!isMobile" class="pa-tablewrap">
       <table class="pa-table">
         <thead>
@@ -285,7 +328,7 @@ function detailCron(c: string): string {
       </div>
       <PkPager v-if="!isMobile" v-model:current="page" v-model:pageSize="size" :total="tasks.length" />
 
-      
+      <!-- 手机端：一任务一卡（名称+开关 / 状态+定时 / 网盘链接+提取码+复制 / 执行信息 / 主操作+次操作字链） -->
       <div v-if="isMobile" class="pa-cards">
         <div v-for="t in pagedTasks" :key="t.id" class="pa-carditem" :style="{ borderLeft: '3px solid ' + meta.color }">
           <div class="pa-c-top">
@@ -305,7 +348,7 @@ function detailCron(c: string): string {
             <span class="small muted">{{ cronText(t.cron) }}</span>
           </div>
           <div class="pa-c-row">
-            
+            <!-- 网盘链接本体：点击直接打开分享（替代原「跳转」按钮） -->
             <a class="pa-url" :href="t.share_url" target="_blank" rel="noopener" :title="t.share_url">{{ linkTrunc(t.share_url) }}</a>
             <span v-if="t.share_code" class="pa-code">{{ t.share_code }}</span>
             <button class="pa-op" @click="onCopy(t)">复制</button>
@@ -347,7 +390,7 @@ function detailCron(c: string): string {
 
 
 
-    
+    <!-- 任务弹窗（内含叠加的目录选择弹窗） -->
     <TaskModal
       v-model:open="taskOpen"
       :type="type"
@@ -356,15 +399,15 @@ function detailCron(c: string): string {
       @saved="onSaved"
     />
 
-    
+    <!-- 执行监控：互斥，开它关其余 -->
     <RunModal v-model:open="runOpen" :task="runTask" @finished="onRunFinished" />
-    
+    <!-- 转存日志：历史执行卡片 + 详情 -->
     <RunHistoryModal v-model:open="runHistOpen" :task="runHistTask" />
 
-    
+    <!-- 排除清单：可叠在任务弹窗上（z-index 1002） -->
     <ExclModal v-model:open="exclOpen" :task="exclTask" @committed="onExclCommitted" />
 
-    
+    <!-- 任务详情抽屉 -->
     <a-drawer v-model:open="detailOpen" :width="620" :title="`任务详情 · ${detailTask?.name || ''}`">
       <template v-if="detailTask">
         <dl class="pa-snap">
@@ -407,7 +450,7 @@ function detailCron(c: string): string {
       </template>
     </a-drawer>
   </div>
-  
+  <!-- 查看分享内容：实时文件树 -->
   <ShareFilesModal v-model:open="sfOpen" :task-id="sfTask?.id ?? null" :task-name="sfTask?.name || ''" />
 </template>
 

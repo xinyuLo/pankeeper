@@ -1,19 +1,29 @@
 <script setup lang="ts">
-import { reactive, watch } from 'vue';
-import { message } from 'ant-design-vue';
-import { pkQueueCfgGet, pkQueueCfgSet } from '@/queue/engine';
-import type { QueueCfg } from '@/types/model';
-const form = reactive<QueueCfg>({ ...pkQueueCfgGet() });
-let toastTimer: number | undefined;
+/* =====================================================================
+ * 队列配置页 —— 原型 parts/page-queuecfg.html（cq- 前缀）的 Vue 移植。
+ * 读写直连队列引擎：pkQueueCfgGet/pkQueueCfgSet（localStorage `pkq_cfg`），
+ * 改完即时生效——正在执行的任务不受影响，排队任务被提上来时才读最新配置。
+ * 卡底摘要条实时汇总当前节奏，改任意一项立即重算。
+ * ===================================================================== */
+import { reactive, watch } from 'vue'
+import { message } from 'ant-design-vue'
+import { pkQueueCfgGet, pkQueueCfgSet } from '@/queue/engine'
+import type { QueueCfg } from '@/types/model'
+
+/* ===== 四项配置：初始值从引擎取一次，此后本地表单为准（引擎镜像 cfgView 供别处渲染用） ===== */
+const form = reactive<QueueCfg>({ ...pkQueueCfgGet() })
+
+/* 任意一项变化 → 夹紧合法范围 → 写回引擎（即时生效）；提示防抖，数字框连点不刷屏 */
+let toastTimer: number | undefined
 watch(form, (v) => {
-    v.threads = Math.min(4, Math.max(1, Math.round(Number(v.threads) || 1)));
-    v.gap = Math.max(0, Math.round(Number(v.gap) || 0));
-    v.qms = Math.max(0, Math.round(Number(v.qms) || 0));
-    v.strm = Math.max(0, Math.round(Number(v.strm) || 0));
-    pkQueueCfgSet({ ...v });
-    window.clearTimeout(toastTimer);
-    toastTimer = window.setTimeout(() => message.success('队列配置已更新，对后续任务生效'), 400);
-});
+  v.threads = Math.min(4, Math.max(1, Math.round(Number(v.threads) || 1)))
+  v.gap = Math.max(0, Math.round(Number(v.gap) || 0))
+  v.qms = Math.max(0, Math.round(Number(v.qms) || 0))
+  v.strm = Math.max(0, Math.round(Number(v.strm) || 0))
+  pkQueueCfgSet({ ...v })
+  window.clearTimeout(toastTimer)
+  toastTimer = window.setTimeout(() => message.success('队列配置已更新，对后续任务生效'), 400)
+})
 </script>
 
 <template>
@@ -56,10 +66,27 @@ watch(form, (v) => {
           <span class="muted cq-unit">秒</span>
         </div>
       </div>
+      <div class="formrow">
+        <label>QMS/STRM 反转</label>
+        <div class="ctl">
+          <a-switch v-model:checked="form.reverse" />
+        </div>
+      </div>
+      <div class="cq-reverse-desc">
+        开启后触发顺序<b>反转</b>：转存完成不再「先 QMS 刮削、等刮完再生成 STRM」，而是
+        <b>先生成 STRM、再触发 QMS 刮削</b>（不等刮削完成，STRM 扫的是转存原目录）。
+        反转开启时，联动 QMS 的地方必须显式选择 STRM 同步路径（转存配置 / 转存弹窗 / 自动任务）；
+        搜索历史里同时触发两者时也是 STRM 先行、QMS 隔 {{ form.strm }}s 跟上。
+      </div>
 
-      
+      <!-- 摘要条：模板直接绑表单值，改任意一项立即重算 -->
       <div class="cq-sum">
-        按当前配置：单任务在转存完成后 <b>{{ form.qms }}s</b> 触发 QMS、QMS 完成后 <b>{{ form.strm }}s</b> 触发 STRM，任务之间再隔 <b>{{ form.gap }}s</b>；线程数 <b>{{ form.threads }}</b>，同一时刻最多 {{ form.threads }} 个任务在跑。
+        <template v-if="form.reverse">
+          <b>反转已开启</b>：单任务在转存完成后 <b>{{ form.qms }}s</b> 先生成 STRM、再隔 <b>{{ form.strm }}s</b> 触发 QMS 刮削（任务之间仍隔 <b>{{ form.gap }}s</b>，线程数 <b>{{ form.threads }}</b>）。
+        </template>
+        <template v-else>
+          按当前配置：单任务在转存完成后 <b>{{ form.qms }}s</b> 触发 QMS、QMS 完成后 <b>{{ form.strm }}s</b> 触发 STRM，任务之间再隔 <b>{{ form.gap }}s</b>；线程数 <b>{{ form.threads }}</b>，同一时刻最多 {{ form.threads }} 个任务在跑。
+        </template>
       </div>
     </div>
 
@@ -115,5 +142,20 @@ watch(form, (v) => {
 }
 .cq-unit {
   margin-left: 8px;
+}
+/* 反转说明：紧贴开关行下方的浅色小字（cq-reverse-desc） */
+.cq-reverse-desc {
+  margin: 2px 22px 12px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  border: 1px dashed var(--border);
+  font-size: 12.5px;
+  color: var(--text2);
+  line-height: 1.7;
+}
+.cq-reverse-desc b {
+  color: var(--primary);
+  font-weight: 500;
 }
 </style>

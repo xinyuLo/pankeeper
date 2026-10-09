@@ -1,79 +1,85 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
-import type { QueueTask } from '@/types/model';
-import { DRIVE_META } from '@/api/mock/meta';
-import { queueView, pkQueue, setOnNewTaskStart, isAutoQueued } from '@/queue/engine';
-const tasks = computed(() => queueView.tasks.filter((t) => !isAutoQueued(t)));
-const activeCount = computed(() => tasks.value.filter((t) => t.status === 'wait' || t.status === 'run').length);
-defineExpose({ activeCount });
+/* 转存队列看板（记录页「转存队列」分段）—— 原型 queue-core.js pqRow/renderPanel 的组件化移植。
+ * 日志单选：同一时刻只展开一条 = 运行中的那条；没有运行中就是最新完成的。 */
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import type { QueueTask } from '@/types/model'
+import { DRIVE_META } from '@/api/mock/meta'
+import { queueView, pkQueue, setOnNewTaskStart, isAutoQueued } from '@/queue/engine'
+
+/* 只列手动（搜索转存）任务：自动转存虽然后端同队列跑，但前台归「转存历史」/任务内转存日志 */
+const tasks = computed(() => queueView.tasks.filter((t) => !isAutoQueued(t)))
+const activeCount = computed(() => tasks.value.filter((t) => t.status === 'wait' || t.status === 'run').length)
+
+defineExpose({ activeCount })
+
 function metaOf(t: QueueTask) {
-    return DRIVE_META[t.type] || { name: t.type, color: '#1677ff' };
+  return DRIVE_META[t.type] || { name: t.type, color: '#1677ff' }
 }
-function statusOf(t: QueueTask): {
-    cls: string;
-    txt: string;
-} {
-    if (t.status === 'wait')
-        return { cls: 'pkq-st-wait', txt: '排队中' };
-    if (t.status === 'done')
-        return { cls: 'pkq-st-done', txt: '已完成' };
-    if (t.status === 'warn')
-        return { cls: 'pkq-st-warn', txt: '链接已失效' };
-    if (t.status === 'fail')
-        return { cls: 'pkq-st-fail', txt: '失败' };
-    const m: Record<string, string> = {
-        transfer: '转存中',
-        waitqms: '转存完成 · 待 QMS',
-        qms: 'QMS 刮削中',
-        waitstrm: 'QMS 完成 · 待 STRM',
-        strm: 'STRM 生成中',
-    };
-    return { cls: 'pkq-st-run', txt: m[t.phase || 'transfer'] || '转存中' };
+
+function statusOf(t: QueueTask): { cls: string; txt: string } {
+  if (t.status === 'wait') return { cls: 'pkq-st-wait', txt: '排队中' }
+  if (t.status === 'done') return { cls: 'pkq-st-done', txt: '已完成' }
+  if (t.status === 'warn') return { cls: 'pkq-st-warn', txt: '链接已失效' }
+  if (t.status === 'fail') return { cls: 'pkq-st-fail', txt: '失败' }
+  const m: Record<string, string> = {
+    transfer: '转存中',
+    waitqms: '转存完成 · 待 QMS',
+    qms: 'QMS 刮削中',
+    waitstrm: 'QMS 完成 · 待 STRM',
+    strm: 'STRM 生成中',
+  }
+  return { cls: 'pkq-st-run', txt: m[t.phase || 'transfer'] || '转存中' }
 }
+
+// 焦点行 = 正在运行的；没有运行中就是最新结束的（完成/失效/失败都算）
 const focusId = computed(() => {
-    let latestRun = 0;
-    let latestDone = 0;
-    for (const t of tasks.value) {
-        if (t.status === 'run' && t.id > latestRun)
-            latestRun = t.id;
-        if (['done', 'warn', 'fail'].includes(t.status) && t.id > latestDone)
-            latestDone = t.id;
-    }
-    return latestRun || latestDone;
-});
-const pinnedId = ref<number | null>(null);
-const COLLAPSED = -1;
+  let latestRun = 0
+  let latestDone = 0
+  for (const t of tasks.value) {
+    if (t.status === 'run' && t.id > latestRun) latestRun = t.id
+    if (['done', 'warn', 'fail'].includes(t.status) && t.id > latestDone) latestDone = t.id
+  }
+  return latestRun || latestDone
+})
+
+/* 详情按钮：未展开的行可手动展开看日志（钉住）；「收起」= 全部收起（不回自动跟随，
+ * 否则焦点行会立刻再展开，收了个寂寞）。三态：null=自动跟随 / -1=全收起 / id=钉住该条。
+ * 新任务开始时回到自动跟随（引擎回调）。 */
+const pinnedId = ref<number | null>(null)
+const COLLAPSED = -1
 setOnNewTaskStart(() => {
-    pinnedId.value = null;
-});
-const isOpen = (t: QueueTask) => (pinnedId.value === COLLAPSED ? false : pinnedId.value !== null ? pinnedId.value === t.id : t.id === focusId.value);
+  pinnedId.value = null
+})
+const isOpen = (t: QueueTask) => (pinnedId.value === COLLAPSED ? false : pinnedId.value !== null ? pinnedId.value === t.id : t.id === focusId.value)
 function toggleDetail(t: QueueTask) {
-    pinnedId.value = isOpen(t) ? COLLAPSED : t.id;
+  pinnedId.value = isOpen(t) ? COLLAPSED : t.id
 }
-const detailText = (t: QueueTask): string => (isOpen(t) ? '收起' : '详情');
-const reversed = computed(() => tasks.value.slice().reverse());
-const logRefs = ref(new Map<number, HTMLElement>());
+const detailText = (t: QueueTask): string => (isOpen(t) ? '收起' : '详情')
+
+const reversed = computed(() => tasks.value.slice().reverse())
+
+// 转存中的任务日志跟随滚动到底
+const logRefs = ref(new Map<number, HTMLElement>())
 function setLogRef(t: QueueTask, el: any) {
-    if (el)
-        logRefs.value.set(t.id, el as HTMLElement);
-    else
-        logRefs.value.delete(t.id);
+  if (el) logRefs.value.set(t.id, el as HTMLElement)
+  else logRefs.value.delete(t.id)
 }
-let timer = 0;
+let timer = 0
 onMounted(() => {
-    timer = window.setInterval(() => {
-        for (const t of tasks.value) {
-            if (t.status !== 'run')
-                continue;
-            const el = logRefs.value.get(t.id);
-            if (el && el.style.display !== 'none')
-                el.scrollTop = el.scrollHeight;
-        }
-    }, 600);
-});
-onUnmounted(() => clearInterval(timer));
+  timer = window.setInterval(() => {
+    for (const t of tasks.value) {
+      if (t.status !== 'run') continue
+      const el = logRefs.value.get(t.id)
+      if (el && el.style.display !== 'none') el.scrollTop = el.scrollHeight
+    }
+  }, 600)
+})
+onUnmounted(() => clearInterval(timer))
+
+// 供父组件/其他页面读取当前排队数
 pkQueue.onChange(() => {
-});
+  /* queueView 是响应式镜像，这里无需手动同步；保留订阅以维持引擎监听链 */
+})
 </script>
 
 <template>

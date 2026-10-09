@@ -1,100 +1,114 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
-import ClearHistoryButton, { type ClearRange } from '@/components/ClearHistoryButton.vue';
-import { message } from 'ant-design-vue';
-import { ReloadOutlined } from '@ant-design/icons-vue';
-import PkPager from '@/components/PkPager.vue';
-import RunDetailModal from './RunDetailModal.vue';
-import { DRIVE_META } from '@/api/mock/meta';
-import { listPaRuns, listPaTasks, clearRuns, type PaRunListItem } from '@/api/modules/tasks';
-import { useIsMobile } from '@/composables/useIsMobile';
-import type { MainDriveType, PaTask } from '@/types/model';
-const isMobile = useIsMobile();
-const tasks = ref<PaTask[]>([]);
+/* 转存历史页（侧边栏：自动转存 → 转存历史）
+ * 全任务视角的自动转存执行历史：筛选（任务 / 网盘 / 状态 / 关键词）+ 分页，
+ * 行上「详情」开共用 RunDetailModal。数据源 GET /pa/runs（与单任务「转存日志」同库同形）。
+ * 与「转存记录」页刻意分开：那边只展示手动查询转存。 */
+import { computed, onMounted, ref, watch } from 'vue'
+import ClearHistoryButton, { type ClearRange } from '@/components/ClearHistoryButton.vue'
+import { message } from 'ant-design-vue'
+import { ReloadOutlined } from '@ant-design/icons-vue'
+import PkPager from '@/components/PkPager.vue'
+import RunDetailModal from './RunDetailModal.vue'
+import { DRIVE_META } from '@/api/mock/meta'
+import { listPaRuns, listPaTasks, clearRuns, type PaRunListItem } from '@/api/modules/tasks'
+import { useIsMobile } from '@/composables/useIsMobile'
+import type { MainDriveType, PaTask } from '@/types/model'
+
+const isMobile = useIsMobile()
+
+/* ===== 筛选 ===== */
+const tasks = ref<PaTask[]>([])
 const taskOpts = computed(() => [
-    { value: 0, label: '全部任务' },
-    ...tasks.value.map((t) => ({ value: t.id, label: `${t.name}（${DRIVE_META[t.type].name}）` })),
-]);
-const fTask = ref(0);
-const fType = ref('');
-const fStatus = ref('');
-const kw = ref('');
+  { value: 0, label: '全部任务' },
+  ...tasks.value.map((t) => ({ value: t.id, label: `${t.name}（${DRIVE_META[t.type].name}）` })),
+])
+const fTask = ref(0)
+const fType = ref('')
+const fStatus = ref('')
+const kw = ref('')
+
 const TYPE_OPTS = [
-    { value: '', label: '全部网盘' },
-    { value: 'baidu', label: '百度网盘' },
-    { value: 'quark', label: '夸克网盘' },
-    { value: '115', label: '115 网盘' },
-];
+  { value: '', label: '全部网盘' },
+  { value: 'baidu', label: '百度网盘' },
+  { value: 'quark', label: '夸克网盘' },
+  { value: '115', label: '115 网盘' },
+]
 const STATUS_OPTS = [
-    { value: '', label: '全部状态' },
-    { value: 'success', label: '成功' },
-    { value: 'fail', label: '失败' },
-];
-const rows = ref<PaRunListItem[]>([]);
-const total = ref(0);
-const loading = ref(false);
-const page = ref(1);
-const size = ref(20);
+  { value: '', label: '全部状态' },
+  { value: 'success', label: '成功' },
+  { value: 'fail', label: '失败' },
+]
+
+const rows = ref<PaRunListItem[]>([])
+const total = ref(0)
+const loading = ref(false)
+const page = ref(1)
+const size = ref(20)
+
 async function load() {
-    loading.value = true;
-    try {
-        const r = await listPaRuns({
-            task_id: fTask.value || null,
-            type: fType.value,
-            status: fStatus.value,
-            keyword: kw.value,
-            page: page.value,
-            page_size: size.value,
-        });
-        rows.value = r.items;
-        total.value = r.total;
-    }
-    catch {
-        message.error('转存历史加载失败');
-    }
-    finally {
-        loading.value = false;
-    }
+  loading.value = true
+  try {
+    const r = await listPaRuns({
+      task_id: fTask.value || null,
+      type: fType.value,
+      status: fStatus.value,
+      keyword: kw.value,
+      page: page.value,
+      page_size: size.value,
+    })
+    rows.value = r.items
+    total.value = r.total
+  } catch {
+    message.error('转存历史加载失败')
+  } finally {
+    loading.value = false
+  }
 }
+
+/* 筛选/每页变化回第一页（分页参数变了也重拉） */
 watch([fTask, fType, fStatus, kw, size], () => {
-    page.value = 1;
-    load();
-});
-watch(page, load);
+  page.value = 1
+  load()
+})
+watch(page, load)
+
 onMounted(async () => {
-    try {
-        tasks.value = await listPaTasks();
-    }
-    catch {
-    }
-    load();
-});
-const detailOpen = ref(false);
-const detailId = ref<number | null>(null);
+  try {
+    tasks.value = await listPaTasks()
+  } catch {
+    /* 任务下拉失败不影响历史列表 */
+  }
+  load()
+})
+
+/* ===== 详情 ===== */
+const detailOpen = ref(false)
+const detailId = ref<number | null>(null)
 function openDetail(id: number) {
-    detailId.value = id;
-    detailOpen.value = true;
+  detailId.value = id
+  detailOpen.value = true
 }
+
+/* ===== 展示助手 ===== */
 function metaOf(t: string) {
-    return DRIVE_META[(t as MainDriveType)] || DRIVE_META.baidu;
+  return DRIVE_META[(t as MainDriveType)] || DRIVE_META.baidu
 }
 function durTxt(s: number): string {
-    if (!s)
-        return '—';
-    if (s < 60)
-        return `${s} 秒`;
-    return `${Math.floor(s / 60)} 分 ${s % 60} 秒`;
+  if (!s) return '—'
+  if (s < 60) return `${s} 秒`
+  return `${Math.floor(s / 60)} 分 ${s % 60} 秒`
 }
+/** 清空转存历史（下拉选范围） */
 async function onClear(range: ClearRange) {
-    let before = '';
-    if (range !== 'all') {
-        const d = new Date();
-        d.setMonth(d.getMonth() - { '1m': 1, '3m': 3, '6m': 6 }[range]);
-        before = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} 00:00:00`;
-    }
-    const n = await clearRuns(before);
-    message.success(n > 0 ? `已清空 ${n} 条执行记录` : '没有符合条件的记录');
-    await load();
+  let before = ''
+  if (range !== 'all') {
+    const d = new Date()
+    d.setMonth(d.getMonth() - { '1m': 1, '3m': 3, '6m': 6 }[range])
+    before = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} 00:00:00`
+  }
+  const n = await clearRuns(before)
+  message.success(n > 0 ? `已清空 ${n} 条执行记录` : '没有符合条件的记录')
+  await load()
 }
 </script>
 
@@ -160,7 +174,7 @@ async function onClear(range: ClearRange) {
         </tbody>
       </table>
 
-      
+      <!-- 手机端：一次执行一张卡，点卡片看详情 -->
       <div v-else class="hr-cards">
         <div
           v-for="r in rows"

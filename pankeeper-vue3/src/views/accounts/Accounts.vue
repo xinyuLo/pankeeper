@@ -1,409 +1,403 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
-import { useBackGuard } from '@/composables/useBackGuard';
-import { message } from 'ant-design-vue';
-import LazyDirTree from '@/components/LazyDirTree.vue';
-import { accountStore, ACCOUNT_STATUS_VIEW, type AccountRow } from '@/api/mock/accounts';
-import { MAIN_ORDER, DRIVE_META } from '@/api/mock/meta';
-import { addAccount, checkAccount, deleteAccount, getRootDirs, getSummary, listAccounts, saveCredential, setAlias, setDefaultAccount, setDriveNotify, setRootDir, type AccountSummary } from '@/api/modules/accounts';
-import { getFilesList } from '@/api/modules/files';
-import { warmTrees, warmStatus } from '@/api/modules/cache';
-import type { MainDriveType } from '@/types/model';
+/* =====================================================================
+ * 网盘连接 —— 原型 _shell.html data-view="accounts" 的 Vue3 还原。
+ * 三张网盘卡：只展示连接状态，绝不回填凭据明文（设计红线）。
+ * 状态读写走 accountStore（内存 mock），动作走 api/modules/accounts.ts。
+ * ===================================================================== */
+import { computed, onMounted, ref } from 'vue'
+import { useBackGuard } from '@/composables/useBackGuard'
+import { message } from 'ant-design-vue'
+import LazyDirTree from '@/components/LazyDirTree.vue'
+import { accountStore, ACCOUNT_STATUS_VIEW, type AccountRow } from '@/api/mock/accounts'
+import { MAIN_ORDER, DRIVE_META } from '@/api/mock/meta'
+import { addAccount, checkAccount, deleteAccount, getRootDirs, getSummary, listAccounts, saveCredential, setAlias, setDefaultAccount, setDriveNotify, setRootDir, type AccountSummary } from '@/api/modules/accounts'
+import { getFilesList } from '@/api/modules/files'
+import { warmTrees, warmStatus } from '@/api/modules/cache'
+import type { MainDriveType } from '@/types/model'
+
+/** 卡片列表：多账号平铺，按平台固定顺序 + 同平台按 id 排 */
 const rows = computed<AccountRow[]>(() => {
-    const rank: Record<string, number> = {};
-    MAIN_ORDER.forEach((t, i) => (rank[t] = i));
-    return [...accountStore.accounts].sort((a, b) => (rank[a.type] ?? 99) - (rank[b.type] ?? 99) || a.id - b.id);
-});
+  const rank: Record<string, number> = {}
+  MAIN_ORDER.forEach((t, i) => (rank[t] = i))
+  return [...accountStore.accounts].sort(
+    (a, b) => (rank[a.type] ?? 99) - (rank[b.type] ?? 99) || a.id - b.id,
+  )
+})
+
+/** 状态 → tag 类名/文案/圆点（connected/expired/unset 三态映射） */
 function view(status: string) {
-    return ACCOUNT_STATUS_VIEW[status];
+  return ACCOUNT_STATUS_VIEW[status]
 }
+
+/** 同类型账号数：多于 1 个才显示「默认」切换标签 */
 function sameTypeCount(type: string): number {
-    return accountStore.accounts.filter((a) => a.type === type).length;
+  return accountStore.accounts.filter((a) => a.type === type).length
 }
-const aliasOpen = ref(false);
-const aliasAcc = ref<AccountRow | null>(null);
-const aliasText = ref('');
-const aliasSaving = ref(false);
+
+/* ===== 别名：卡片行内「修改」打开小弹窗；保存后整列刷新（卡片标题/各处下拉同步） ===== */
+const aliasOpen = ref(false)
+const aliasAcc = ref<AccountRow | null>(null)
+const aliasText = ref('')
+const aliasSaving = ref(false)
 function openAlias(a: AccountRow) {
-    aliasAcc.value = a;
-    aliasText.value = a.alias || '';
-    aliasOpen.value = true;
+  aliasAcc.value = a
+  aliasText.value = a.alias || ''
+  aliasOpen.value = true
 }
 async function onAliasSave() {
-    if (!aliasAcc.value)
-        return;
-    aliasSaving.value = true;
-    try {
-        await setAlias(aliasAcc.value.id, aliasText.value.trim());
-        aliasOpen.value = false;
-        message.success(aliasText.value.trim() ? '别名已保存' : '别名已清除');
-    }
-    catch (e: unknown) {
-        const detail = (e as {
-            response?: {
-                data?: {
-                    detail?: string;
-                };
-            };
-        })?.response?.data?.detail;
-        message.error(detail || '保存失败');
-    }
-    finally {
-        aliasSaving.value = false;
-    }
+  if (!aliasAcc.value) return
+  aliasSaving.value = true
+  try {
+    await setAlias(aliasAcc.value.id, aliasText.value.trim())
+    aliasOpen.value = false
+    message.success(aliasText.value.trim() ? '别名已保存' : '别名已清除')
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '保存失败')
+  } finally {
+    aliasSaving.value = false
+  }
 }
+
 async function onSetDefault(a: AccountRow) {
-    try {
-        await setDefaultAccount(a.id);
-        message.success(a.is_default ? `已取消「${a.alias || a.nickname}」的默认标记（回落该网盘第一个账号）` : `已把「${a.alias || a.nickname}」设为默认账号`);
-    }
-    catch (e: unknown) {
-        const detail = (e as {
-            response?: {
-                data?: {
-                    detail?: string;
-                };
-            };
-        })?.response?.data?.detail;
-        message.error(detail || '设置失败');
-    }
+  try {
+    await setDefaultAccount(a.id)
+    message.success(a.is_default ? `已取消「${a.alias || a.nickname}」的默认标记（回落该网盘第一个账号）` : `已把「${a.alias || a.nickname}」设为默认账号`)
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '设置失败')
+  }
 }
-const notifySaving = ref<number | null>(null);
+
+/* ===== 失效通知开关（网盘粒度，Server 酱）。
+ * 探活发现该网盘凭据失效时，只有这里是开着的才会推送；
+ * 总闸在「系统设置 → 推送通知」（enabled + 凭据时机开关）。 ===== */
+const notifySaving = ref<number | null>(null)
 async function onToggleNotify(a: AccountRow, v: boolean) {
-    if (notifySaving.value)
-        return;
-    notifySaving.value = a.id;
-    try {
-        await setDriveNotify(a.id, v);
-        a.notify = v;
-        message.success(`${a.alias || DRIVE_META[a.type].full}：${v ? '已开启' : '已关闭'}失效通知`);
-    }
-    catch (e: unknown) {
-        const detail = (e as {
-            response?: {
-                data?: {
-                    detail?: string;
-                };
-            };
-        })?.response?.data?.detail;
-        message.error(detail || '保存失败');
-    }
-    finally {
-        notifySaving.value = null;
-    }
+  if (notifySaving.value) return
+  notifySaving.value = a.id
+  try {
+    await setDriveNotify(a.id, v)
+    a.notify = v
+    message.success(`${a.alias || DRIVE_META[a.type].full}：${v ? '已开启' : '已关闭'}失效通知`)
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '保存失败')
+  } finally {
+    notifySaving.value = null
+  }
 }
-const addOpen = ref(false);
-useBackGuard(addOpen);
-const addSaving = ref(false);
-const addType = ref<MainDriveType>('baidu');
-const addAlias = ref('');
-const addCookies = ref('');
-const ADD_PLATFORMS: {
-    value: MainDriveType;
-    label: string;
-}[] = [
-    { value: 'baidu', label: '百度网盘' },
-    { value: 'quark', label: '夸克网盘' },
-    { value: '115', label: '115 网盘' },
-];
+
+/* ===== 新增账号：选平台 + 别名 + 粘贴 Cookie，保存即验证 ===== */
+const addOpen = ref(false)
+useBackGuard(addOpen)
+const addSaving = ref(false)
+const addType = ref<MainDriveType>('baidu')
+const addAlias = ref('')
+const addCookies = ref('')
+const ADD_PLATFORMS: { value: MainDriveType; label: string }[] = [
+  { value: 'baidu', label: '百度网盘' },
+  { value: 'quark', label: '夸克网盘' },
+  { value: '115', label: '115 网盘' },
+]
+
 async function onAddSave() {
-    if (!addCookies.value.trim()) {
-        message.warning('请先粘贴 Cookie');
-        return;
+  if (!addCookies.value.trim()) {
+    message.warning('请先粘贴 Cookie')
+    return
+  }
+  const type = addType.value
+  const cookies = addCookies.value.trim()
+  const alias = addAlias.value.trim()
+  addSaving.value = true
+  // 乐观插入临时卡：弹窗立刻关，卡片按钮区显示「正在检测连通性」；
+  // 后端验证完 listAccounts 整体替换 store，临时卡自动被真卡换掉
+  const tempId = -Date.now()
+  const meta = DRIVE_META[type]
+  accountStore.accounts.push({
+    id: tempId, type, alias, nickname: '', short: meta.name, color: meta.color,
+    cred_kind: 'Cookie', note: '', status: 'unset', last_check: '从未配置', notify: false, summary: null,
+  })
+  verifyingId.value = tempId
+  addOpen.value = false
+  try {
+    const { nickname } = await addAccount(type, cookies, alias)
+    message.success(`账号已添加并验证通过（${nickname}）`)
+    addCookies.value = ''
+    addAlias.value = ''
+    // 新卡的 id：刷新后同平台 id 最大的那条；loading 保持到容量/会员也拉回来
+    const mine = accountStore.accounts.filter((x) => x.type === type)
+    const fresh = mine.length ? mine[mine.length - 1] : null
+    if (fresh) {
+      verifyingId.value = fresh.id
+      await loadSummary(fresh.id)
     }
-    const type = addType.value;
-    const cookies = addCookies.value.trim();
-    const alias = addAlias.value.trim();
-    addSaving.value = true;
-    const tempId = -Date.now();
-    const meta = DRIVE_META[type];
-    accountStore.accounts.push({
-        id: tempId, type, alias, nickname: '', short: meta.name, color: meta.color,
-        cred_kind: 'Cookie', note: '', status: 'unset', last_check: '从未配置', notify: false, summary: null,
-    });
-    verifyingId.value = tempId;
-    addOpen.value = false;
-    try {
-        const { nickname } = await addAccount(type, cookies, alias);
-        message.success(`账号已添加并验证通过（${nickname}）`);
-        addCookies.value = '';
-        addAlias.value = '';
-        const mine = accountStore.accounts.filter((x) => x.type === type);
-        const fresh = mine.length ? mine[mine.length - 1] : null;
-        if (fresh) {
-            verifyingId.value = fresh.id;
-            await loadSummary(fresh.id);
-        }
-        verifyingId.value = null;
-        await warmAll(type, fresh?.id ?? null);
-    }
-    catch (e: unknown) {
-        const detail = (e as {
-            response?: {
-                data?: {
-                    detail?: string;
-                };
-            };
-        })?.response?.data?.detail;
-        message.error(detail || '添加失败');
-        const pos = accountStore.accounts.findIndex((x) => x.id === tempId);
-        if (pos >= 0)
-            accountStore.accounts.splice(pos, 1);
-        await listAccounts().catch(() => { });
-    }
-    finally {
-        addSaving.value = false;
-        verifyingId.value = null;
-    }
+    verifyingId.value = null // 验证已完成：卡片先进「正在预热」，别卡在「正在验证 Cookie…」
+    await warmAll(type, fresh?.id ?? null) // 验证通过即全树预热（预热刚验证的这个账号），后续选目录全吃缓存
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '添加失败')
+    // 验证失败：撤掉临时卡（真实模式 listAccounts 会整体替换，mock 模式得手动摘）
+    const pos = accountStore.accounts.findIndex((x) => x.id === tempId)
+    if (pos >= 0) accountStore.accounts.splice(pos, 1)
+    await listAccounts().catch(() => {})
+  } finally {
+    addSaving.value = false
+    verifyingId.value = null
+  }
 }
+
+/* ===== 进页面：先吃缓存立即可见，再后台实时刷新 ===== */
 onMounted(async () => {
-    prefillSummaries();
-    await listAccounts().catch(() => { });
-    prefillSummaries();
-    for (const a of accountStore.accounts) {
-        if (a.status === 'connected')
-            loadSummary(a.id);
-    }
-    rootDirs.value = await getRootDirs().catch(() => ({}));
-});
-const bdOpen = ref(false);
-useBackGuard(bdOpen);
-const bdType = ref<MainDriveType>('quark');
-const bdPath = ref('');
-const bdFid = ref('');
-const bdTree = ref<InstanceType<typeof LazyDirTree> | null>(null);
-const bdSaving = ref(false);
-const bdTitle = computed(() => `默认根目录 · ${DRIVE_META[bdType.value]?.full || bdType.value}`);
-const rootDirs = ref<Record<string, string>>({});
+  prefillSummaries()
+  await listAccounts().catch(() => {})
+  prefillSummaries() // 拉到后端缓存后再填一次（刷新后会员信息不再「闪一下就没了」）
+  for (const a of accountStore.accounts) {
+    if (a.status === 'connected') loadSummary(a.id)
+  }
+  rootDirs.value = await getRootDirs().catch(() => ({})) // 默认根目录：进页拉一次
+})
+
+/* ===== 默认根目录：独立配置（root_cfg），目录树弹窗的固定浏览起点 =====
+ * 与转存配置的 is_default（快速转存下拉第一项/排序）是两回事。 */
+const bdOpen = ref(false)
+useBackGuard(bdOpen)
+const bdType = ref<MainDriveType>('quark')
+const bdPath = ref('')
+const bdFid = ref('') // 树里选中的目录 fid（预热缓存用；没点选就保存时回落按路径预热）
+const bdTree = ref<InstanceType<typeof LazyDirTree> | null>(null)
+const bdSaving = ref(false)
+const bdTitle = computed(() => `默认根目录 · ${DRIVE_META[bdType.value]?.full || bdType.value}`)
+const rootDirs = ref<Record<string, string>>({})
+
+/** 该网盘当前的默认根目录（空串 = 未配置，弹窗回退真根浏览） */
 function rootDirOf(type: MainDriveType): string {
-    return rootDirs.value[type] || '';
+  return rootDirs.value[type] || ''
 }
+
 function openBaseDir(a: AccountRow) {
-    bdType.value = a.type;
-    bdPath.value = rootDirOf(a.type);
-    bdFid.value = '';
-    bdOpen.value = true;
+  bdType.value = a.type
+  bdPath.value = rootDirOf(a.type)
+  bdFid.value = ''
+  bdOpen.value = true
 }
+
+/** 树里点选目录：只记选择（高亮），点弹窗「保存到此处」才落库+预热缓存 */
 function onTreePick(path: string, fid: string) {
-    bdPath.value = path;
-    bdFid.value = fid;
+  bdPath.value = path
+  bdFid.value = fid
 }
-const bdRefreshing = ref(false);
+
+/* 弹窗标题栏「刷新」：绕过后端缓存直连重拉根层 */
+const bdRefreshing = ref(false)
 async function onRefreshTree() {
-    bdRefreshing.value = true;
-    try {
-        await bdTree.value?.reload();
-    }
-    finally {
-        bdRefreshing.value = false;
-    }
+  bdRefreshing.value = true
+  try {
+    await bdTree.value?.reload()
+  } finally {
+    bdRefreshing.value = false
+  }
 }
+
+/** 把目录内容拉进后端缓存（dir_cache，缓存优先）：有 fid 按 fid 预热（和树展开同一个 key），
+ *  没 fid（打开就保存旧路径）回落按路径解析预热。 */
 async function warmDirCache(type: MainDriveType, fid: string, path: string) {
-    await getFilesList(type, fid || '0', fid ? '' : path);
+  await getFilesList(type, fid || '0', fid ? '' : path)
 }
-const warmState = ref<Partial<Record<MainDriveType, string>>>({});
+
+/** 全树预热进度：按网盘类型记，账号卡片按钮区实时显示「正在预热 N 个文件夹…」。
+ *  文案空串 = 没在预热（卡片显示正常按钮）。 */
+const warmState = ref<Partial<Record<MainDriveType, string>>>({})
 function warmOf(type: MainDriveType): string {
-    return warmState.value[type] || '';
+  return warmState.value[type] || ''
 }
+
+/** 全树预热：后台跑（受网盘限速，可能要几分钟），轮询进度刷新到卡片上。
+ *  保存 Cookie 验证通过后调用——之后所有选目录/转存的地方都吃缓存。
+ *  不再用全局顶部 loading（2026-10-07 用户要求：进度上卡片，别占页面顶）。 */
 async function warmAll(type: MainDriveType, accId?: number | null) {
-    try {
-        await warmTrees(type, accId);
-        for (let i = 0; i < 600; i++) {
-            const st = await warmStatus(type, accId);
-            if (st.status === 'done') {
-                warmState.value[type] = `预热完成 · ${st.done} 个文件夹`;
-                message.success(st.message ? `预热完成（${st.done} 个文件夹，${st.message}）` : `预热完成（${st.done} 个文件夹）`, 4);
-                setTimeout(() => {
-                    if (warmState.value[type]?.startsWith('预热完成'))
-                        warmState.value[type] = '';
-                }, 6000);
-                return;
-            }
-            if (st.status === 'error') {
-                warmState.value[type] = '';
-                message.error(`预热失败：${st.message || '未知错误'}`, 5);
-                return;
-            }
-            warmState.value[type] = `正在预热 ${st.done} 个文件夹…`;
-            await new Promise((r) => setTimeout(r, 3000));
-        }
-        warmState.value[type] = '';
-        message.warning('预热还在后台跑，已转入静默；可稍后在「网盘日志 → 缓存」查看', 5);
+  try {
+    await warmTrees(type, accId)
+    for (let i = 0; i < 600; i++) { // 上限 10 分钟，正常几十秒
+      const st = await warmStatus(type, accId)
+      if (st.status === 'done') {
+        warmState.value[type] = `预热完成 · ${st.done} 个文件夹`
+        message.success(st.message ? `预热完成（${st.done} 个文件夹，${st.message}）` : `预热完成（${st.done} 个文件夹）`, 4)
+        setTimeout(() => {
+          if (warmState.value[type]?.startsWith('预热完成')) warmState.value[type] = ''
+        }, 6000) // 完成态在卡片上停留 6 秒再让按钮回来
+        return
+      }
+      if (st.status === 'error') {
+        warmState.value[type] = ''
+        message.error(`预热失败：${st.message || '未知错误'}`, 5)
+        return
+      }
+      warmState.value[type] = `正在预热 ${st.done} 个文件夹…`
+      await new Promise((r) => setTimeout(r, 3000)) // 3s 一次：进度不刷屏，后端有限速闸
     }
-    catch (e: unknown) {
-        warmState.value[type] = '';
-        const detail = (e as {
-            response?: {
-                data?: {
-                    detail?: string;
-                };
-            };
-        })?.response?.data?.detail;
-        message.error(`预热失败：${detail || '请求失败'}`, 5);
-    }
+    warmState.value[type] = ''
+    message.warning('预热还在后台跑，已转入静默；可稍后在「网盘日志 → 缓存」查看', 5)
+  } catch (e: unknown) {
+    warmState.value[type] = ''
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(`预热失败：${detail || '请求失败'}`, 5)
+  }
 }
+
 async function onConfirmBaseDir() {
-    if (!bdPath.value) {
-        message.warning('请先在树里选择一个目录');
-        return;
-    }
-    bdSaving.value = true;
-    const type = bdType.value;
-    const fid = bdFid.value;
-    const path = bdPath.value;
-    try {
-        await setRootDir(type, path);
-        rootDirs.value = await getRootDirs();
-    }
-    catch (e: unknown) {
-        const detail = (e as {
-            response?: {
-                data?: {
-                    detail?: string;
-                };
-            };
-        })?.response?.data?.detail;
-        message.error(detail || '保存失败');
-        bdSaving.value = false;
-        return;
-    }
-    bdOpen.value = false;
-    bdSaving.value = false;
-    const hide = message.loading('正在缓存文件夹信息…', 0);
-    try {
-        await warmDirCache(type, fid, path);
-        message.success('缓存成功');
-    }
-    catch (e: unknown) {
-        const detail = (e as {
-            response?: {
-                data?: {
-                    detail?: string;
-                };
-            };
-        })?.response?.data?.detail;
-        message.error(`缓存失败：${detail || '目录拉取出错'}`, 5);
-    }
-    finally {
-        hide();
-    }
+  if (!bdPath.value) {
+    message.warning('请先在树里选择一个目录')
+    return
+  }
+  bdSaving.value = true
+  const type = bdType.value
+  const fid = bdFid.value
+  const path = bdPath.value
+  try {
+    await setRootDir(type, path)
+    rootDirs.value = await getRootDirs()
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '保存失败')
+    bdSaving.value = false
+    return
+  }
+  // 配置落库即预热缓存：提示「正在缓存 → 缓存成功/失败」，不再弹「已保存」
+  bdOpen.value = false
+  bdSaving.value = false
+  const hide = message.loading('正在缓存文件夹信息…', 0)
+  try {
+    await warmDirCache(type, fid, path)
+    message.success('缓存成功')
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(`缓存失败：${detail || '目录拉取出错'}`, 5)
+  } finally {
+    hide()
+  }
 }
-const checking = ref<number | null>(null);
-const verifyingId = ref<number | null>(null);
+
+/* ===== 卡片动作 ===== */
+const checking = ref<number | null>(null)
+/** 正在「保存并验证」的账号：按钮区整个换成 loading + 正在检测连通性（新增时是临时卡的负数 id） */
+const verifyingId = ref<number | null>(null)
+
 async function onCheck(a: AccountRow) {
-    checking.value = a.id;
-    try {
-        const res = await checkAccount(a.id);
-        const row = accountStore.accounts.find((x) => x.id === a.id);
-        if (row)
-            row.status = res.status;
-        if (res.kind === 'success') {
-            message.success(res.message);
-            await loadSummary(a.id);
-        }
-        else if (res.kind === 'warning')
-            message.warning(res.message);
-        else
-            message.error(res.message);
-    }
-    finally {
-        checking.value = null;
-    }
+  checking.value = a.id
+  try {
+    const res = await checkAccount(a.id)
+    // 检测结果回写：last_check 已在 api 里更新，status 以返回为准（真实后端可能探成过期）
+    const row = accountStore.accounts.find((x) => x.id === a.id)
+    if (row) row.status = res.status
+    if (res.kind === 'success') {
+      message.success(res.message)
+      await loadSummary(a.id)
+    } else if (res.kind === 'warning') message.warning(res.message)
+    else message.error(res.message)
+  } finally {
+    checking.value = null
+  }
 }
-const summaries = ref<Record<number, AccountSummary | null>>({});
+
+/* ===== 容量 + 会员摘要：按账号拉取，检测连通成功后刷新 ===== */
+const summaries = ref<Record<number, AccountSummary | null>>({})
+
+/** 用 store 里后端缓存的摘要预填：刷新页面立刻能显示会员/容量，不必干等实时请求。 */
 function prefillSummaries() {
-    for (const a of accountStore.accounts) {
-        if (a.summary)
-            summaries.value[a.id] = a.summary;
-    }
+  for (const a of accountStore.accounts) {
+    if (a.summary) summaries.value[a.id] = a.summary
+  }
 }
+
 async function loadSummary(accId: number) {
-    try {
-        const data = await getSummary(accId);
-        summaries.value[accId] = data;
-        const row = accountStore.accounts.find((x) => x.id === accId);
-        if (row)
-            row.summary = data;
-    }
-    catch {
-        summaries.value[accId] = null;
-    }
+  try {
+    const data = await getSummary(accId)
+    summaries.value[accId] = data
+    // 回写 store：本次会话内切页/回退不再闪空
+    const row = accountStore.accounts.find((x) => x.id === accId)
+    if (row) row.summary = data
+  } catch {
+    summaries.value[accId] = null
+  }
 }
+
 function summaryOf(accId: number): AccountSummary | null {
-    return summaries.value[accId] || null;
+  return summaries.value[accId] || null
 }
+
 function capOf(accId: number) {
-    const cap = summaryOf(accId)?.capacity;
-    if (!cap || !cap.total)
-        return null;
-    const pct = Math.min(100, Math.round((cap.used / cap.total) * 100));
-    const unit: 'GB' | 'TB' = cap.total >= 1024 * 1024 ** 3 ? 'TB' : 'GB';
-    const fmt = (v: number) => (unit === 'TB' ? (v / 1024 ** 4).toFixed(2) : (v / 1024 ** 3).toFixed(v > 10 * 1024 ** 3 ? 0 : 1));
-    return { pct, used: fmt(cap.used), total: fmt(cap.total), unit };
+  const cap = summaryOf(accId)?.capacity
+  if (!cap || !cap.total) return null
+  const pct = Math.min(100, Math.round((cap.used / cap.total) * 100))
+  // 容量 ≥1024G 换算成 TB（两位小数）；成对显示用同一单位，别一边 G 一边 T
+  const unit: 'GB' | 'TB' = cap.total >= 1024 * 1024 ** 3 ? 'TB' : 'GB'
+  const fmt = (v: number) => (unit === 'TB' ? (v / 1024 ** 4).toFixed(2) : (v / 1024 ** 3).toFixed(v > 10 * 1024 ** 3 ? 0 : 1))
+  return { pct, used: fmt(cap.used), total: fmt(cap.total), unit }
 }
+
 function capClass(pct: number): string {
-    return pct >= 95 ? 'full' : pct >= 80 ? 'warn' : '';
+  return pct >= 95 ? 'full' : pct >= 80 ? 'warn' : ''
 }
+
 function gb(v: number, unit: 'GB' | 'TB' = 'GB'): string {
-    return unit === 'TB' ? (v / 1024 ** 4).toFixed(2) : (v / 1024 ** 3).toFixed(v > 10 * 1024 ** 3 ? 0 : 1);
+  return unit === 'TB' ? (v / 1024 ** 4).toFixed(2) : (v / 1024 ** 3).toFixed(v > 10 * 1024 ** 3 ? 0 : 1)
 }
 function capUnit(accId: number): 'GB' | 'TB' {
-    const cap = summaryOf(accId)?.capacity;
-    return cap && cap.total >= 1024 * 1024 ** 3 ? 'TB' : 'GB';
+  const cap = summaryOf(accId)?.capacity
+  return cap && cap.total >= 1024 * 1024 ** 3 ? 'TB' : 'GB'
 }
-const credOpen = ref(false);
-useBackGuard(credOpen);
-const credAcc = ref<AccountRow | null>(null);
-const credTitle = computed(() => `配置凭据 · ${credAcc.value ? credAcc.value.alias || DRIVE_META[credAcc.value.type]?.full || credAcc.value.type : ''}`);
-const credCookies = ref('');
-const credSaving = ref(false);
+
+/* 凭据表单：从浏览器 F12 复制整串 Cookie 粘贴；后端保存即验证，永远不回填明文 */
+const credOpen = ref(false)
+useBackGuard(credOpen)
+const credAcc = ref<AccountRow | null>(null)
+const credTitle = computed(() => `配置凭据 · ${credAcc.value ? credAcc.value.alias || DRIVE_META[credAcc.value.type]?.full || credAcc.value.type : ''}`)
+const credCookies = ref('')
+const credSaving = ref(false)
+
 function onConfig(a: AccountRow) {
-    credAcc.value = a;
-    credCookies.value = '';
-    credOpen.value = true;
+  credAcc.value = a
+  credCookies.value = ''
+  credOpen.value = true
 }
+
 async function onCredSave() {
-    if (!credCookies.value.trim()) {
-        message.warning('请先粘贴 Cookie');
-        return;
-    }
-    if (!credAcc.value)
-        return;
-    const acc = credAcc.value;
-    const cookies = credCookies.value.trim();
-    credOpen.value = false;
-    verifyingId.value = acc.id;
-    try {
-        const { nickname } = await saveCredential(acc.id, cookies);
-        credCookies.value = '';
-        message.success(`凭据已保存并验证通过（${nickname}）`);
-        await loadSummary(acc.id);
-        verifyingId.value = null;
-        await warmAll(acc.type, acc.id);
-    }
-    catch (e: unknown) {
-        const detail = (e as {
-            response?: {
-                data?: {
-                    detail?: string;
-                };
-            };
-        })?.response?.data?.detail;
-        message.error(detail || '凭据验证失败');
-    }
-    finally {
-        verifyingId.value = null;
-    }
+  if (!credCookies.value.trim()) {
+    message.warning('请先粘贴 Cookie')
+    return
+  }
+  if (!credAcc.value) return
+  const acc = credAcc.value
+  const cookies = credCookies.value.trim()
+  credOpen.value = false
+  // 弹窗立刻关，卡片按钮区进「正在检测连通性」；成功才清输入，失败重开弹窗还能改
+  verifyingId.value = acc.id
+  try {
+    const { nickname } = await saveCredential(acc.id, cookies)
+    credCookies.value = ''
+    message.success(`凭据已保存并验证通过（${nickname}）`)
+    await loadSummary(acc.id)
+    verifyingId.value = null // 验证已完成：卡片先进「正在预热」，别卡在「正在验证 Cookie…」
+    await warmAll(acc.type, acc.id) // 验证通过即全树预热（预热刚验证的这个账号），后续选目录全吃缓存
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '凭据验证失败')
+  } finally {
+    verifyingId.value = null
+  }
 }
+
 async function onClear(a: AccountRow) {
-    await deleteAccount(a.id);
-    message.success(`已删除「${a.alias || DRIVE_META[a.type].full}」账号卡片`);
+  // 没有凭据的空壳卡片没有存在的意义：清空 = 直接删除账号卡片（后端同删一行）
+  await deleteAccount(a.id)
+  message.success(`已删除「${a.alias || DRIVE_META[a.type].full}」账号卡片`)
 }
 </script>
 
 <template>
   <div>
-    
+    <!-- 网盘卡片网格：未配置的卡整体半透明（.off） -->
     <div style="display: flex; justify-content: flex-end; margin-bottom: 14px">
       <a-button type="primary" @click="addOpen = true">＋ 新增网盘</a-button>
     </div>
@@ -416,7 +410,7 @@ async function onClear(a: AccountRow) {
             <span class="tag acc-tag" :class="view(a.status).cls">
               <span class="dot" :class="view(a.status).dot"></span>{{ view(a.status).label }}
             </span>
-            
+            <!-- 默认账号：转存/调度未指定账号时用它；点击切换（同类型多账号时才有意义） -->
             <span
               v-if="sameTypeCount(a.type) > 1"
               class="tag acc-tag def-tag"
@@ -425,7 +419,7 @@ async function onClear(a: AccountRow) {
               @click="onSetDefault(a)"
             >{{ a.is_default ? '★ 默认' : '☆ 设默认' }}</span>
           </div>
-          
+          <!-- 别名入口：卡片头右侧小按钮（默认展示网盘用户名，别名可 点这里 改） -->
           <button class="acc-alias-btn" title="修改别名" @click="openAlias(a)">别名</button>
         </div>
         <div class="kv">
@@ -464,7 +458,7 @@ async function onClear(a: AccountRow) {
             />
           </b>
         </div>
-        
+        <!-- 未配置/凭据失效：容量条占位（三张卡高度一致，不缺一块） -->
         <div v-if="a.status !== 'connected'" class="capblock">
           <div class="capbar"><i style="width: 0%"></i></div>
           <div class="capmeta">
@@ -510,7 +504,7 @@ async function onClear(a: AccountRow) {
 
 
 
-    
+    <!-- 新增账号：选平台 + 别名 + 粘贴 Cookie，后端保存即验证 -->
     <a-modal v-model:open="addOpen" :width="480" title="新增账号" :footer="null">
       <div class="acc-add">
         <div class="acc-add-label">选择平台</div>
@@ -550,7 +544,7 @@ async function onClear(a: AccountRow) {
       </div>
     </a-modal>
 
-    
+    <!-- 凭据配置弹窗：粘贴整串 Cookie，后端保存即验证 -->
     <a-modal
       v-model:open="credOpen"
       :title="credTitle"
@@ -569,7 +563,7 @@ async function onClear(a: AccountRow) {
       />
     </a-modal>
 
-    
+    <!-- 默认根目录：独立配置（root_cfg），所有目录树弹窗的浏览起点（key 绑 type，切换网盘强制重建） -->
     <a-modal
       :open="bdOpen"
       :width="480"
@@ -582,18 +576,18 @@ async function onClear(a: AccountRow) {
       <template #title>
         <div class="bd-titlebar">
           <span>{{ bdTitle }}</span>
-          
+          <!-- 绕过后端目录缓存直连重拉根层：网盘侧刚建/删了文件夹时用 -->
           <a-button size="small" :loading="bdRefreshing" @click="onRefreshTree">刷新</a-button>
         </div>
       </template>
       <p class="small" style="color: var(--text3); margin-bottom: 10px">
         从网盘真根选择一个目录作为本网盘的默认根目录；保存后所有目录树弹窗都从这里开始浏览。
       </p>
-      
+      <!-- 这个弹窗本身从真根浏览（配置入口不该被锁）；initialPath 只是回显定位 -->
       <LazyDirTree ref="bdTree" :key="bdType" :type="bdType" :initial-path="rootDirOf(bdType)" @select="onTreePick" />
       <p class="bd-picked">已选目录：<b>{{ bdPath || '/' }}</b></p>
     </a-modal>
-    
+    <!-- 别名编辑小弹窗 -->
     <a-modal
       v-model:open="aliasOpen"
       :width="380"

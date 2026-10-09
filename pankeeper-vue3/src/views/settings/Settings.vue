@@ -1,487 +1,477 @@
 <script setup lang="ts">
-import { nextTick, onMounted, reactive, ref, watch } from 'vue';
-import { useRouter } from 'vue-router';
-import { message } from 'ant-design-vue';
-import { DeleteOutlined } from '@ant-design/icons-vue';
-import { useAuthStore } from '@/store/auth';
-import { getLitePanHealth, getQmsHealth, getSettings, saveNotify, saveLitePan, saveMediaBackend, saveQms, saveSearchSrc, saveSecurity, testLitePan, testPansou, testQms, testSendkey, testTmdb, } from '@/api/modules/settings';
-import { getEngineHealth } from '@/api/modules/search';
-import type { LitePanCfg, NotifyCfg, QmsCfg, SearchSrcCfg, SecurityCfg } from '@/api/mock/settings';
-const router = useRouter();
-const auth = useAuthStore();
+/* =====================================================================
+ * 系统设置页 —— 原型 _shell.html 设置段（胶囊 tab）的 Vue 移植。
+ * - tab1 搜索源：改完静默保存（原型即改即存内存，无保存按钮）
+ * - tab2 代理配置：TMDB API Key + 连通模式（代理 / host 直连），TMDB 字段从搜索源 tab 迁来
+ * - tab3 推送通知：改完静默保存（原型即改即存内存，无保存按钮）
+ * - tab4 联动后端：顶部选 qms/litepan，下面按所选显示 QMS 连接参数或 LitePan Webhook 参数
+ *   （目录关联在「转存配置」与自动转存任务弹窗），与 tab1/tab3 一致走防抖自动保存
+ * - tab5 账号安全：改密码（前端先校验）+ 会话有效期
+ * - tab6 头像管理：上传/移除头像（前端压缩后存后端）
+ * ⚠️ 交互契约：推送只服务自动转存，手动转存不接 Server 酱（docs/01）。
+ * ===================================================================== */
+import { nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import { message } from 'ant-design-vue'
+import { DeleteOutlined } from '@ant-design/icons-vue'
+import { useAuthStore } from '@/store/auth'
+import {
+  getLitePanHealth,
+  getQmsHealth,
+  getSettings,
+  saveNotify,
+  saveLitePan,
+  saveMediaBackend,
+  saveQms,
+  saveSearchSrc,
+  saveSecurity,
+  testLitePan,
+  testPansou,
+  testQms,
+  testSendkey,
+  testTmdb,
+} from '@/api/modules/settings'
+import { getEngineHealth } from '@/api/modules/search'
+import type { LitePanCfg, NotifyCfg, QmsCfg, SearchSrcCfg, SecurityCfg } from '@/api/mock/settings'
+
+const router = useRouter()
+const auth = useAuthStore()
+
+/* ===== 胶囊 tab ===== */
 const TABS = [
-    { k: 'tb1', label: '搜索源' },
-    { k: 'tb2', label: '代理配置' },
-    { k: 'tb3', label: '推送通知' },
-    { k: 'tb4', label: '联动后端' },
-    { k: 'tb5', label: '账号安全' },
-    { k: 'tb6', label: '头像管理' },
-] as const;
-type TabKey = (typeof TABS)[number]['k'];
-const tab = ref<TabKey>('tb1');
+  { k: 'tb1', label: '搜索源' },
+  { k: 'tb2', label: '代理配置' },
+  { k: 'tb3', label: '推送通知' },
+  { k: 'tb4', label: '联动后端' },
+  { k: 'tb5', label: '账号安全' },
+  { k: 'tb6', label: '头像管理' },
+] as const
+type TabKey = (typeof TABS)[number]['k']
+const tab = ref<TabKey>('tb1')
+
+/* ===== 四份表单的本地副本（进页面从 mock store 拷一份，保存时写回） ===== */
 const search = reactive<SearchSrcCfg>({
-    pansou_url: '',
-    timeout: 30,
-    cache_mode: 'on',
-    channels: [],
-});
+  pansou_url: '',
+  timeout: 30,
+  cache_mode: 'on',
+  channels: [],
+})
 const notify = reactive<NotifyCfg>({
-    enabled: false,
-    sendkey: '',
-    webhook: '',
-    on_auto: true,
-    on_search: true,
-    on_cred: true,
-});
-const qms = reactive<QmsCfg>({ enabled: true, url: '', apikey: '', tmdb_api_key: '', tmdb_mode: 'proxy', tmdb_proxy: '', tmdb_hosts: [], tmdb_skip_tls: false, act_strm: true, act_emby: true });
-const litepan = reactive<LitePanCfg>({ enabled: false, webhook_url: '', apikey: '', source: '' });
-const security = reactive<SecurityCfg>({ username: 'admin', session_days: 7 });
-const ready = ref(false);
+  enabled: false,
+  sendkey: '',
+  webhook: '',
+  on_auto: true,
+  on_search: true,
+  on_cred: true,
+})
+const qms = reactive<QmsCfg>({ enabled: true, url: '', apikey: '', tmdb_api_key: '', tmdb_mode: 'proxy', tmdb_proxy: '', tmdb_hosts: [], tmdb_skip_tls: false, act_strm: true, act_emby: true })
+const litepan = reactive<LitePanCfg>({ enabled: false, webhook_url: '', apikey: '', source: '' })
+const security = reactive<SecurityCfg>({ username: 'admin', session_days: 7 })
+
+/** 初始数据灌入完成前关闭自动保存：Object.assign 本身会触发 watch，不能让「进页面」变成一次保存 */
+const ready = ref(false)
+
 onMounted(async () => {
-    const d = await getSettings();
-    Object.assign(search, d.search);
-    Object.assign(notify, d.notify);
-    Object.assign(qms, d.qms);
-    Object.assign(litepan, d.litepan || { enabled: false, webhook_url: '', apikey: '', source: '' });
-    Object.assign(security, d.security);
-    mediaBackend.value = d.media?.backend || 'qms';
-    getQmsHealth().then((h) => (qmsHealth.value = h)).catch(() => (qmsHealth.value = { ok: false, message: '检测失败' }));
-    refreshPansouHealth();
-    if (mediaBackend.value === 'litepan')
-        refreshLpHealth();
-    await nextTick();
-    ready.value = true;
-    _savedSnapshots.search = JSON.stringify(search);
-    _savedSnapshots.notify = JSON.stringify(notify);
-    _savedSnapshots.qms = JSON.stringify(qms);
-    _savedSnapshots.litepan = JSON.stringify(litepan);
-});
-const _saveTimers: Record<string, number> = {};
-const _savedSnapshots: Record<string, string> = {};
-const _pending: Record<string, {
-    snap: string;
-    doSave: () => Promise<unknown>;
-}> = {};
+  const d = await getSettings()
+  Object.assign(search, d.search)
+  Object.assign(notify, d.notify)
+  Object.assign(qms, d.qms)
+  Object.assign(litepan, d.litepan || { enabled: false, webhook_url: '', apikey: '', source: '' })
+  Object.assign(security, d.security)
+  mediaBackend.value = d.media?.backend || 'qms'
+  // QMS 引擎状态胶囊（语义同搜索页的 PanSou 在线/离线）
+  getQmsHealth().then((h) => (qmsHealth.value = h)).catch(() => (qmsHealth.value = { ok: false, message: '检测失败' }))
+  refreshPansouHealth()
+  if (mediaBackend.value === 'litepan') refreshLpHealth()
+  // watch 回调不是同步执行的（flush: 'pre' 排队等当前同步代码跑完），
+  // 必须等这一拍过去再放行，否则灌初值会触发「已自动保存」
+  await nextTick()
+  ready.value = true
+  // 灌入的初值就是「已保存状态」：登记快照，之后没实际改动不会触发保存+toast
+  _savedSnapshots.search = JSON.stringify(search)
+  _savedSnapshots.notify = JSON.stringify(notify)
+  _savedSnapshots.qms = JSON.stringify(qms)
+  _savedSnapshots.litepan = JSON.stringify(litepan)
+})
+
+/* ===== 三个配置 tab 统一防抖自动保存 =====
+ * 停止输入 2s 后写库；失焦立即写库（flushSave）。自动保存是静默的——弹「成功」
+ * 反而打扰（手动输入地址一路弹），只有失败才提示。
+ * watch 在 onMounted 灌入初值时也会触发，所以用 ready 挡住首跑。 */
+const _saveTimers: Record<string, number> = {}
+/** 每组配置最近一次成功保存的内容快照，变了才保存 */
+const _savedSnapshots: Record<string, string> = {}
+/** 待保存的动作（key → 快照+fn）：失焦 flush 时取最新一个执行 */
+const _pending: Record<string, { snap: string; doSave: () => Promise<unknown> }> = {}
 function debouncedSave(key: string, val: unknown, doSave: () => Promise<unknown>) {
-    const snap = JSON.stringify(val);
-    if (snap === _savedSnapshots[key])
-        return;
-    _pending[key] = { snap, doSave };
-    window.clearTimeout(_saveTimers[key]);
-    _saveTimers[key] = window.setTimeout(() => void flushSave(key), 2000);
+  const snap = JSON.stringify(val)
+  if (snap === _savedSnapshots[key]) return
+  _pending[key] = { snap, doSave }
+  window.clearTimeout(_saveTimers[key])
+  _saveTimers[key] = window.setTimeout(() => void flushSave(key), 2000)
 }
+
+/** 立刻保存某组待保存的配置（输入框 @blur 调；没待保存就是空操作） */
 async function flushSave(key: string) {
-    window.clearTimeout(_saveTimers[key]);
-    const p = _pending[key];
-    if (!p)
-        return;
-    delete _pending[key];
-    try {
-        await p.doSave();
-        _savedSnapshots[key] = p.snap;
-    }
-    catch {
-        message.error('自动保存失败，请重试');
-    }
+  window.clearTimeout(_saveTimers[key])
+  const p = _pending[key]
+  if (!p) return
+  delete _pending[key]
+  try {
+    await p.doSave()
+    _savedSnapshots[key] = p.snap
+  } catch {
+    message.error('自动保存失败，请重试')
+  }
 }
+
 watch(search, (v) => {
-    if (ready.value)
-        debouncedSave('search', v, () => saveSearchSrc({ ...v }));
-});
+  if (ready.value) debouncedSave('search', v, () => saveSearchSrc({ ...v }))
+})
 watch(notify, (v) => {
-    if (ready.value)
-        debouncedSave('notify', v, () => saveNotify({ ...v }));
-});
+  if (ready.value) debouncedSave('notify', v, () => saveNotify({ ...v }))
+})
 watch(qms, (v) => {
-    if (ready.value)
-        debouncedSave('qms', v, () => saveQms({ ...v, tmdb_hosts: v.tmdb_hosts.filter((h) => h.ip.trim() || h.host.trim()) }));
-});
+  // hosts 空行（ip/host 全空）不入库：占位行只是输入辅助，落库只留填了内容的
+  if (ready.value) debouncedSave('qms', v, () => saveQms({ ...v, tmdb_hosts: v.tmdb_hosts.filter((h) => h.ip.trim() || h.host.trim()) }))
+})
 watch(litepan, (v) => {
-    if (ready.value)
-        debouncedSave('litepan', v, () => saveLitePan({ ...v }));
-});
-const pansouHealth = ref<{
-    ok: boolean;
-    message?: string;
-} | null>(null);
+  if (ready.value) debouncedSave('litepan', v, () => saveLitePan({ ...v }))
+})
+
+/* ===== tab1 搜索源 ===== */
+/** PanSou 在线胶囊（语义同 QMS/LitePan 引擎胶囊）：进页拉一次，点「测试连通」后同步 */
+const pansouHealth = ref<{ ok: boolean; message?: string } | null>(null)
 function refreshPansouHealth() {
-    getEngineHealth()
-        .then((h) => (pansouHealth.value = { ok: h.ok, message: h.ok ? `${h.ms ?? 0} ms · ${h.plugins ?? 0} 插件` : h.message }))
-        .catch(() => (pansouHealth.value = { ok: false, message: '检测失败' }));
+  getEngineHealth()
+    .then((h) => (pansouHealth.value = { ok: h.ok, message: h.ok ? `${h.ms ?? 0} ms · ${h.plugins ?? 0} 插件` : h.message }))
+    .catch(() => (pansouHealth.value = { ok: false, message: '检测失败' }))
 }
+/* 缓存时长固定 30 分钟，不开放给用户选——选项只留开/关，时长写进旁边说明 */
 const CACHE_OPTS = [
-    { value: 'on', label: '开启' },
-    { value: 'off', label: '关闭' },
-];
-const testing = ref(false);
+  { value: 'on', label: '开启' },
+  { value: 'off', label: '关闭' },
+]
+const testing = ref(false)
 async function onTestPansou() {
-    if (!search.pansou_url) {
-        message.warning('请先填写 PanSou 地址');
-        return;
-    }
-    testing.value = true;
-    try {
-        const r = await testPansou(search.pansou_url);
-        pansouHealth.value = { ok: r.ok, message: r.ok ? `${r.ms} ms` : (r.message || '离线') };
-        if (r.ok)
-            message.success(`连通正常，响应 ${r.ms} ms`);
-        else
-            message.error(`连通失败：${r.message || '请检查地址'}`, 5);
-    }
-    catch (e: unknown) {
-        const detail = (e as {
-            response?: {
-                data?: {
-                    detail?: string;
-                };
-            };
-        })?.response?.data?.detail;
-        message.error(detail || '连通失败，请检查地址', 5);
-    }
-    finally {
-        testing.value = false;
-    }
+  if (!search.pansou_url) {
+    message.warning('请先填写 PanSou 地址')
+    return
+  }
+  testing.value = true
+  try {
+    const r = await testPansou(search.pansou_url)
+    // 后端连通失败也是 200 + {ok:false}，必须看 ok 字段，不能 promise 不抛就当成功
+    pansouHealth.value = { ok: r.ok, message: r.ok ? `${r.ms} ms` : (r.message || '离线') }
+    if (r.ok) message.success(`连通正常，响应 ${r.ms} ms`)
+    else message.error(`连通失败：${r.message || '请检查地址'}`, 5)
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '连通失败，请检查地址', 5)
+  } finally {
+    testing.value = false
+  }
 }
+
+/* ===== tab3 推送通知 ===== */
 function onNotifySw(v: boolean | string | number) {
-    message.success(v ? '推送已开启' : '推送已关闭');
+  message.success(v ? '推送已开启' : '推送已关闭')
 }
 async function onTestSendkey() {
-    if (!notify.sendkey) {
-        message.warning('请先填写 SendKey');
-        return;
-    }
-    try {
-        const r = await testSendkey(notify.sendkey);
-        if (r.ok)
-            message.success(r.message || '测试消息已发送');
-        else
-            message.error(r.message || '发送失败，请检查 SendKey', 5);
-    }
-    catch (e: unknown) {
-        const detail = (e as {
-            response?: {
-                data?: {
-                    detail?: string;
-                };
-            };
-        })?.response?.data?.detail;
-        message.error(detail || '发送失败，请检查 SendKey', 5);
-    }
+  if (!notify.sendkey) {
+    message.warning('请先填写 SendKey')
+    return
+  }
+  try {
+    // 后端发送失败也是 200 + {ok:false,message}，不抛异常，必须看 ok
+    const r = await testSendkey(notify.sendkey)
+    if (r.ok) message.success(r.message || '测试消息已发送')
+    else message.error(r.message || '发送失败，请检查 SendKey', 5)
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '发送失败，请检查 SendKey', 5)
+  }
 }
+
+/* ===== tab4 联动后端 ===== */
 const ONOFF_OPTS = [
-    { value: 'on', label: '开启' },
-    { value: 'off', label: '关闭' },
-];
-const mediaBackend = ref<'qms' | 'litepan'>('qms');
+  { value: 'on', label: '开启' },
+  { value: 'off', label: '关闭' },
+]
+/** 联动后端选择（qms/litepan）：切 litepan 后转存完成只发 Webhook，整理由 LitePan 规则自理 */
+const mediaBackend = ref<'qms' | 'litepan'>('qms')
 const MEDIA_OPTS = [
-    { value: 'qms', label: 'QMS 全流程（刮削 / STRM，由 PanKeeper 跟踪结果）' },
-    { value: 'litepan', label: 'LitePan（转存完 Webhook 通知，后续整理由 LitePan 自理）' },
-];
+  { value: 'qms', label: 'QMS 全流程（刮削 / STRM，由 PanKeeper 跟踪结果）' },
+  { value: 'litepan', label: 'LitePan（转存完 Webhook 通知，后续整理由 LitePan 自理）' },
+]
 function onMediaBackend(v: 'qms' | 'litepan') {
-    mediaBackend.value = v;
-    saveMediaBackend(v);
-    message.info(v === 'qms' ? '已切换到 QMS 全流程联动' : '已切换到 LitePan 模式：转存完成后仅 Webhook 通知，QMS/STRM 流程停用');
+  // select 是 :value 绑定不是 v-model：本地值必须自己更新，否则下拉显示与下方表单都不切
+  mediaBackend.value = v
+  saveMediaBackend(v)
+  message.info(v === 'qms' ? '已切换到 QMS 全流程联动' : '已切换到 LitePan 模式：转存完成后仅 Webhook 通知，QMS/STRM 流程停用')
 }
+
+/** LitePan 启用开关：地址没填不让开；填了要测连通，不通弹回（对齐 QMS 门槛语义） */
 async function onLitePanEnabled(v: unknown) {
-    if (v !== 'on') {
-        litepan.enabled = false;
-        return;
+  if (v !== 'on') {
+    litepan.enabled = false
+    return
+  }
+  if (!litepan.webhook_url.trim()) {
+    litepan.enabled = false
+    message.warning('还没填写 Webhook 地址，开启不了联动——先填地址再测连通', 5)
+    return
+  }
+  litepanTesting.value = true
+  try {
+    const r = await testLitePan(litepan.webhook_url, litepan.apikey)
+    if (!r.ok) {
+      litepan.enabled = false
+      message.error(`LitePan 连接不通（${r.message || '检查地址或 API Key'}），未开启联动`, 5)
+      return
     }
-    if (!litepan.webhook_url.trim()) {
-        litepan.enabled = false;
-        message.warning('还没填写 Webhook 地址，开启不了联动——先填地址再测连通', 5);
-        return;
-    }
-    litepanTesting.value = true;
-    try {
-        const r = await testLitePan(litepan.webhook_url, litepan.apikey);
-        if (!r.ok) {
-            litepan.enabled = false;
-            message.error(`LitePan 连接不通（${r.message || '检查地址或 API Key'}），未开启联动`, 5);
-            return;
-        }
-        litepan.enabled = true;
-        message.success('LitePan 连通正常，联动已开启');
-    }
-    catch {
-        litepan.enabled = false;
-        message.error('LitePan 连接失败，未开启联动', 5);
-    }
-    finally {
-        litepanTesting.value = false;
-    }
+    litepan.enabled = true
+    message.success('LitePan 连通正常，联动已开启')
+  } catch {
+    litepan.enabled = false
+    message.error('LitePan 连接失败，未开启联动', 5)
+  } finally {
+    litepanTesting.value = false
+  }
 }
-const lpHealth = ref<{
-    ok: boolean;
-    message?: string;
-} | null>(null);
+
+/** LitePan 在线胶囊（语义同 QMS 引擎胶囊）：进页拉一次，点「测试」后同步 */
+const lpHealth = ref<{ ok: boolean; message?: string } | null>(null)
 function refreshLpHealth() {
-    getLitePanHealth().then((h) => (lpHealth.value = h)).catch(() => (lpHealth.value = { ok: false, message: '检测失败' }));
+  getLitePanHealth().then((h) => (lpHealth.value = h)).catch(() => (lpHealth.value = { ok: false, message: '检测失败' }))
 }
-const litepanTesting = ref(false);
+const litepanTesting = ref(false)
 async function onTestLitePan() {
-    if (!litepan.webhook_url) {
-        message.warning('请先填写 Webhook 地址');
-        return;
-    }
-    litepanTesting.value = true;
-    try {
-        const r = await testLitePan(litepan.webhook_url, litepan.apikey);
-        lpHealth.value = { ok: r.ok, message: r.ok ? '在线' : (r.message || '离线') };
-        if (r.ok)
-            message.success(r.message || 'LitePan 连通正常');
-        else
-            message.error(r.message || 'LitePan 连接失败', 5);
-    }
-    catch (e: unknown) {
-        const detail = (e as {
-            response?: {
-                data?: {
-                    detail?: string;
-                };
-            };
-        })?.response?.data?.detail;
-        message.error(detail || 'LitePan 连接失败', 5);
-    }
-    finally {
-        litepanTesting.value = false;
-    }
+  if (!litepan.webhook_url) {
+    message.warning('请先填写 Webhook 地址')
+    return
+  }
+  litepanTesting.value = true
+  try {
+    // 传「输入框正在编辑的值」——不等自动保存，点测试就测当前填的；掩码 key 后端自己回落
+    const r = await testLitePan(litepan.webhook_url, litepan.apikey)
+    lpHealth.value = { ok: r.ok, message: r.ok ? '在线' : (r.message || '离线') }
+    if (r.ok) message.success(r.message || 'LitePan 连通正常')
+    else message.error(r.message || 'LitePan 连接失败', 5)
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || 'LitePan 连接失败', 5)
+  } finally {
+    litepanTesting.value = false
+  }
 }
-const qmsHealth = ref<{
-    ok: boolean;
-    message?: string;
-} | null>(null);
+
+const qmsHealth = ref<{ ok: boolean; message?: string } | null>(null)
 async function onQmsEnabled(v: unknown) {
-    if (v !== 'on') {
-        qms.enabled = false;
-        return;
+  // 开关有门槛：地址没填不让开；填了也要先实测连通，不通照样拒绝（显示值自动弹回）
+  if (v !== 'on') {
+    qms.enabled = false
+    return
+  }
+  if (!qms.url.trim()) {
+    message.warning('还没填写 QMS 地址，开启不了联动——先填地址再测连通', 5)
+    return
+  }
+  qmsTesting.value = true
+  try {
+    const r = await testQms(qms.url, qms.apikey)
+    if (!r.ok) {
+      message.error(`QMS 连接不通（${r.message || '检查地址或 API Key'}），未开启联动`, 5)
+      return
     }
-    if (!qms.url.trim()) {
-        message.warning('还没填写 QMS 地址，开启不了联动——先填地址再测连通', 5);
-        return;
-    }
-    qmsTesting.value = true;
-    try {
-        const r = await testQms(qms.url, qms.apikey);
-        if (!r.ok) {
-            message.error(`QMS 连接不通（${r.message || '检查地址或 API Key'}），未开启联动`, 5);
-            return;
-        }
-        qms.enabled = true;
-        message.success('QMS 连通正常，联动已开启');
-    }
-    catch (e: unknown) {
-        const detail = (e as {
-            response?: {
-                data?: {
-                    detail?: string;
-                };
-            };
-        })?.response?.data?.detail;
-        message.error(detail || 'QMS 连接不通，未开启联动', 5);
-    }
-    finally {
-        qmsTesting.value = false;
-    }
+    qms.enabled = true
+    message.success('QMS 连通正常，联动已开启')
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || 'QMS 连接不通，未开启联动', 5)
+  } finally {
+    qmsTesting.value = false
+  }
 }
-const qmsTesting = ref(false);
+const qmsTesting = ref(false)
 async function onTestQms() {
-    if (!qms.url) {
-        message.warning('请先填写 QMS 地址');
-        return;
-    }
-    qmsTesting.value = true;
-    try {
-        const r = await testQms(qms.url, qms.apikey);
-        if (r.ok)
-            message.success(r.message || 'QMS 连接正常');
-        else
-            message.error(r.message || 'QMS 连接失败');
-        qmsHealth.value = { ok: r.ok, message: r.ok ? '在线' : r.message };
-    }
-    catch (e: unknown) {
-        const detail = (e as {
-            response?: {
-                data?: {
-                    detail?: string;
-                };
-            };
-        })?.response?.data?.detail;
-        message.error(detail || 'QMS 连接失败', 5);
-        qmsHealth.value = { ok: false, message: detail || '离线' };
-    }
-    finally {
-        qmsTesting.value = false;
-    }
+  if (!qms.url) {
+    message.warning('请先填写 QMS 地址')
+    return
+  }
+  qmsTesting.value = true
+  try {
+    // url 与 apikey 都传「输入框正在编辑的值」——不等自动保存，点测试就测当前填的
+    const r = await testQms(qms.url, qms.apikey)
+    // 后端 200 也代表"测完"，连通与否看 ok 字段，不能无条件报成功
+    if (r.ok) message.success(r.message || 'QMS 连接正常')
+    else message.error(r.message || 'QMS 连接失败')
+    // 状态胶囊同步：测的就是草稿值，比胶囊自己的定时探测更即时
+    qmsHealth.value = { ok: r.ok, message: r.ok ? '在线' : r.message }
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || 'QMS 连接失败', 5)
+    qmsHealth.value = { ok: false, message: detail || '离线' }
+  } finally {
+    qmsTesting.value = false
+  }
 }
+
+/* ===== tab2 代理配置（TMDB，字段从搜索源 tab 迁来） ===== */
 const TMDB_MODE_OPTS = [
-    { value: 'proxy', label: '代理模式' },
-    { value: 'host', label: 'Host 模式' },
-];
+  { value: 'proxy', label: '代理模式' },
+  { value: 'host', label: 'Host 模式' },
+]
 function addHost() {
-    qms.tmdb_hosts.push({ ip: '', host: '' });
+  qms.tmdb_hosts.push({ ip: '', host: '' })
 }
 function removeHost(i: number) {
-    qms.tmdb_hosts.splice(i, 1);
-    flushSave('qms');
+  qms.tmdb_hosts.splice(i, 1)
+  flushSave('qms')
 }
-const tmdbTesting = ref(false);
+const tmdbTesting = ref(false)
 async function onTestTmdb() {
-    tmdbTesting.value = true;
-    try {
-        const r = await testTmdb({
-            mode: qms.tmdb_mode,
-            proxy: qms.tmdb_proxy,
-            hosts: qms.tmdb_hosts.filter((h) => h.ip.trim() && h.host.trim()),
-            skip_tls: qms.tmdb_skip_tls,
-            api_key: qms.tmdb_api_key,
-        });
-        if (r.ok) {
-            message.success(r.results && r.results.length > 1 ? r.message || 'TMDB 连通正常' : `${r.message || 'TMDB 连通正常'}${r.ms != null ? ` · ${r.ms} ms` : ''}`);
-            if (qms.tmdb_mode === 'host' && r.winner) {
-                const i = qms.tmdb_hosts.findIndex((h) => h.ip.trim() === r.winner);
-                if (i > 0) {
-                    const [row] = qms.tmdb_hosts.splice(i, 1);
-                    qms.tmdb_hosts.unshift(row);
-                    flushSave('qms');
-                    message.info(`已把最快的 ${r.winner} 置顶为生效行`);
-                }
-            }
+  // mode/proxy/hosts/skip_tls 传「输入框正在编辑的值」不等自动保存；掩码 key 原样传，后端回落已保存配置
+  tmdbTesting.value = true
+  try {
+    const r = await testTmdb({
+      mode: qms.tmdb_mode,
+      proxy: qms.tmdb_proxy,
+      hosts: qms.tmdb_hosts.filter((h) => h.ip.trim() && h.host.trim()),
+      skip_tls: qms.tmdb_skip_tls,
+      api_key: qms.tmdb_api_key,
+    })
+    // 后端连通失败也是 200 + {ok:false}，必须看 ok 字段；多候选时 message 已含逐 IP 耗时
+    if (r.ok) {
+      message.success(r.results && r.results.length > 1 ? r.message || 'TMDB 连通正常' : `${r.message || 'TMDB 连通正常'}${r.ms != null ? ` · ${r.ms} ms` : ''}`)
+      // host 模式：把最快的 IP 置顶为生效行（运行时按行序生效、失败自动换下一行）
+      if (qms.tmdb_mode === 'host' && r.winner) {
+        const i = qms.tmdb_hosts.findIndex((h) => h.ip.trim() === r.winner)
+        if (i > 0) {
+          const [row] = qms.tmdb_hosts.splice(i, 1)
+          qms.tmdb_hosts.unshift(row)
+          flushSave('qms')
+          message.info(`已把最快的 ${r.winner} 置顶为生效行`)
         }
-        else {
-            message.error(r.message || 'TMDB 连通失败', 5);
-        }
+      }
+    } else {
+      message.error(r.message || 'TMDB 连通失败', 5)
     }
-    catch (e: unknown) {
-        const detail = (e as {
-            response?: {
-                data?: {
-                    detail?: string;
-                };
-            };
-        })?.response?.data?.detail;
-        message.error(detail || 'TMDB 连通失败', 5);
-    }
-    finally {
-        tmdbTesting.value = false;
-    }
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || 'TMDB 连通失败', 5)
+  } finally {
+    tmdbTesting.value = false
+  }
 }
+
+/* ===== tab5 账号安全 ===== */
 const SESSION_OPTS = [
-    { value: 7, label: '7 天' },
-    { value: 30, label: '30 天' },
-    { value: 1, label: '1 天' },
-];
-const pw = reactive({ old: '', next: '', confirm: '' });
+  { value: 7, label: '7 天' },
+  { value: 30, label: '30 天' },
+  { value: 1, label: '1 天' },
+]
+const pw = reactive({ old: '', next: '', confirm: '' })
 async function onSaveSecurity() {
-    if (pw.next || pw.confirm) {
-        if (!pw.old) {
-            message.warning('请输入当前密码');
-            return;
-        }
-        if (pw.next.length < 8) {
-            message.warning('新密码至少 8 位');
-            return;
-        }
-        if (pw.next !== pw.confirm) {
-            message.warning('两次输入的新密码不一致');
-            return;
-        }
+  // 填了新密码才校验密码三件套；只改会话有效期可直接保存
+  if (pw.next || pw.confirm) {
+    if (!pw.old) {
+      message.warning('请输入当前密码')
+      return
     }
-    try {
-        await saveSecurity({
-            username: security.username,
-            old_password: pw.old,
-            new_password: pw.next,
-            session_days: security.session_days,
-        });
+    if (pw.next.length < 8) {
+      message.warning('新密码至少 8 位')
+      return
     }
-    catch (e: unknown) {
-        const detail = (e as {
-            response?: {
-                data?: {
-                    detail?: string;
-                };
-            };
-        })?.response?.data?.detail;
-        message.error(detail || '保存失败');
-        return;
+    if (pw.next !== pw.confirm) {
+      message.warning('两次输入的新密码不一致')
+      return
     }
-    pw.old = '';
-    pw.next = '';
-    pw.confirm = '';
-    message.success('账号已更新，请重新登录');
-    auth.logout();
-    router.push({ name: 'login' });
+  }
+  try {
+    await saveSecurity({
+      username: security.username,
+      old_password: pw.old,
+      new_password: pw.next,
+      session_days: security.session_days,
+    })
+  } catch (e: unknown) {
+    // 当前密码错误、用户名冲突等：后端 400 + detail，表单原样保留让用户改
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '保存失败')
+    return
+  }
+  pw.old = ''
+  pw.next = ''
+  pw.confirm = ''
+  // 账号凭证已变更：清掉本地会话强制回登录页，不拿旧 token 继续待着
+  message.success('账号已更新，请重新登录')
+  auth.logout()
+  router.push({ name: 'login' })
 }
-const avatarFile = ref<HTMLInputElement | null>(null);
-const avatarBusy = ref(false);
+
+/* ===== tab6 头像管理 ===== */
+const avatarFile = ref<HTMLInputElement | null>(null)
+const avatarBusy = ref(false)
+
+/** 居中裁正方形并压到 256×256 JPEG —— 别把几 MB 的原图塞进数据库 */
 async function shrinkImage(file: File): Promise<string> {
-    const bitmap = await createImageBitmap(file);
-    const SIZE = 256;
-    const side = Math.min(bitmap.width, bitmap.height);
-    const canvas = document.createElement('canvas');
-    canvas.width = SIZE;
-    canvas.height = SIZE;
-    const ctx = canvas.getContext('2d');
-    if (!ctx)
-        throw new Error('canvas 不可用');
-    ctx.drawImage(bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side, 0, 0, SIZE, SIZE);
-    bitmap.close?.();
-    return canvas.toDataURL('image/jpeg', 0.85);
+  const bitmap = await createImageBitmap(file)
+  const SIZE = 256
+  const side = Math.min(bitmap.width, bitmap.height)
+  const canvas = document.createElement('canvas')
+  canvas.width = SIZE
+  canvas.height = SIZE
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('canvas 不可用')
+  ctx.drawImage(bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side, 0, 0, SIZE, SIZE)
+  bitmap.close?.()
+  return canvas.toDataURL('image/jpeg', 0.85)
 }
+
 async function onPickAvatar(e: Event) {
-    const input = e.target as HTMLInputElement;
-    const file = input.files?.[0];
-    input.value = '';
-    if (!file)
-        return;
-    if (!file.type.startsWith('image/')) {
-        message.warning('请选择图片文件');
-        return;
-    }
-    avatarBusy.value = true;
-    try {
-        await auth.saveAvatar(await shrinkImage(file));
-        message.success('头像已更新');
-    }
-    catch (err: unknown) {
-        const detail = (err as {
-            response?: {
-                data?: {
-                    detail?: string;
-                };
-            };
-        })?.response?.data?.detail;
-        message.error(detail || '头像上传失败');
-    }
-    finally {
-        avatarBusy.value = false;
-    }
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // 清空，允许连续选同一个文件
+  if (!file) return
+  if (!file.type.startsWith('image/')) {
+    message.warning('请选择图片文件')
+    return
+  }
+  avatarBusy.value = true
+  try {
+    await auth.saveAvatar(await shrinkImage(file))
+    message.success('头像已更新')
+  } catch (err: unknown) {
+    const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    message.error(detail || '头像上传失败')
+  } finally {
+    avatarBusy.value = false
+  }
 }
+
 async function onRemoveAvatar() {
-    avatarBusy.value = true;
-    try {
-        await auth.removeAvatar();
-        message.success('已移除头像');
-    }
-    catch {
-        message.error('移除失败');
-    }
-    finally {
-        avatarBusy.value = false;
-    }
+  avatarBusy.value = true
+  try {
+    await auth.removeAvatar()
+    message.success('已移除头像')
+  } catch {
+    message.error('移除失败')
+  } finally {
+    avatarBusy.value = false
+  }
 }
 </script>
 
 <template>
   <div>
     <div class="card st-card">
-      
+      <!-- 胶囊 tab：与全站唯一一套 .tabs 长相一致 -->
       <div class="tabs">
         <div v-for="t in TABS" :key="t.k" :class="{ on: tab === t.k }" @click="tab = t.k">{{ t.label }}</div>
       </div>
 
-      
+      <!-- ===== tab1 搜索源 ===== -->
       <div v-show="tab === 'tb1'">
         <div class="formrow">
           <label>PanSou 地址</label>
@@ -508,7 +498,7 @@ async function onRemoveAvatar() {
         </div>
       </div>
 
-      
+      <!-- ===== tab2 代理配置：TMDB API Key + 连通模式（代理 / host 直连） ===== -->
       <div v-show="tab === 'tb2'">
         <div class="formrow">
           <label>TMDB API Key</label>
@@ -559,7 +549,7 @@ async function onRemoveAvatar() {
         </template>
       </div>
 
-      
+      <!-- ===== tab3 推送通知（只服务自动转存） ===== -->
       <div v-show="tab === 'tb3'">
         <div class="formrow">
           <label>启用推送</label>
@@ -598,7 +588,7 @@ async function onRemoveAvatar() {
         </div>
       </div>
 
-      
+      <!-- ===== tab4 联动后端：顶部选后端，下面按所选显示对应参数 ===== -->
       <div v-show="tab === 'tb4'">
         <div class="st-mig">
           目录关联已迁到<b>「转存配置」</b>（每条目录配）与<b>自动转存任务弹窗</b>（每个任务配）两处，
@@ -645,7 +635,7 @@ async function onRemoveAvatar() {
             <div class="ctl">
               <a-select :value="litepan.enabled ? 'on' : 'off'" :options="ONOFF_OPTS" style="width: 120px" @change="onLitePanEnabled" />
               <span class="qms-pill" :class="lpHealth?.ok ? 'ok' : 'bad'"><i></i>{{ lpHealth === null ? 'LitePan 状态检测中…' : lpHealth.ok ? 'LitePan 在线' : `LitePan 离线${lpHealth.message ? ' · ' + lpHealth.message : ''}` }}</span>
-              
+              <!-- 说明必须待在 .ctl 里：formrow 是 132px+1fr 两列 grid，塞第三列会被挤成竖排 -->
               <span class="muted small">总闸关闭时所有目录的 LitePan 联动都不推送</span>
             </div>
           </div>
@@ -681,7 +671,7 @@ async function onRemoveAvatar() {
         </template>
       </div>
 
-      
+      <!-- ===== tab5 账号安全 ===== -->
       <div v-show="tab === 'tb5'">
         <div class="formrow">
           <label>用户名</label>
@@ -722,7 +712,7 @@ async function onRemoveAvatar() {
         </div>
       </div>
 
-      
+      <!-- ===== tab6 头像管理 ===== -->
       <div v-show="tab === 'tb6'">
         <div class="formrow">
           <label>当前头像</label>

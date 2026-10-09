@@ -1,224 +1,199 @@
-import { del, get, mockDelay, post, put, USE_MOCK } from '../http';
-import { settingsStore, type SettingsData, type SessionDays } from '../mock/settings';
+/**
+ * 系统设置领域 API —— 双模式。
+ * 注意：SendKey/API Key 加密存储、接口只回掩码；前端回传 `****` 开头的值时后端保留旧值。
+ */
+import { del, get, mockDelay, post, put, USE_MOCK } from '../http'
+import { settingsStore, type SettingsData, type SessionDays } from '../mock/settings'
+
+/** 读取全部设置（四个 tab 一把抓，表单值少没必要拆接口） */
 export function getSettings(): Promise<SettingsData> {
-    if (USE_MOCK) {
-        return mockDelay<SettingsData>({
-            search: { ...settingsStore.search },
-            notify: { ...settingsStore.notify },
-            qms: { ...settingsStore.qms },
-            litepan: { ...settingsStore.litepan },
-            security: { ...settingsStore.security },
-            media: { ...settingsStore.media },
-        });
-    }
-    return get<SettingsData>('/settings');
+  if (USE_MOCK) {
+    return mockDelay<SettingsData>({
+      search: { ...settingsStore.search },
+      notify: { ...settingsStore.notify },
+      qms: { ...settingsStore.qms },
+      litepan: { ...settingsStore.litepan },
+      security: { ...settingsStore.security },
+      media: { ...settingsStore.media },
+    })
+  }
+  return get<SettingsData>('/settings')
 }
+
+/** 保存搜索源配置 */
 export async function saveSearchSrc(cfg: SettingsData['search']): Promise<void> {
-    if (USE_MOCK) {
-        Object.assign(settingsStore.search, cfg);
-        return mockDelay(undefined);
-    }
-    await put('/settings/search', cfg);
+  if (USE_MOCK) {
+    Object.assign(settingsStore.search, cfg)
+    return mockDelay(undefined)
+  }
+  await put('/settings/search', cfg)
 }
+
+/** 保存推送通知配置 */
 export async function saveNotify(cfg: SettingsData['notify']): Promise<void> {
-    if (USE_MOCK) {
-        Object.assign(settingsStore.notify, cfg);
-        return mockDelay(undefined);
-    }
-    await put('/settings/notify', cfg);
+  if (USE_MOCK) {
+    Object.assign(settingsStore.notify, cfg)
+    return mockDelay(undefined)
+  }
+  await put('/settings/notify', cfg)
 }
+
+/** 保存 QMS 联动配置 */
 export async function saveQms(cfg: SettingsData['qms']): Promise<void> {
-    if (USE_MOCK) {
-        Object.assign(settingsStore.qms, cfg);
-        return mockDelay(undefined);
-    }
-    await put('/settings/qms', cfg);
+  if (USE_MOCK) {
+    Object.assign(settingsStore.qms, cfg)
+    return mockDelay(undefined)
+  }
+  await put('/settings/qms', cfg)
 }
+
+/** 保存联动后端选择（qms/litepan） */
 export async function saveMediaBackend(backend: 'qms' | 'litepan'): Promise<void> {
-    if (USE_MOCK) {
-        settingsStore.media.backend = backend;
-        return mockDelay(undefined);
-    }
-    await put('/settings/media', { backend });
+  if (USE_MOCK) {
+    settingsStore.media.backend = backend
+    return mockDelay(undefined)
+  }
+  await put('/settings/media', { backend })
 }
+
+/** 保存 LitePan 对接参数（联动后端=litepan 时的 Webhook 三件套） */
 export async function saveLitePan(cfg: SettingsData['litepan']): Promise<void> {
-    if (USE_MOCK) {
-        Object.assign(settingsStore.litepan, cfg);
-        return mockDelay(undefined);
-    }
-    await put('/settings/litepan', cfg);
+  if (USE_MOCK) {
+    Object.assign(settingsStore.litepan, cfg)
+    return mockDelay(undefined)
+  }
+  await put('/settings/litepan', cfg)
 }
-export async function testLitePan(url: string, apikey: string): Promise<{
-    ok: boolean;
-    message?: string;
-}> {
-    if (USE_MOCK) {
-        void url;
-        void apikey;
-        return mockDelay({ ok: true, message: '（mock）连通正常' }, 300);
-    }
-    return post<{
-        ok: boolean;
-        message?: string;
-    }>('/settings/litepan/test', { webhook_url: url, apikey });
+
+/** 测试 LitePan Webhook 连通。url/apikey 传「输入框正在编辑的值」，掩码 key 后端回落已保存配置 */
+export async function testLitePan(url: string, apikey: string): Promise<{ ok: boolean; message?: string }> {
+  if (USE_MOCK) {
+    void url
+    void apikey
+    return mockDelay({ ok: true, message: '（mock）连通正常' }, 300)
+  }
+  return post<{ ok: boolean; message?: string }>('/settings/litepan/test', { webhook_url: url, apikey })
 }
-export async function testPansou(url: string): Promise<{
-    ok: boolean;
-    ms: number;
-    message?: string;
-}> {
-    if (USE_MOCK) {
-        void url;
-        return mockDelay({ ok: true, ms: 120 + Math.round(Math.random() * 40) });
-    }
-    return post<{
-        ok: boolean;
-        ms: number;
-    }>('/settings/search/test', { url });
+
+/** 测试 PanSou 连通。返回响应耗时；失败时 ok=false + message（HTTP 仍是 200） */
+export async function testPansou(url: string): Promise<{ ok: boolean; ms: number; message?: string }> {
+  if (USE_MOCK) {
+    void url
+    return mockDelay({ ok: true, ms: 120 + Math.round(Math.random() * 40) })
+  }
+  return post<{ ok: boolean; ms: number }>('/settings/search/test', { url })
 }
-export async function testSendkey(sendkey: string): Promise<{
-    ok: boolean;
-    message?: string;
-}> {
-    if (USE_MOCK) {
-        void sendkey;
-        return mockDelay({ ok: true, message: '（mock）测试消息已发送' }, 400);
-    }
-    return post<{
-        ok: boolean;
-        message?: string;
-    }>('/settings/notify/test', { sendkey });
+
+/** 发送 Server 酱测试消息。后端发送失败也是 200 + {ok:false,message}，调用方必须看 ok */
+export async function testSendkey(sendkey: string): Promise<{ ok: boolean; message?: string }> {
+  if (USE_MOCK) {
+    void sendkey
+    return mockDelay({ ok: true, message: '（mock）测试消息已发送' }, 400)
+  }
+  return post<{ ok: boolean; message?: string }>('/settings/notify/test', { sendkey })
 }
-export async function testQms(url: string, apikey: string): Promise<{
-    ok: boolean;
-    message?: string;
-}> {
-    if (USE_MOCK) {
-        void url;
-        void apikey;
-        return mockDelay({ ok: true, message: 'QMS 连接正常' }, 300);
-    }
-    return post<{
-        ok: boolean;
-        message?: string;
-    }>('/settings/qms/test', { url, apikey });
+
+/** 测试 QMS 连接，返回连通结果（ok/message 直接来自后端，供调用方判断）。
+ *  url/apikey 传「输入框正在编辑的值」——不传则后端回落到已保存配置。 */
+export async function testQms(url: string, apikey: string): Promise<{ ok: boolean; message?: string }> {
+  if (USE_MOCK) {
+    void url
+    void apikey
+    return mockDelay({ ok: true, message: 'QMS 连接正常' }, 300)
+  }
+  return post<{ ok: boolean; message?: string }>('/settings/qms/test', { url, apikey })
 }
+
+/** 测试 TMDB 连通（代理配置 tab）：代理/Host 模式都按「输入框正在编辑的值」测。
+ *  host 模式同域名多 IP 时后端并发测全部候选，results 逐个报耗时，winner=最快的 IP（前端置顶为生效行）。
+ *  api_key 传掩码（****开头）时后端回落已保存配置。失败也是 200 + {ok:false,message} */
 export async function testTmdb(cfg: {
-    mode: string;
-    proxy: string;
-    hosts: {
-        ip: string;
-        host: string;
-    }[];
-    skip_tls: boolean;
-    api_key: string;
+  mode: string
+  proxy: string
+  hosts: { ip: string; host: string }[]
+  skip_tls: boolean
+  api_key: string
 }): Promise<{
-    ok: boolean;
-    ms?: number;
-    winner?: string;
-    message?: string;
-    results?: {
-        target: string;
-        desc: string;
-        ok: boolean;
-        ms?: number;
-        error?: string;
-    }[];
+  ok: boolean
+  ms?: number
+  /** host 模式多候选时的最快 IP（target），前端据此把该行置顶 */
+  winner?: string
+  message?: string
+  results?: { target: string; desc: string; ok: boolean; ms?: number; error?: string }[]
 }> {
-    if (USE_MOCK) {
-        void cfg;
-        return mockDelay({ ok: true, ms: 220, message: '（mock）TMDB 连通正常' }, 300);
-    }
-    return post<{
-        ok: boolean;
-        ms?: number;
-        winner?: string;
-        message?: string;
-        results?: {
-            target: string;
-            desc: string;
-            ok: boolean;
-            ms?: number;
-            error?: string;
-        }[];
-    }>('/settings/tmdb/test', cfg);
+  if (USE_MOCK) {
+    void cfg
+    return mockDelay({ ok: true, ms: 220, message: '（mock）TMDB 连通正常' }, 300)
+  }
+  return post<{ ok: boolean; ms?: number; winner?: string; message?: string; results?: { target: string; desc: string; ok: boolean; ms?: number; error?: string }[] }>(
+    '/settings/tmdb/test',
+    cfg,
+  )
 }
-export function getQmsHealth(): Promise<{
-    ok: boolean;
-    message?: string;
-}> {
-    if (USE_MOCK)
-        return mockDelay({ ok: true, message: '在线' }, 200);
-    return get<{
-        ok: boolean;
-        message?: string;
-    }>('/qms/health');
+
+/** QMS 引擎状态胶囊（设置页用，语义同 /search/health；按已保存配置测） */
+export function getQmsHealth(): Promise<{ ok: boolean; message?: string }> {
+  if (USE_MOCK) return mockDelay({ ok: true, message: '在线' }, 200)
+  return get<{ ok: boolean; message?: string }>('/qms/health')
 }
-export function getLitePanHealth(): Promise<{
-    ok: boolean;
-    message?: string;
-}> {
-    if (USE_MOCK)
-        return mockDelay({ ok: true, message: '在线' }, 200);
-    return get<{
-        ok: boolean;
-        message?: string;
-    }>('/litepan/health');
+
+/** LitePan 在线状态胶囊（语义同 QMS）：打 {基地址}/api/health（免认证） */
+export function getLitePanHealth(): Promise<{ ok: boolean; message?: string }> {
+  if (USE_MOCK) return mockDelay({ ok: true, message: '在线' }, 200)
+  return get<{ ok: boolean; message?: string }>('/litepan/health')
 }
+
+/** 推送历史行（push_logs 快照，一次投递一行）。content 只回 200 字预览，完整正文走 getPushLogDetail */
 export interface PushLogRow {
-    id: number;
-    ts: string;
-    title: string;
-    kind: string;
-    status: 'success' | 'fail';
-    error: string;
-    content: string;
-    has_more: boolean;
+  id: number
+  ts: string
+  title: string
+  kind: string
+  status: 'success' | 'fail'
+  error: string
+  content: string
+  has_more: boolean
 }
-export function getPushLogs(limit = 100): Promise<{
-    items: PushLogRow[];
-    delivered: number;
-    failed: number;
-}> {
-    if (USE_MOCK)
-        return mockDelay({ items: [], delivered: 0, failed: 0 });
-    return get<{
-        items: PushLogRow[];
-        delivered: number;
-        failed: number;
-    }>('/notify/history', { params: { limit } });
+
+/** 推送历史（推送历史页数据源）：items 按时间倒序 + 窗口内成败计数 */
+export function getPushLogs(limit = 100): Promise<{ items: PushLogRow[]; delivered: number; failed: number }> {
+  if (USE_MOCK) return mockDelay({ items: [], delivered: 0, failed: 0 })
+  return get<{ items: PushLogRow[]; delivered: number; failed: number }>('/notify/history', { params: { limit } })
 }
+
+/** 单条推送完整详情（正文快照，即 Server酱实际收到的内容；详情接口不区分预览/全量） */
 export interface PushLogDetail extends Omit<PushLogRow, 'has_more'> {
-    content: string;
+  content: string
 }
+
 export function getPushLogDetail(id: number): Promise<PushLogDetail> {
-    if (USE_MOCK)
-        return mockDelay({ id, ts: '', title: '（mock）', kind: 'info', status: 'success', error: '', content: 'mock 正文' });
-    return get<PushLogDetail>(`/notify/history/${id}`);
+  if (USE_MOCK) return mockDelay({ id, ts: '', title: '（mock）', kind: 'info', status: 'success', error: '', content: 'mock 正文' })
+  return get<PushLogDetail>(`/notify/history/${id}`)
 }
+
+/** 修改用户名 + 密码 + 会话有效期。后端同一端点：new_password 为空则只更新用户名/会话 */
 export async function saveSecurity(payload: {
-    username: string;
-    old_password: string;
-    new_password: string;
-    session_days: SessionDays;
+  username: string
+  old_password: string
+  new_password: string
+  session_days: SessionDays
 }): Promise<void> {
-    if (USE_MOCK) {
-        settingsStore.security.username = payload.username;
-        settingsStore.security.session_days = payload.session_days;
-        return mockDelay(undefined, 300);
-    }
-    await put('/settings/security', {
-        username: payload.username,
-        old_password: payload.old_password,
-        new_password: payload.new_password,
-        session_days: payload.session_days,
-    });
+  if (USE_MOCK) {
+    settingsStore.security.username = payload.username
+    settingsStore.security.session_days = payload.session_days
+    return mockDelay(undefined, 300)
+  }
+  await put('/settings/security', {
+    username: payload.username,
+    old_password: payload.old_password,
+    new_password: payload.new_password,
+    session_days: payload.session_days,
+  })
 }
+
+/** 清空推送历史：before = 'YYYY-MM-DD HH:MM:SS'（该时刻之前），空串 = 全部。返回清除条数。 */
 export async function clearPushLogs(before: string): Promise<number> {
-    if (USE_MOCK)
-        return mockDelay(0);
-    const { count } = await del<{
-        count: number;
-    }>(`/notify/history?before=${encodeURIComponent(before)}`);
-    return count;
+  if (USE_MOCK) return mockDelay(0)
+  const { count } = await del<{ count: number }>(`/notify/history?before=${encodeURIComponent(before)}`)
+  return count
 }

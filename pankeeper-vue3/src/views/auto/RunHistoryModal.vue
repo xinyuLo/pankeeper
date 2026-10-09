@@ -1,50 +1,57 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
-import { FolderOpenOutlined } from '@ant-design/icons-vue';
-import RunDetailModal from './RunDetailModal.vue';
-import { getPaRuns, type PaRunRow } from '@/api/modules/tasks';
-import type { PaTask } from '@/types/model';
-import { useBackGuard } from '@/composables/useBackGuard';
-const props = defineProps<{
-    open: boolean;
-    task: PaTask | null;
-}>();
-const emit = defineEmits<{
-    (e: 'update:open', v: boolean): void;
-}>();
-useBackGuard(() => props.open, () => emit('update:open', false));
-const rows = ref<PaRunRow[]>([]);
-const loading = ref(false);
-const detailOpen = ref(false);
-const detailId = ref<number | null>(null);
+/* 转存日志弹窗（bdsavePro 风格）：单个任务的历史执行卡片（成功/失败 + 起止时间 + 统计 chips），
+ * 点「详情」展开第二层（共用 RunDetailModal——与「转存历史」页同一份详情）。
+ * 全任务视角的历史请看「转存历史」页（侧边栏自动转存组）。 */
+import { ref, watch } from 'vue'
+import { FolderOpenOutlined } from '@ant-design/icons-vue'
+import RunDetailModal from './RunDetailModal.vue'
+import { getPaRuns, type PaRunRow } from '@/api/modules/tasks'
+import type { PaTask } from '@/types/model'
+
+import { useBackGuard } from '@/composables/useBackGuard'
+const props = defineProps<{ open: boolean; task: PaTask | null }>()
+const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>()
+useBackGuard(() => props.open, () => emit('update:open', false))
+
+const rows = ref<PaRunRow[]>([])
+const loading = ref(false)
+const detailOpen = ref(false)
+const detailId = ref<number | null>(null)
+
 async function load() {
-    if (!props.task)
-        return;
-    loading.value = true;
-    try {
-        rows.value = await getPaRuns(props.task.id);
-    }
-    finally {
-        loading.value = false;
-    }
+  if (!props.task) return
+  loading.value = true
+  try {
+    rows.value = await getPaRuns(props.task.id)
+  } finally {
+    loading.value = false
+  }
 }
-watch(() => props.open, (v) => {
+
+watch(
+  () => props.open,
+  (v) => {
     if (v) {
-        rows.value = [];
-        detailOpen.value = false;
-        load();
+      rows.value = []
+      detailOpen.value = false
+      load()
     }
-});
+  },
+)
+
 function openDetail(id: number) {
-    detailId.value = id;
-    detailOpen.value = true;
+  detailId.value = id
+  detailOpen.value = true
 }
+
+/** 整单结果 → 样式类（后端 overall.cls 是 t-ok/t-warn/t-bad；t-warn = 部分失败） */
 function ovCls(r: PaRunRow): string {
-    const c = r.overall?.cls;
-    return c === 't-warn' ? 'warn' : c === 't-bad' ? 'bad' : 'ok';
+  const c = r.overall?.cls
+  return c === 't-warn' ? 'warn' : c === 't-bad' ? 'bad' : 'ok'
 }
+
 function close() {
-    emit('update:open', false);
+  emit('update:open', false)
 }
 </script>
 
@@ -55,7 +62,7 @@ function close() {
     <div v-else class="rh-list">
       <div v-for="r in rows" :key="r.id" class="rh-card">
         <div class="rh-head">
-          
+          <!-- 整单结果：转存成功但 QMS 有失败 = 部分失败（橙），别只报转存那一半 -->
           <span class="rh-tag" :class="ovCls(r)">{{ r.overall?.st || (r.status === 'success' ? '成功' : '失败') }}</span>
           <span class="rh-time">{{ r.started }} → {{ r.finished }}</span>
           <a class="rh-detail" @click="openDetail(r.id)">详情</a>
@@ -72,7 +79,7 @@ function close() {
       </div>
     </div>
 
-    
+    <!-- 详情第二层（与「转存历史」页共用组件） -->
     <RunDetailModal v-model:open="detailOpen" :run-id="detailId" />
   </a-modal>
 </template>

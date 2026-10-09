@@ -1,59 +1,75 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
-import { useIsMobile } from '@/composables/useIsMobile';
-const props = withDefaults(defineProps<{
-    total: number;
-    current: number;
-    pageSize: number;
-    pageSizes?: number[];
-}>(), { pageSizes: () => [8, 20, 50] });
+/* 分页条 —— 搜索页 / 转存记录页共用。
+ * 桌面：左侧总数、中间幽灵页码（当前页实心胶囊）、右侧每页条数 + 跳页；
+ * 手机（<768px）：一行式 「‹ 2/6 ›  +  共 N 条  +  每页 N」，页码列表和跳页收起
+ * （窄屏排几十个页码按钮必然换行错乱，翻页箭头 + 页码指示够用）。 */
+import { computed, ref, watch } from 'vue'
+import { useIsMobile } from '@/composables/useIsMobile'
+
+const props = withDefaults(
+  defineProps<{
+    total: number
+    current: number
+    pageSize: number
+    pageSizes?: number[]
+  }>(),
+  { pageSizes: () => [8, 20, 50] },
+)
+
 const emit = defineEmits<{
-    (e: 'update:current', v: number): void;
-    (e: 'update:pageSize', v: number): void;
-}>();
-const isMobile = useIsMobile();
-const jumpInput = ref('');
-const totalPages = computed(() => Math.max(1, Math.ceil(props.total / props.pageSize)));
+  (e: 'update:current', v: number): void
+  (e: 'update:pageSize', v: number): void
+}>()
+
+const isMobile = useIsMobile()
+const jumpInput = ref('')
+
+const totalPages = computed(() => Math.max(1, Math.ceil(props.total / props.pageSize)))
+
+// 页码窗口：当前页前后各 2 页，首尾常驻，超出出省略号
 const pages = computed<(number | 'gap')[]>(() => {
-    const tp = totalPages.value;
-    const cur = props.current;
-    if (tp <= 9)
-        return Array.from({ length: tp }, (_, i) => i + 1);
-    const set = new Set<number>([1, tp, cur - 2, cur - 1, cur, cur + 1, cur + 2]);
-    const list = [...set].filter((p) => p >= 1 && p <= tp).sort((a, b) => a - b);
-    const out: (number | 'gap')[] = [];
-    let prev = 0;
-    for (const p of list) {
-        if (p - prev > 1)
-            out.push('gap');
-        out.push(p);
-        prev = p;
-    }
-    return out;
-});
-watch(() => props.pageSize, () => emit('update:current', 1));
+  const tp = totalPages.value
+  const cur = props.current
+  if (tp <= 9) return Array.from({ length: tp }, (_, i) => i + 1)
+  const set = new Set<number>([1, tp, cur - 2, cur - 1, cur, cur + 1, cur + 2])
+  const list = [...set].filter((p) => p >= 1 && p <= tp).sort((a, b) => a - b)
+  const out: (number | 'gap')[] = []
+  let prev = 0
+  for (const p of list) {
+    if (p - prev > 1) out.push('gap')
+    out.push(p)
+    prev = p
+  }
+  return out
+})
+
+watch(
+  () => props.pageSize,
+  () => emit('update:current', 1), // 切每页条数回第 1 页（原型约定）
+)
+
 function goPage(p: number) {
-    const target = Math.min(totalPages.value, Math.max(1, p));
-    emit('update:current', target);
+  const target = Math.min(totalPages.value, Math.max(1, p))
+  emit('update:current', target)
 }
+
 function doJump() {
-    const n = parseInt(jumpInput.value, 10);
-    if (!isNaN(n))
-        goPage(n);
-    jumpInput.value = '';
+  const n = parseInt(jumpInput.value, 10)
+  if (!isNaN(n)) goPage(n)
+  jumpInput.value = ''
 }
+
 function fmtRange(): string {
-    if (props.total === 0)
-        return '第 0 条';
-    const start = (props.current - 1) * props.pageSize + 1;
-    const end = Math.min(props.total, props.current * props.pageSize);
-    return `第 ${start}–${end} 条`;
+  if (props.total === 0) return '第 0 条'
+  const start = (props.current - 1) * props.pageSize + 1
+  const end = Math.min(props.total, props.current * props.pageSize)
+  return `第 ${start}–${end} 条`
 }
 </script>
 
 <template>
   <div class="pager" v-if="total > 0">
-    
+    <!-- 手机一行式：‹ n/m › 在左，总数与每页条数靠右 -->
     <template v-if="isMobile">
       <div class="pg-nav">
         <button class="pg-arrow" :disabled="current <= 1" aria-label="上一页" @click="goPage(current - 1)">‹</button>
@@ -70,7 +86,7 @@ function fmtRange(): string {
       </div>
     </template>
 
-    
+    <!-- 桌面三段式：总数 · 页码 · 每页条数 + 跳页 -->
     <template v-else>
       <span class="pg-total">共 <b>{{ total }}</b> 条 · {{ fmtRange() }}</span>
 

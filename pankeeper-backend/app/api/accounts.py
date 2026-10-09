@@ -1,3 +1,4 @@
+"""网盘连接：多账号（每平台可配多个，同时在线）。只回状态绝不回明文（红线）。"""
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
@@ -12,12 +13,14 @@ from ..security import encrypt_credential
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
+# 平台展示元信息（品牌色/凭据形态），与前端 accounts 页一致
 META = {
-    "baidu": {"short": "百度", "color": "#1677ff", "cred_kind": "Cookie", "note": "适配器开发中"},
+    "baidu": {"short": "百度", "color": "#1677ff", "cred_kind": "Cookie", "note": "适配器开发中（依据 bdsavepro 调研的接口事实）"},
     "quark": {"short": "夸克", "color": "#13c2c2", "cred_kind": "Cookie", "note": "已实现：转存/清单/目录/重命名"},
-    "115": {"short": "115", "color": "#722ed1", "cred_kind": "Cookie / 扫码", "note": "适配器开发中"},
+    "115": {"short": "115", "color": "#722ed1", "cred_kind": "Cookie / 扫码", "note": "适配器开发中（p115client 方案）"},
 }
 ORDER = ("baidu", "quark", "115")
+
 
 def _acc_or_404(db, acc_id: int) -> Account:
     acc = db.get(Account, acc_id)
@@ -25,20 +28,24 @@ def _acc_or_404(db, acc_id: int) -> Account:
         raise HTTPException(status_code=404, detail="账号不存在")
     return acc
 
+
 def _default_map(db) -> dict:
+    """每类型默认账号 map（settings 组 default_accounts：{type: acc_id}）。"""
     from ..services.settings_svc import get_group
 
     try:
         return get_group("default_accounts") or {}
-    except Exception:
+    except Exception:  # noqa: BLE001
         return {}
 
+
 def _row(acc: Account, default_map: dict | None = None) -> dict:
+    """单账号卡片行：平台静态元信息 + 账号动态状态。"""
     meta = META.get(acc.type, {"short": acc.type, "color": "#888", "cred_kind": "Cookie", "note": ""})
     if default_map is None:
         with SessionLocal() as db:
             default_map = _default_map(db)
-
+    # 没显式设过默认：该类型 id 最小的账号视为默认（单账号场景天然成立）
     explicit = default_map.get(acc.type)
     is_default = (acc.id == explicit) if explicit else _is_first_of_type(acc)
     return {
@@ -54,26 +61,36 @@ def _row(acc: Account, default_map: dict | None = None) -> dict:
         "nickname": acc.nickname,
         "last_check": acc.last_check,
         "is_default": is_default,
-
+        # 卡片上的「失效通知」开关（Server 酱）：按账号存；没配凭据的账号
+        # 没有"失效"可言 —— 展示为关（配置后自动恢复开关原值）
         "notify": bool(acc.cookies_enc) and drive_enabled(str(acc.id)),
-
+        # 容量/会员摘要走缓存：刷新页面能立刻显示，不必等实时请求
         "summary": _cached_summary(acc.id),
     }
+
 
 def _is_first_of_type(acc: Account) -> bool:
     with SessionLocal() as db:
         first = db.query(Account).filter(Account.type == acc.type).order_by(Account.id).first()
     return bool(first and first.id == acc.id)
 
+
+# ===== 默认根目录（网盘连接页配置） =====
+# 所有目录树弹窗的固定浏览起点；与转存配置的 is_default（快速转存下拉第一项）无关。
+
 VALID_DRIVE_TYPES = ("baidu", "quark", "115")
+
 
 @router.get("/root-dirs")
 def get_root_dirs(_user=CurrentUser):
+    """{type: path}；没配置的类型不在结果里（弹窗回退真根浏览）。"""
     return get_group("root_cfg")
+
 
 class RootDirBody(BaseModel):
     type: str
     path: str = ""
+
 
 @router.put("/root-dirs")
 def put_root_dir(body: RootDirBody, _user=CurrentUser):
@@ -84,9 +101,10 @@ def put_root_dir(body: RootDirBody, _user=CurrentUser):
     if path:
         cfg[body.type] = path
     else:
-        cfg.pop(body.type, None)
+        cfg.pop(body.type, None)  # 清空 = 该网盘回退真根浏览
     save_group("root_cfg", cfg)
     return cfg
+
 
 @router.get("")
 def list_accounts(_user=CurrentUser):
@@ -98,14 +116,18 @@ def list_accounts(_user=CurrentUser):
             out.append(_row(acc, dmap))
     return out
 
+
 class CredentialBody(BaseModel):
     cookies: str
     alias: str = ""
 
+
 class AliasBody(BaseModel):
     alias: str = ""
 
+
 def _save_and_verify(acc: Account, cookies: str) -> dict:
+    """写入凭据 → 保存即验证。成功置 connected 并回昵称；失败置 expired 并抛 400。"""
     with SessionLocal() as db:
         row = db.get(Account, acc.id)
         row.cookies_enc = encrypt_credential(cookies.strip())
@@ -133,8 +155,10 @@ def _save_and_verify(acc: Account, cookies: str) -> dict:
                 db.commit()
         raise HTTPException(status_code=400, detail=f"凭据验证失败：{e}")
 
+
 @router.post("/{type}")
 def add_account(type: str, body: CredentialBody, _user=CurrentUser):
+    """新增账号（选平台 + 粘贴 Cookie + 可选别名）。保存即验证。"""
     if type not in ORDER:
         raise HTTPException(status_code=404, detail="未知网盘")
     with SessionLocal() as db:
@@ -147,6 +171,7 @@ def add_account(type: str, body: CredentialBody, _user=CurrentUser):
     finally:
         pass
 
+
 @router.put("/{acc_id}/credential")
 def put_credential(acc_id: int, body: CredentialBody, _user=CurrentUser):
     with SessionLocal() as db:
@@ -156,6 +181,7 @@ def put_credential(acc_id: int, body: CredentialBody, _user=CurrentUser):
         db.commit()
     return _save_and_verify(acc, body.cookies)
 
+
 @router.put("/{acc_id}/alias")
 def set_alias(acc_id: int, body: AliasBody, _user=CurrentUser):
     with SessionLocal() as db:
@@ -164,8 +190,10 @@ def set_alias(acc_id: int, body: AliasBody, _user=CurrentUser):
         db.commit()
     return {"ok": True, "alias": acc.alias}
 
+
 @router.delete("/{acc_id}")
 def delete_account(acc_id: int, _user=CurrentUser):
+    """删除整个账号（卡片随之消失）。若它是默认账号，显式指定一并移除（回落隐式默认）。"""
     with SessionLocal() as db:
         acc = _acc_or_404(db, acc_id)
         acc_type = acc.type
@@ -179,8 +207,12 @@ def delete_account(acc_id: int, _user=CurrentUser):
         save_group("default_accounts", dmap)
     return {"ok": True}
 
+
 @router.put("/{acc_id}/set-default")
 def set_default_account(acc_id: int, _user=CurrentUser):
+    """设为该类型的默认账号（转存/调度未指定账号时用它）。
+
+    已是显式默认再点 = 取消指定，回落"该类型 id 最小"的隐式默认。"""
     with SessionLocal() as db:
         acc = _acc_or_404(db, acc_id)
         acc_type = acc.type
@@ -194,31 +226,49 @@ def set_default_account(acc_id: int, _user=CurrentUser):
     save_group("default_accounts", dmap)
     return {"ok": True, "type": acc_type, "default_acc_id": dmap.get(acc_type)}
 
+
 @router.delete("/{acc_id}/credential")
 def delete_credential(acc_id: int, _user=CurrentUser):
+    """清空凭据。没有凭据的空壳卡片没有存在意义（前端不展示）——直接删整个账号，
+    与 DELETE /{acc_id} 同义；保留端点只为兼容旧调用方。"""
     with SessionLocal() as db:
         acc = _acc_or_404(db, acc_id)
         db.delete(acc)
         db.commit()
     return {"ok": True}
 
+
 def _cache_summary(acc_id: int, data: dict) -> None:
+    """把容量/会员摘要落进 settings（key: account_summary，按账号 id）。
+
+    卡片刷新时先拿缓存渲染，不必干等一次实时请求；实时结果回来再覆盖。
+    缓存失败绝不影响接口本身。
+    """
     try:
         cache = get_group("account_summary")
         cache[str(acc_id)] = data
         save_group("account_summary", cache)
-    except Exception:
+    except Exception:  # noqa: BLE001
         pass
 
+
 def _cached_summary(acc_id: int) -> dict:
+    """读缓存摘要（没有则返回空壳，前端显示「暂无」）。"""
     try:
         data = get_group("account_summary").get(str(acc_id))
-    except Exception:
+    except Exception:  # noqa: BLE001
         data = None
     return data if isinstance(data, dict) else {"capacity": None, "vip": None}
 
+
 @router.get("/{acc_id}/summary")
 def account_summary(acc_id: int, _user=CurrentUser):
+    """容量 + 会员摘要（卡片上的容量条/会员标签数据源）。
+
+    原则同凭据红线：只回摘要数字，不回任何凭据内容。
+    未配置/不支持/获取失败统一返回 null 字段，前端显示「暂无」。
+    成功时写缓存，页面刷新即可立现（不必重打网盘接口）。
+    """
     with SessionLocal() as db:
         acc = _acc_or_404(db, acc_id)
         if acc.status != "connected" or not acc.cookies_enc:
@@ -234,17 +284,25 @@ def account_summary(acc_id: int, _user=CurrentUser):
     _cache_summary(acc_id, data)
     return data
 
+
 class NotifyBody(BaseModel):
     enabled: bool = True
 
+
 @router.put("/{acc_id}/notify")
 def set_drive_notify(acc_id: int, body: NotifyBody, _user=CurrentUser):
+    """账号粒度的「失效通知」开关（网盘连接页卡片上用）。
+
+    只是粒度控制——探活发现失效时先看这里，再走 notify.push（那里还有总闸
+    settings.notify.enabled 与 on_cred 时机开关）。
+    """
     with SessionLocal() as db:
         _acc_or_404(db, acc_id)
     cfg = get_group("drive_notify")
     cfg[str(acc_id)] = bool(body.enabled)
     save_group("drive_notify", cfg)
     return {"ok": True, "acc_id": acc_id, "enabled": bool(body.enabled)}
+
 
 @router.post("/{acc_id}/check")
 def check_account(acc_id: int, _user=CurrentUser):

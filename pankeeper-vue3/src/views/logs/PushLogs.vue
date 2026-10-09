@@ -1,84 +1,97 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
-import ClearHistoryButton, { type ClearRange } from '@/components/ClearHistoryButton.vue';
-import { useBackGuard } from '@/composables/useBackGuard';
-import { message } from 'ant-design-vue';
-import { ReloadOutlined, EyeOutlined } from '@ant-design/icons-vue';
-import { getPushLogs, getPushLogDetail, clearPushLogs, type PushLogRow, type PushLogDetail } from '@/api/modules/settings';
-import { useIsMobile } from '@/composables/useIsMobile';
-import MarkdownIt from 'markdown-it';
-const isMobile = useIsMobile();
+/* 推送历史页（侧边栏：日志管理 → 推送历史）
+ * Server 酱/Webhook 每次投递一行：几点推的、成功/失败、推送标题、失败原因。
+ * 行内「详情」/点卡片 → 抽屉展示 Server酱实际收到的完整正文（push_logs.content 快照）。
+ * 数据源 GET /notify/history（notify.push 落库的 push_logs 快照，倒序取最近 100 条）。
+ * 表格口径与转存历史页一致：全局基础样式 + 本页只收横向内边距（pl- 前缀）。 */
+import { computed, onMounted, ref } from 'vue'
+import ClearHistoryButton, { type ClearRange } from '@/components/ClearHistoryButton.vue'
+import { useBackGuard } from '@/composables/useBackGuard'
+import { message } from 'ant-design-vue'
+import { ReloadOutlined, EyeOutlined } from '@ant-design/icons-vue'
+import { getPushLogs, getPushLogDetail, clearPushLogs, type PushLogRow, type PushLogDetail } from '@/api/modules/settings'
+import { useIsMobile } from '@/composables/useIsMobile'
+import MarkdownIt from 'markdown-it'
+
+const isMobile = useIsMobile()
+
 const STATUS_OPTS = [
-    { value: '', label: '全部状态' },
-    { value: 'success', label: '成功' },
-    { value: 'fail', label: '失败' },
-];
-const fStatus = ref('');
-const rows = ref<PushLogRow[]>([]);
-const delivered = ref(0);
-const failed = ref(0);
-const loading = ref(false);
+  { value: '', label: '全部状态' },
+  { value: 'success', label: '成功' },
+  { value: 'fail', label: '失败' },
+]
+const fStatus = ref('')
+
+const rows = ref<PushLogRow[]>([])
+const delivered = ref(0)
+const failed = ref(0)
+const loading = ref(false)
+
 async function load() {
-    loading.value = true;
-    try {
-        const r = await getPushLogs(100);
-        rows.value = r.items;
-        delivered.value = r.delivered;
-        failed.value = r.failed;
-    }
-    catch {
-        message.error('推送历史加载失败');
-    }
-    finally {
-        loading.value = false;
-    }
+  loading.value = true
+  try {
+    const r = await getPushLogs(100)
+    rows.value = r.items
+    delivered.value = r.delivered
+    failed.value = r.failed
+  } catch {
+    message.error('推送历史加载失败')
+  } finally {
+    loading.value = false
+  }
 }
-onMounted(load);
-const detailOpen = ref(false);
-useBackGuard(detailOpen);
-const md = new MarkdownIt({ breaks: true, linkify: true });
-const detailHtml = computed(() => (detail.value?.content ? md.render(detail.value.content) : ''));
-const detailLoading = ref(false);
-const detail = ref<PushLogDetail | null>(null);
+onMounted(load)
+
+/* ===== 详情抽屉：拉该条推送的完整正文快照 ===== */
+const detailOpen = ref(false)
+useBackGuard(detailOpen)
+const md = new MarkdownIt({ breaks: true, linkify: true })
+/** 正文按 Markdown 渲染（与 Server酱展示同观感：标题/加粗/图片/段落） */
+const detailHtml = computed(() => (detail.value?.content ? md.render(detail.value.content) : ''))
+const detailLoading = ref(false)
+const detail = ref<PushLogDetail | null>(null)
 async function openDetail(row: PushLogRow) {
-    detailOpen.value = true;
-    detailLoading.value = true;
-    detail.value = null;
-    try {
-        detail.value = await getPushLogDetail(row.id);
-    }
-    catch {
-        message.error('推送详情加载失败');
-        detailOpen.value = false;
-    }
-    finally {
-        detailLoading.value = false;
-    }
+  detailOpen.value = true
+  detailLoading.value = true
+  detail.value = null
+  try {
+    detail.value = await getPushLogDetail(row.id)
+  } catch {
+    message.error('推送详情加载失败')
+    detailOpen.value = false
+  } finally {
+    detailLoading.value = false
+  }
 }
+
+/** 列表预览：正文压平换行截 60 字（全文走详情抽屉；不压平会把行撑爆错位） */
 function preview(c: string) {
-    return (c || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  return (c || '').replace(/\s+/g, ' ').trim().slice(0, 60)
 }
+
+/* kind → 中文（标题下的次级说明） */
 const KIND_TXT: Record<string, string> = {
-    search_done: '搜索转存',
-    search_fail: '搜索转存',
-    auto_done: '自动转存',
-    auto_fail: '自动转存',
-    cred: '凭据过期告警',
-    info: '通知',
-};
-function kindTxt(k: string) {
-    return KIND_TXT[k] || k || '通知';
+  search_done: '搜索转存',
+  search_fail: '搜索转存',
+  auto_done: '自动转存',
+  auto_fail: '自动转存',
+  cred: '凭据过期告警',
+  info: '通知',
 }
+function kindTxt(k: string) {
+  return KIND_TXT[k] || k || '通知'
+}
+/** 清空推送历史（下拉选范围） */
 async function onClear(range: ClearRange) {
-    let before = '';
-    if (range !== 'all') {
-        const d = new Date();
-        d.setMonth(d.getMonth() - { '1m': 1, '3m': 3, '6m': 6 }[range]);
-        before = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} 00:00:00`;
-    }
-    const n = await clearPushLogs(before);
-    message.success(n > 0 ? `已清空 ${n} 条推送记录` : '没有符合条件的记录');
-    await load();
+  let before = ''
+  if (range !== 'all') {
+    const d = new Date()
+    d.setMonth(d.getMonth() - { '1m': 1, '3m': 3, '6m': 6 }[range])
+    before = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} 00:00:00`
+  }
+  const n = await clearPushLogs(before)
+  message.success(n > 0 ? `已清空 ${n} 条推送记录` : '没有符合条件的记录')
+  await load()
 }
 </script>
 
@@ -116,7 +129,8 @@ async function onClear(range: ClearRange) {
               <div class="pl-title">{{ r.title }}</div>
               <span class="pl-sub">{{ kindTxt(r.kind) }}<template v-if="r.content"> · {{ preview(r.content) }}</template></span>
             </td>
-            
+            <!-- ⚠️ pl-err（display:-webkit-box）绝不能挂在 td 上：会覆盖 table-cell 布局，
+                 td 不随行拉伸、border 错位（2026-10-06 行错位实锤根因）。挂内部 span。 -->
             <td class="small">
               <span class="pl-err" :class="r.error ? 'bad-text' : 'muted'">{{ r.error || '—' }}</span>
             </td>
@@ -131,7 +145,7 @@ async function onClear(range: ClearRange) {
         </tbody>
       </table>
 
-      
+      <!-- 手机端：一行一条卡片，点卡片开详情 -->
       <div v-else class="pl-cards">
         <template v-for="r in rows" :key="r.id">
           <div v-if="!fStatus || r.status === fStatus" class="pl-card" @click="openDetail(r)">
@@ -147,7 +161,7 @@ async function onClear(range: ClearRange) {
       </div>
     </div>
 
-    
+    <!-- 详情抽屉：Server酱实际收到的完整正文（Markdown 原样 pre-wrap 展示） -->
     <a-drawer v-model:open="detailOpen" title="推送详情" :width="isMobile ? '100%' : 560" placement="right">
       <a-spin :spinning="detailLoading">
         <template v-if="detail">

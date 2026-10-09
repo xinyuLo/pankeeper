@@ -1,314 +1,340 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue';
-import { useRouter } from 'vue-router';
-import type { CSSProperties } from 'vue';
-import type { AccountStatus, MainDriveType, PaTask } from '@/types/model';
-import { paStore } from '@/api/mock/tasks';
-import { accountStore, firstAccountOf } from '@/api/mock/accounts';
-import { DRIVE_META } from '@/api/mock/meta';
-import { getDriveLogs, type DriveLogData } from '@/api/modules/driveLogs';
-import { useThemeStore } from '@/store/theme';
-import { useAuthStore } from '@/store/auth';
-const router = useRouter();
-const theme = useThemeStore();
-const auth = useAuthStore();
-const DB_TYPES: MainDriveType[] = ['baidu', 'quark', '115'];
+/* 首页 —— 原型 parts/page-dashboard.html 的 Vue 组合式移植（db- 前缀原样保留）。
+ * 数据源：paStore（自动任务）+ accountStore（网盘连接状态），computed 直读保持响应式，
+ * 任务在「自动转存」页改动后回到本页即自动更新——不落 ref 快照、不走一次性异步取数。
+ * 关键契约：总览「下一次触发」跨所有网盘取最早；任务区每个网盘只展示最近一条要触发的任务，
+ * 排序必须比 cron 估算出的时间戳 atMs，不能比格式化字符串（"今天 03:00" vs "02:30" 字符串序是错的）。 */
+import { computed, nextTick, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import type { CSSProperties } from 'vue'
+import type { AccountStatus, MainDriveType, PaTask } from '@/types/model'
+import { paStore } from '@/api/mock/tasks'
+import { accountStore, firstAccountOf } from '@/api/mock/accounts'
+import { DRIVE_META } from '@/api/mock/meta'
+import { getDriveLogs, type DriveLogData } from '@/api/modules/driveLogs'
+import { useThemeStore } from '@/store/theme'
+import { useAuthStore } from '@/store/auth'
+
+const router = useRouter()
+const theme = useThemeStore()
+const auth = useAuthStore()
+
+const DB_TYPES: MainDriveType[] = ['baidu', 'quark', '115']
+
+/* ---------- 工具 ---------- */
+
 function tasksOf(type: MainDriveType): PaTask[] {
-    return paStore.tasks.filter((t) => t.type === type);
+  return paStore.tasks.filter((t) => t.type === type)
 }
+
+/* 连接状态文案（对齐原型 DB_ACC 的措辞；状态值来自 accountStore） */
 const ACC_TEXT: Record<AccountStatus, string> = {
-    connected: '连接正常',
-    expired: '凭据已失效',
-    unset: '未配置',
-};
+  connected: '连接正常',
+  expired: '凭据已失效',
+  unset: '未配置',
+}
+
+/* ---------- 下次触发：从 cron '分 时 * * *' 估算首个命中时刻 ----------
+ * 返回里带 atMs（真实的下次触发时间戳），排序用它，别用格式化后的字符串比大小。 */
 interface NextRun {
-    none: boolean;
-    near: boolean;
-    main: string;
-    sub: string;
-    atMs: number;
+  none: boolean
+  /** 一小时内触发时标橙提个醒 */
+  near: boolean
+  /** 人话主行：「今天 03:00」 */
+  main: string
+  /** 倒计时次行：「3 小时 20 分钟后」 */
+  sub: string
+  atMs: number
 }
+
 function nextRunOf(t: PaTask): NextRun {
-    if (!t.enabled)
-        return { none: true, near: false, main: '已停用', sub: '', atMs: Infinity };
-    if (!t.cron || !t.cron.trim())
-        return { none: true, near: false, main: '未开启定时', sub: '仅手动触发', atMs: Infinity };
-    const p = t.cron.trim().split(/\s+/);
-    if (p.length !== 5)
-        return { none: true, near: false, main: t.cron, sub: '', atMs: Infinity };
-    const mi = parseInt(p[0], 10);
-    const hh = parseInt(p[1], 10);
-    if (isNaN(mi) || isNaN(hh))
-        return { none: true, near: false, main: t.cron, sub: '', atMs: Infinity };
-    const now = new Date();
-    const at = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mi, 0, 0);
-    if (at.getTime() <= now.getTime())
-        at.setDate(at.getDate() + 1);
-    const diff = at.getTime() - now.getTime();
-    const hleft = Math.floor(diff / 3600000);
-    const mleft = Math.round((diff % 3600000) / 60000);
-    const sub = hleft >= 1 ? hleft + ' 小时 ' + mleft + ' 分钟后' : mleft + ' 分钟后';
-    const hm = ('0' + hh).slice(-2) + ':' + ('0' + mi).slice(-2);
-    const isToday = at.getDate() === now.getDate();
-    return { none: false, near: diff < 3600000, main: (isToday ? '今天 ' : '明天 ') + hm, sub, atMs: at.getTime() };
+  if (!t.enabled) return { none: true, near: false, main: '已停用', sub: '', atMs: Infinity }
+  if (!t.cron || !t.cron.trim())
+    return { none: true, near: false, main: '未开启定时', sub: '仅手动触发', atMs: Infinity }
+  const p = t.cron.trim().split(/\s+/)
+  if (p.length !== 5) return { none: true, near: false, main: t.cron, sub: '', atMs: Infinity }
+  const mi = parseInt(p[0], 10)
+  const hh = parseInt(p[1], 10)
+  if (isNaN(mi) || isNaN(hh)) return { none: true, near: false, main: t.cron, sub: '', atMs: Infinity }
+  const now = new Date()
+  const at = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mi, 0, 0)
+  if (at.getTime() <= now.getTime()) at.setDate(at.getDate() + 1) // 今天已过 → 明天
+  const diff = at.getTime() - now.getTime()
+  const hleft = Math.floor(diff / 3600000)
+  const mleft = Math.round((diff % 3600000) / 60000)
+  const sub = hleft >= 1 ? hleft + ' 小时 ' + mleft + ' 分钟后' : mleft + ' 分钟后'
+  const hm = ('0' + hh).slice(-2) + ':' + ('0' + mi).slice(-2)
+  const isToday = at.getDate() === now.getDate()
+  return { none: false, near: diff < 3600000, main: (isToday ? '今天 ' : '明天 ') + hm, sub, atMs: at.getTime() }
 }
+
+/* ---------- 排序：启用在前 → 按下次触发时间戳升序 ----------
+ * ⚠️ 必须比 atMs（时间戳），不能比 main 字符串——
+ *    "今天 03:00" > "今天 02:30" 的字符串比较会把晚的排前面（原型踩过）。 */
 function sortTasks(list: PaTask[]): PaTask[] {
-    return list.slice().sort((a, b) => {
-        if (a.enabled !== b.enabled)
-            return a.enabled ? -1 : 1;
-        return nextRunOf(a).atMs - nextRunOf(b).atMs;
-    });
+  return list.slice().sort((a, b) => {
+    if (a.enabled !== b.enabled) return a.enabled ? -1 : 1
+    return nextRunOf(a).atMs - nextRunOf(b).atMs
+  })
 }
-function pillOf(t: PaTask): {
-    cls: string;
-    text: string;
-} {
-    if (!t.enabled)
-        return { cls: 's-off', text: '已停用' };
-    if (t.last_status === 'success')
-        return { cls: 's-ok', text: '成功' };
-    if (t.last_status === 'fail')
-        return { cls: 's-fail', text: '失败' };
-    if (t.last_status === 'running')
-        return { cls: 's-run', text: '执行中' };
-    return { cls: 's-never', text: '从未执行' };
+
+/* ---------- 状态药丸（移植 dbPill） ---------- */
+function pillOf(t: PaTask): { cls: string; text: string } {
+  if (!t.enabled) return { cls: 's-off', text: '已停用' }
+  if (t.last_status === 'success') return { cls: 's-ok', text: '成功' }
+  if (t.last_status === 'fail') return { cls: 's-fail', text: '失败' }
+  if (t.last_status === 'running') return { cls: 's-run', text: '执行中' }
+  return { cls: 's-never', text: '从未执行' }
 }
+
+/* ---------- 结果文案：把「新增 2 / 跳过 34 / 失败 0」拆成可染色片段（移植 dbResult） ---------- */
 interface ResSeg {
-    t: string;
-    c?: string;
+  t: string
+  /** r-new=新增数染绿 / r-fail=失败数染红，无则纯文本 */
+  c?: string
 }
-function resultSegs(t: PaTask): {
-    plain: string;
-    segs: ResSeg[];
-} {
-    const r = t.last_result || '—';
-    if (t.last_status === 'never' || r === '—')
-        return { plain: '尚未执行过', segs: [] };
-    if (t.last_status === 'running')
-        return { plain: '执行中…', segs: [] };
-    const m = r.match(/新增\s*(\d+)\s*\/\s*跳过\s*(\d+)\s*\/\s*失败\s*(\d+)/);
-    if (!m)
-        return { plain: r, segs: [] };
-    const nf = parseInt(m[3], 10);
-    return {
-        plain: '',
-        segs: [
-            { t: '新增 ' },
-            { t: m[1], c: 'r-new' },
-            { t: ' · 跳过 ' + m[2] + (nf > 0 ? ' · 失败 ' : ' · 失败 0') },
-            ...(nf > 0 ? [{ t: m[3], c: 'r-fail' }] : []),
-        ],
-    };
+function resultSegs(t: PaTask): { plain: string; segs: ResSeg[] } {
+  const r = t.last_result || '—'
+  if (t.last_status === 'never' || r === '—') return { plain: '尚未执行过', segs: [] }
+  if (t.last_status === 'running') return { plain: '执行中…', segs: [] }
+  const m = r.match(/新增\s*(\d+)\s*\/\s*跳过\s*(\d+)\s*\/\s*失败\s*(\d+)/)
+  if (!m) return { plain: r, segs: [] }
+  const nf = parseInt(m[3], 10)
+  return {
+    plain: '',
+    segs: [
+      { t: '新增 ' },
+      { t: m[1], c: 'r-new' },
+      { t: ' · 跳过 ' + m[2] + (nf > 0 ? ' · 失败 ' : ' · 失败 0') },
+      ...(nf > 0 ? [{ t: m[3], c: 'r-fail' }] : []),
+    ],
+  }
 }
+
+/* ---------- 某网盘的任务汇总（移植 dbSummary） ---------- */
 interface PanSummary {
-    total: number;
-    on: number;
-    ok: number;
-    fail: number;
-    latest: PaTask | null;
+  total: number
+  on: number
+  ok: number
+  fail: number
+  /** 最近一次执行过的任务（last_run 字符串倒序取首） */
+  latest: PaTask | null
 }
+
 function summaryOf(type: MainDriveType): PanSummary {
-    const list = tasksOf(type);
-    const ok = list.filter((t) => t.enabled && t.last_status === 'success').length;
-    const fail = list.filter((t) => t.enabled && t.last_status === 'fail').length;
-    const ran = list
-        .filter((t) => t.last_status !== 'never')
-        .sort((a, b) => String(b.last_run).localeCompare(String(a.last_run)));
-    return {
-        total: list.length,
-        on: list.filter((t) => t.enabled).length,
-        ok,
-        fail,
-        latest: ran[0] || null,
-    };
+  const list = tasksOf(type)
+  const ok = list.filter((t) => t.enabled && t.last_status === 'success').length
+  const fail = list.filter((t) => t.enabled && t.last_status === 'fail').length
+  const ran = list
+    .filter((t) => t.last_status !== 'never')
+    .sort((a, b) => String(b.last_run).localeCompare(String(a.last_run)))
+  return {
+    total: list.length,
+    on: list.filter((t) => t.enabled).length,
+    ok,
+    fail,
+    latest: ran[0] || null,
+  }
 }
+
+/* ---------- 总览数字条（跨所有网盘汇总） ---------- */
 const overview = computed(() => {
-    const all = DB_TYPES.reduce<PaTask[]>((acc, t) => acc.concat(tasksOf(t)), []);
-    const enabled = all.filter((t) => t.enabled).length;
-    const cands = all
-        .filter((t) => t.enabled)
-        .map((t) => ({ t, n: nextRunOf(t) }))
-        .filter((o) => !o.n.none)
-        .sort((a, b) => a.n.atMs - b.n.atMs);
-    return {
-        total: all.length,
-        enabled,
-        paused: all.length - enabled,
-        ok: all.filter((t) => t.enabled && t.last_status === 'success').length,
-        fails: all.filter((t) => t.enabled && t.last_status === 'fail').length,
-        nextTxt: cands.length ? cands[0].n.main : '—',
-        nextSub: cands.length ? cands[0].t.name + ' · ' + cands[0].n.sub : '暂无启用的定时任务',
-    };
-});
+  const all = DB_TYPES.reduce<PaTask[]>((acc, t) => acc.concat(tasksOf(t)), [])
+  const enabled = all.filter((t) => t.enabled).length
+  // 「下一次触发」跨所有网盘取最早——不是当前 tab 的首行（原型有断言钉住）
+  const cands = all
+    .filter((t) => t.enabled)
+    .map((t) => ({ t, n: nextRunOf(t) }))
+    .filter((o) => !o.n.none)
+    .sort((a, b) => a.n.atMs - b.n.atMs)
+  return {
+    total: all.length,
+    enabled,
+    paused: all.length - enabled,
+    ok: all.filter((t) => t.enabled && t.last_status === 'success').length,
+    fails: all.filter((t) => t.enabled && t.last_status === 'fail').length,
+    nextTxt: cands.length ? cands[0].n.main : '—',
+    nextSub: cands.length ? cands[0].t.name + ' · ' + cands[0].n.sub : '暂无启用的定时任务',
+  }
+})
+
+/* ---------- 网盘状态卡视图模型（原型 dbPanHtml 的数据部分） ---------- */
 interface PanView {
-    type: MainDriveType;
-    name: string;
-    short: string;
-    color: string;
-    status: AccountStatus;
-    statusText: string;
-    lastCheck: string;
-    total: number;
-    on: number;
-    ok: number;
-    fail: number;
-    latest: PaTask | null;
-    pill: {
-        cls: string;
-        text: string;
-    } | null;
-    res: {
-        plain: string;
-        segs: ResSeg[];
-    } | null;
-    cap: {
-        total: number;
-        used: number;
-    } | null;
-    vip: {
-        name: string;
-        expires: string | null;
-    } | null;
+  type: MainDriveType
+  name: string
+  short: string
+  color: string
+  status: AccountStatus
+  statusText: string
+  lastCheck: string
+  total: number
+  on: number
+  ok: number
+  fail: number
+  latest: PaTask | null
+  pill: { cls: string; text: string } | null
+  res: { plain: string; segs: ResSeg[] } | null
+  /** 容量（后端缓存，可能为 null） */
+  cap: { total: number; used: number } | null
+  /** 会员（后端缓存，可能为 null） */
+  vip: { name: string; expires: string | null } | null
 }
-const pans = computed<PanView[]>(() => DB_TYPES.map((type) => {
-    const meta = DRIVE_META[type];
-    const acct = firstAccountOf(type) ?? { short: meta.name, color: meta.color, status: "unset" as AccountStatus, last_check: "从未配置", summary: null };
-    const s = summaryOf(type);
-    const lt = s.latest;
+
+const pans = computed<PanView[]>(() =>
+  DB_TYPES.map((type) => {
+    // 没建过账号也要出卡片：短名/品牌色回落到平台静态元信息，不能拿空色把图标渲染没
+    const meta = DRIVE_META[type]
+    const acct = firstAccountOf(type) ?? { short: meta.name, color: meta.color, status: "unset" as AccountStatus, last_check: "从未配置", summary: null }
+    const s = summaryOf(type)
+    const lt = s.latest
     return {
-        type,
-        name: acct.short + '网盘',
-        short: acct.short,
-        color: acct.color,
-        status: acct.status,
-        statusText: ACC_TEXT[acct.status],
-        lastCheck: acct.last_check,
-        total: s.total,
-        on: s.on,
-        ok: s.ok,
-        fail: s.fail,
-        latest: lt,
-        pill: lt ? pillOf(lt) : null,
-        res: lt ? resultSegs(lt) : null,
-        cap: acct.summary?.capacity || null,
-        vip: acct.summary?.vip || null,
-    };
-}));
+      type,
+      // 卡片全名 = 短名 + 网盘（对齐原型 paMeta：百度网盘/夸克网盘/115网盘）
+      name: acct.short + '网盘',
+      short: acct.short,
+      color: acct.color,
+      status: acct.status,
+      statusText: ACC_TEXT[acct.status],
+      lastCheck: acct.last_check,
+      total: s.total,
+      on: s.on,
+      ok: s.ok,
+      fail: s.fail,
+      latest: lt,
+      pill: lt ? pillOf(lt) : null,
+      res: lt ? resultSegs(lt) : null,
+      // 容量/会员复用「网盘连接」页缓存下来的那份摘要（刷新不丢，见后端 account_summary）
+      cap: acct.summary?.capacity || null,
+      vip: acct.summary?.vip || null,
+    }
+  }),
+)
+
+/* ---------- 定时任务卡：tab + 当前 tab 只展示最近一条要触发的任务 ---------- */
 interface TabView {
-    type: MainDriveType;
-    label: string;
-    on: number;
-    fail: number;
+  type: MainDriveType
+  /** tab 文本：全名去掉「网盘」后缀（对齐原型 dbTabsHtml） */
+  label: string
+  on: number
+  fail: number
 }
-const tabViews = computed<TabView[]>(() => DB_TYPES.map((type) => {
-    const s = summaryOf(type);
+
+const tabViews = computed<TabView[]>(() =>
+  DB_TYPES.map((type) => {
+    const s = summaryOf(type)
     return {
-        type,
-        label: firstAccountOf(type)?.short || type,
-        on: s.on,
-        fail: s.fail,
-    };
-}));
-const curTab = ref<MainDriveType>('baidu');
-const tasksCard = ref<HTMLElement | null>(null);
+      type,
+      label: firstAccountOf(type)?.short || type,
+      on: s.on,
+      fail: s.fail,
+    }
+  }),
+)
+
+const curTab = ref<MainDriveType>('baidu')
+const tasksCard = ref<HTMLElement | null>(null)
+
+/* tab 切换的唯一实现：tab 点击与卡片点击都走这里，行为才一致。
+ * 卡片点击时把任务卡滚进视野（窄屏下它在折叠线以下，点了要看得见反馈）。 */
 function switchTab(type: MainDriveType, scroll = false) {
-    if (curTab.value !== type)
-        curTab.value = type;
-    if (scroll)
-        nextTick(() => tasksCard.value?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }));
+  if (curTab.value !== type) curTab.value = type
+  if (scroll) nextTick(() => tasksCard.value?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }))
 }
+
+/* 「去管理」：真正的页面跳转入口；模板里 .stop 防止卡片把这次点击消费成 tab 切换 */
 function goManage(type: MainDriveType) {
-    router.push('/auto/' + type);
+  router.push('/auto/' + type)
 }
-const curList = computed(() => tasksOf(curTab.value));
-const curSummary = computed(() => summaryOf(curTab.value));
-const curTabName = computed(() => firstAccountOf(curTab.value)?.alias || firstAccountOf(curTab.value)?.short || curTab.value);
+
+const curList = computed(() => tasksOf(curTab.value))
+const curSummary = computed(() => summaryOf(curTab.value))
+/** 空状态文案用：当前 tab 对应的网盘名 */
+const curTabName = computed(() => firstAccountOf(curTab.value)?.alias || firstAccountOf(curTab.value)?.short || curTab.value)
+
+/* 排序后第一个启用项 = 这个网盘最近一条要触发的任务（首页不摆全量表格） */
 const curRow = computed(() => {
-    const t = sortTasks(curList.value).filter((x) => x.enabled)[0] || null;
-    if (!t)
-        return null;
-    const n = nextRunOf(t);
-    return { t, n, pill: pillOf(t), res: resultSegs(t) };
-});
+  const t = sortTasks(curList.value).filter((x) => x.enabled)[0] || null
+  if (!t) return null
+  const n = nextRunOf(t)
+  return { t, n, pill: pillOf(t), res: resultSegs(t) }
+})
+
+/* ---------- 顶部横幅：问候 + 一句话现状 + 快捷入口 ----------
+ * 原来这里是四个等宽大白格，数据没跑起来时满屏都是 0，像坏了的仪表盘。
+ * 换成一条横幅：左边报平安/报警，右边直接给下一步动作。 */
 const greeting = computed(() => {
-    const h = new Date().getHours();
-    if (h < 6)
-        return '凌晨好';
-    if (h < 12)
-        return '早上好';
-    if (h < 14)
-        return '中午好';
-    if (h < 18)
-        return '下午好';
-    return '晚上好';
-});
+  const h = new Date().getHours()
+  if (h < 6) return '凌晨好'
+  if (h < 12) return '早上好'
+  if (h < 14) return '中午好'
+  if (h < 18) return '下午好'
+  return '晚上好'
+})
+
 const heroSummary = computed(() => {
-    const conn = pans.value.filter((p) => p.status === 'connected').length;
-    const unset = pans.value.filter((p) => p.status === 'unset').length;
-    const parts: string[] = [`${conn} 个网盘已连接`];
-    if (overview.value.fails > 0)
-        parts.push(`${overview.value.fails} 个任务最近失败，建议看一眼`);
-    else if (overview.value.ok > 0)
-        parts.push(`${overview.value.ok} 个任务最近跑成功`);
-    else if (overview.value.enabled > 0)
-        parts.push(`${overview.value.enabled} 个定时任务在跑`);
-    else
-        parts.push('还没有启用的定时任务');
-    if (unset > 0)
-        parts.push(`${unset} 个待配置`);
-    return parts.join(' · ');
-});
+  const conn = pans.value.filter((p) => p.status === 'connected').length
+  const unset = pans.value.filter((p) => p.status === 'unset').length
+  const parts: string[] = [`${conn} 个网盘已连接`]
+  if (overview.value.fails > 0) parts.push(`${overview.value.fails} 个任务最近失败，建议看一眼`)
+  else if (overview.value.ok > 0) parts.push(`${overview.value.ok} 个任务最近跑成功`)
+  else if (overview.value.enabled > 0) parts.push(`${overview.value.enabled} 个定时任务在跑`)
+  else parts.push('还没有启用的定时任务')
+  if (unset > 0) parts.push(`${unset} 个待配置`)
+  return parts.join(' · ')
+})
+
+/* ---------- 容量显示助手 ---------- */
 function gb(bytes: number, unit: 'GB' | 'TB' = 'GB'): string {
-    return unit === 'TB' ? (bytes / 1024 ** 4).toFixed(2) : (bytes / 1024 ** 3).toFixed(0);
+  // 容量 ≥1024G 换算成 TB（两位小数）
+  return unit === 'TB' ? (bytes / 1024 ** 4).toFixed(2) : (bytes / 1024 ** 3).toFixed(0)
 }
-function capUnit(cap: {
-    total: number;
-    used: number;
-} | null): 'GB' | 'TB' {
-    return cap && cap.total >= 1024 * 1024 ** 3 ? 'TB' : 'GB';
+function capUnit(cap: { total: number; used: number } | null): 'GB' | 'TB' {
+  return cap && cap.total >= 1024 * 1024 ** 3 ? 'TB' : 'GB'
 }
-function usedPct(cap: {
-    total: number;
-    used: number;
-} | null): number {
-    if (!cap || !cap.total)
-        return 0;
-    return Math.min(100, Math.round((cap.used / cap.total) * 100));
+function usedPct(cap: { total: number; used: number } | null): number {
+  if (!cap || !cap.total) return 0
+  return Math.min(100, Math.round((cap.used / cap.total) * 100))
 }
+
+/* ---------- 横幅快捷入口 ---------- */
 function goSearch() {
-    router.push('/search');
+  router.push('/search')
 }
 function goNewTask() {
-    router.push('/auto/' + curTab.value);
+  router.push('/auto/' + curTab.value)
 }
-const brand = (c: string): CSSProperties => ({ '--db-c': c });
-const logs = ref<DriveLogData | null>(null);
-const todayReq = computed(() => logs.value?.today.total ?? null);
+
+/* ---------- 内联样式助手：品牌色经 CSS 变量传给伪元素（卡片顶条 / 容量条） ---------- */
+const brand = (c: string): CSSProperties => ({ '--db-c': c })
+
+/* ---------- 今日请求量：把「网盘日志」的数据在首页露一眼 ----------
+ * 没任务的时候首页也得有点「活」的数字，否则永远是一排 0。 */
+const logs = ref<DriveLogData | null>(null)
+
+const todayReq = computed(() => logs.value?.today.total ?? null)
 const todayLevel = computed(() => {
-    const th = logs.value?.thresholds;
-    const n = todayReq.value;
-    if (!th || n === null)
-        return '';
-    if (n >= th.danger)
-        return 'm-bad';
-    if (n >= th.warn)
-        return 'm-warn';
-    return 'm-ok';
-});
+  const th = logs.value?.thresholds
+  const n = todayReq.value
+  if (!th || n === null) return ''
+  if (n >= th.danger) return 'm-bad'
+  if (n >= th.warn) return 'm-warn'
+  return 'm-ok'
+})
+
+/* 持久化主题没有统一应用入口，驾驶舱作为登录后的首页兜底同步一次（幂等） */
 onMounted(async () => {
-    theme.apply();
-    try {
-        logs.value = await getDriveLogs(7);
-    }
-    catch {
-        logs.value = null;
-    }
-});
+  theme.apply()
+  try {
+    logs.value = await getDriveLogs(7)
+  } catch {
+    logs.value = null // 拉不到就不显示这一项，别让首页跟着挂
+  }
+})
 </script>
 
 <template>
   <div class="db-wrap">
-    
+    <!-- ===== 1. 顶部横幅（问候 + 一句话现状 + 指标 + 快捷入口） ===== -->
     <div class="db-hero">
       <div class="db-hero-top">
         <div class="db-hero-hi">
@@ -341,14 +367,14 @@ onMounted(async () => {
       </div>
     </div>
 
-    
+    <!-- ===== 2. 网盘状态卡 ===== -->
     <div>
       <div class="db-sec-hd">
         <h3>网盘状态</h3>
         <span class="db-sec-tip">点卡片切换下方任务列表；「去管理」进入自动转存页</span>
       </div>
       <div class="db-pans">
-        
+        <!-- 整卡可点 = 切换下方任务 tab；键盘可达（Enter/Space） -->
         <div
           v-for="p in pans"
           :key="p.type"
@@ -364,7 +390,7 @@ onMounted(async () => {
           @keydown.space.prevent="switchTab(p.type, true)"
         >
           <div class="db-pan-hd">
-            
+            <!-- 光环核心：双环旋转（外环虚线慢转 / 内环按连接状态着色快转） -->
             <div class="db-pan-ic">
               <i class="db-ring-b" aria-hidden="true"></i>
               <span class="db-pan-ic-core">{{ p.short }}</span>
@@ -375,19 +401,19 @@ onMounted(async () => {
             </div>
           </div>
           <div class="db-pan-body">
-            
+            <!-- 容量 + 会员：复用「网盘连接」页缓存下来的摘要，有数据才显示 -->
             <div v-if="p.cap || p.vip" class="db-pan-meta">
               <span v-if="p.vip" class="db-vip">{{ p.vip.name }}<i v-if="p.vip.expires"> · {{ p.vip.expires }}</i></span>
               <span v-if="p.cap" class="db-cap-txt">{{ gb(p.cap.used, capUnit(p.cap)) }} / {{ gb(p.cap.total, capUnit(p.cap)) }} {{ capUnit(p.cap) }}</span>
             </div>
-            
+            <!-- 无数据：空占位行（只保行高，无任何视觉元素） -->
             <div v-else class="db-pan-meta db-pan-meta-ph"></div>
             <div v-if="p.cap" class="db-cap-bar" :title="usedPct(p.cap) + '% 已使用'">
               <i :style="{ width: usedPct(p.cap) + '%' }"></i>
             </div>
-            
+            <!-- 未配置/没拿到摘要：占位条兜住高度，三张卡不至于参差 -->
             <div v-else class="db-cap-bar db-cap-ph" title="配置凭据后显示容量"></div>
-            
+            <!-- 最近一条任务的简报 -->
             <div v-if="p.latest && p.pill && p.res" class="db-last">
               <div class="db-last-hd">
                 <span class="db-pill" :class="p.pill.cls"><i></i>{{ p.pill.text }}</span>
@@ -408,7 +434,7 @@ onMounted(async () => {
               <div class="db-last-hd">还没有执行记录</div>
               <div class="db-last-res">新建任务并开启定时后，这里会显示最近一次的结果</div>
             </div>
-            
+            <!-- 迷你统计三格 -->
             <div class="db-mini">
               <div><b>{{ p.on }}<i>/{{ p.total }}</i></b><span>启用任务</span></div>
               <div><b class="m-ok">{{ p.ok }}</b><span>最近成功</span></div>
@@ -417,7 +443,7 @@ onMounted(async () => {
           </div>
           <div class="db-pan-ft">
             <span>点击卡片查看任务</span>
-            
+            <!-- 去管理：stopPropagation 别让卡片把这次点击又消费成 tab 切换 -->
             <span
               class="db-pan-go"
               role="link"
@@ -435,7 +461,7 @@ onMounted(async () => {
       </div>
     </div>
 
-    
+    <!-- ===== 3. 定时任务卡 ===== -->
     <div ref="tasksCard" class="db-tasks">
       <div class="db-tasks-hd">
         <h3>定时任务</h3>
@@ -449,7 +475,7 @@ onMounted(async () => {
           </div>
         </div>
       </div>
-      
+      <!-- 空态：不摆一张空表格，直接给引导 -->
       <div v-if="!curList.length" class="db-blank">
         <div class="db-blank-ic">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="13" r="8" /><path d="M12 9v4l2.5 2M9 3h6" /></svg>
@@ -470,7 +496,7 @@ onMounted(async () => {
             </tr>
           </thead>
           <tbody>
-            
+            <!-- 全停用：有任务，但没一个在跑 -->
             <tr v-if="!curRow">
               <td class="db-td db-empty-cell" colspan="5"><div class="db-empty">任务都在停用中 · 启用后这里显示最近一条要触发的</div></td>
             </tr>
@@ -504,8 +530,8 @@ onMounted(async () => {
           </tbody>
         </table>
       </div>
-      
-      
+      <!-- 卡脚：当前 tab 的任务汇总，大屏下正好填住任务卡撑高的余量 -->
+      <!-- 页脚只在真有任务时出现：空态下「共 0 个任务」纯属噪音 -->
       <div v-if="curSummary.total" class="db-tasks-ft">
         <span>共 <b>{{ curSummary.total }}</b> 个任务，<b>{{ curSummary.on }}</b> 个启用中</span>
         <span>最近成功 <b class="ok">{{ curSummary.ok }}</b> · 失败 <b :class="{ bad: curSummary.fail > 0 }">{{ curSummary.fail }}</b></span>

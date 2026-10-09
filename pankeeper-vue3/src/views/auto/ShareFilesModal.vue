@@ -1,118 +1,113 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
-import { message } from 'ant-design-vue';
-import { LoadingOutlined, FolderOutlined, FileOutlined } from '@ant-design/icons-vue';
-import { getShareFiles } from '@/api/modules/tasks';
-import type { ShareFilesMeta } from '@/api/modules/tasks';
-import { USE_MOCK } from '@/api/http';
-import { SHARE_TREE } from '@/api/mock/tree';
+/* 「查看」弹窗：分享内文件树。走后端分享清单缓存（转存跑完自动刷新），
+ * 「刷新」按钮忽略缓存直连重拉；mock 模式用演示树（SHARE_TREE）。
+ * 数据源二选一：taskId（自动转存任务，走 /pa/tasks/{id}/share-files）
+ * 或 fetcher（记录页等无任务 id 的场景，由调用方注入取数函数）。 */
+import { ref, watch } from 'vue'
+import { message } from 'ant-design-vue'
+import { LoadingOutlined, FolderOutlined, FileOutlined } from '@ant-design/icons-vue'
+import { getShareFiles } from '@/api/modules/tasks'
+import type { ShareFilesMeta } from '@/api/modules/tasks'
+import { USE_MOCK } from '@/api/http'
+import { SHARE_TREE } from '@/api/mock/tree'
+
 interface TreeNode {
-    name: string;
-    is_dir: boolean;
-    size: number;
-    kids: TreeNode[];
+  name: string
+  is_dir: boolean
+  size: number
+  kids: TreeNode[]
 }
-import { useBackGuard } from '@/composables/useBackGuard';
-const props = defineProps<{
-    open: boolean;
-    taskId: number | null;
-    taskName: string;
-    fetcher?: (refresh: boolean) => Promise<ShareFilesMeta>;
-}>();
-const emit = defineEmits<{
-    (e: 'update:open', v: boolean): void;
-}>();
-useBackGuard(() => props.open, () => emit('update:open', false));
-const loading = ref(false);
-const refreshing = ref(false);
-const error = ref('');
-const tree = ref<TreeNode[]>([]);
-const total = ref(0);
-const cachedAt = ref(0);
-const fresh = ref(false);
-const openSet = ref(new Set<string>());
+
+import { useBackGuard } from '@/composables/useBackGuard'
+const props = defineProps<{ open: boolean; taskId: number | null; taskName: string; fetcher?: (refresh: boolean) => Promise<ShareFilesMeta> }>()
+const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>()
+useBackGuard(() => props.open, () => emit('update:open', false))
+
+const loading = ref(false)
+const refreshing = ref(false)
+const error = ref('')
+const tree = ref<TreeNode[]>([])
+const total = ref(0)
+const cachedAt = ref(0)
+const fresh = ref(false)
+const openSet = ref(new Set<string>())
+
 function fmtSize(n: number): string {
-    if (!n)
-        return '';
-    if (n > 1024 ** 3)
-        return (n / 1024 ** 3).toFixed(1) + ' GB';
-    if (n > 1024 ** 2)
-        return (n / 1024 ** 2).toFixed(0) + ' MB';
-    return Math.max(1, Math.round(n / 1024)) + ' KB';
+  if (!n) return ''
+  if (n > 1024 ** 3) return (n / 1024 ** 3).toFixed(1) + ' GB'
+  if (n > 1024 ** 2) return (n / 1024 ** 2).toFixed(0) + ' MB'
+  return Math.max(1, Math.round(n / 1024)) + ' KB'
 }
 function fmtTs(ts: number): string {
-    const d = new Date(ts);
-    const p = (v: number) => String(v).padStart(2, '0');
-    return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  const d = new Date(ts)
+  const p = (v: number) => String(v).padStart(2, '0')
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
+
 function toggleOpen(key: string) {
-    const s = new Set(openSet.value);
-    if (s.has(key))
-        s.delete(key);
-    else
-        s.add(key);
-    openSet.value = s;
+  const s = new Set(openSet.value)
+  if (s.has(key)) s.delete(key)
+  else s.add(key)
+  openSet.value = s
 }
+
 async function load(refresh = false) {
-    if (!props.taskId && !props.fetcher)
-        return;
-    refresh ? (refreshing.value = true) : (loading.value = true);
-    error.value = '';
-    openSet.value = new Set();
-    try {
-        const res = props.fetcher ? await props.fetcher(refresh) : await getShareFiles(props.taskId!, refresh);
-        if (!res.total && !res.tree.length) {
-            error.value = '分享内容为空（0 个文件），链接可能已失效';
-            tree.value = [];
-            return;
-        }
-        tree.value = res.tree;
-        total.value = res.total;
-        cachedAt.value = res.cached_at * 1000;
-        fresh.value = res.fresh;
-        if (refresh)
-            message.success('文件清单已刷新');
+  if (!props.taskId && !props.fetcher) return
+  refresh ? (refreshing.value = true) : (loading.value = true)
+  error.value = ''
+  openSet.value = new Set()
+  try {
+    const res = props.fetcher ? await props.fetcher(refresh) : await getShareFiles(props.taskId!, refresh)
+    if (!res.total && !res.tree.length) {
+      // 空清单 = 死链典型形态（页面正常但没文件）；兜底历史缓存里的空数据
+      error.value = '分享内容为空（0 个文件），链接可能已失效'
+      tree.value = []
+      return
     }
-    catch (e: unknown) {
-        const detail = (e as {
-            response?: {
-                data?: {
-                    detail?: string;
-                };
-            };
-        })?.response?.data?.detail;
-        error.value = detail || '获取分享内容失败';
-        tree.value = [];
-    }
-    finally {
-        loading.value = false;
-        refreshing.value = false;
-    }
+    tree.value = res.tree
+    total.value = res.total
+    cachedAt.value = res.cached_at * 1000
+    fresh.value = res.fresh
+    if (refresh) message.success('文件清单已刷新')
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    error.value = detail || '获取分享内容失败'
+    tree.value = []
+  } finally {
+    loading.value = false
+    refreshing.value = false
+  }
 }
-watch(() => props.open, (v) => {
-    if (!v)
-        return;
+
+watch(
+  () => props.open,
+  (v) => {
+    if (!v) return
     if (USE_MOCK) {
-        error.value = '';
-        total.value = 12;
-        cachedAt.value = Date.now();
-        fresh.value = true;
-        tree.value = JSON.parse(JSON.stringify(SHARE_TREE)).map((n: TreeNode) => ({
-            ...n,
-            name: props.taskName || n.name,
-            is_dir: true,
-            kids: (n.kids || []).map((k: TreeNode) => ({ ...k, is_dir: !!k.kids?.length, kids: k.kids || [] })),
-        }));
-        loading.value = false;
-        return;
+      // mock：演示树（顶层名换成任务名）
+      error.value = ''
+      total.value = 12
+      cachedAt.value = Date.now()
+      fresh.value = true
+      tree.value = JSON.parse(JSON.stringify(SHARE_TREE)).map((n: TreeNode) => ({
+        ...n,
+        name: props.taskName || n.name,
+        is_dir: true,
+        kids: (n.kids || []).map((k: TreeNode) => ({ ...k, is_dir: !!k.kids?.length, kids: k.kids || [] })),
+      }))
+      loading.value = false
+      return
     }
-    load();
-});
+    load()
+  },
+)
+
 function close() {
-    emit('update:open', false);
+  emit('update:open', false)
 }
-defineExpose({ close });
-void message;
+
+defineExpose({ close })
+void message
 </script>
 
 <template>

@@ -1,3 +1,4 @@
+"""转存配置目录（快速转存依据）+ QMS/STRM 目录字典。"""
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
@@ -9,6 +10,7 @@ from ..models import DdItem, QmsPath, StrmPath
 
 router = APIRouter(prefix="/api", tags=["dd"])
 
+
 def _row(r: DdItem) -> dict:
     return {
         "id": r.id, "type": r.type, "account": r.account, "sort": r.sort,
@@ -19,11 +21,13 @@ def _row(r: DdItem) -> dict:
         "only_video": bool(r.only_video),
     }
 
+
 @router.get("/dd/items")
 def list_items(_user=CurrentUser):
     with SessionLocal() as db:
         rows = db.query(DdItem).order_by(DdItem.type, DdItem.sort, DdItem.id).all()
     return [_row(r) for r in rows]
+
 
 @router.get("/dd/default")
 def get_default(type: str, _user=CurrentUser):
@@ -34,10 +38,12 @@ def get_default(type: str, _user=CurrentUser):
             return _row(r)
     return rows[0] and _row(rows[0]) if rows else None
 
+
 @router.get("/dd/has-config")
 def has_config(type: str, _user=CurrentUser):
     with SessionLocal() as db:
         return db.query(DdItem).filter(DdItem.type == type).count() > 0
+
 
 class DdBody(BaseModel):
     id: int | None = None
@@ -48,13 +54,18 @@ class DdBody(BaseModel):
     path: str
     qms_on: bool = False
     qms_id: int | None = None
-
+    # STRM 同步路径（2026-10-09 恢复目录级可配）：不填(null) = 执行侧按 QMS 整理目标自动配对
+    # （resolve_media_link → strm_id_for_qms）；填了 = 按指定的同步路径触发。
+    # 优先级：任务弹窗选择的 strm_id > 这里的目录级值 > 自动配对。
+    strm_id: int | None = None
+    # LitePan 联动（media.backend=litepan 时用）：事件名空 = 用设置页的全局默认
     lp_on: bool = False
     lp_event: str = ""
-
+    # 目录类型 movie/tv：快速转存电影目录+多文件时展示文件多选（单文件刮削）
     media_type: str = ""
-
+    # 过滤其他文件：默认开启，转到此目录只保存视频文件（mkv/mp4/iso 等），杂件转存时剔除
     only_video: bool = True
+
 
 @router.post("/dd/items")
 def create_item(body: DdBody, _user=CurrentUser):
@@ -62,15 +73,16 @@ def create_item(body: DdBody, _user=CurrentUser):
         dup = db.query(DdItem).filter(DdItem.type == body.type, DdItem.account == body.account, DdItem.name == body.name).count()
         if dup:
             raise HTTPException(status_code=400, detail="同账号下已存在同名目录")
-
+        # 每账号唯一默认：该账号第一条自动设默认
         count = db.query(DdItem).filter(DdItem.type == body.type, DdItem.account == body.account).count()
-
+        # 新建一律主键自增：前端契约 id=0 表示"新建"，原样插入会撞已有 id=0 的行
         data = body.model_dump()
         data.pop("id", None)
         row = DdItem(**data, is_default=count == 0)
         db.add(row)
         db.commit()
         return _row(row)
+
 
 @router.put("/dd/items/{item_id}")
 def update_item(item_id: int, body: DdBody, _user=CurrentUser):
@@ -85,13 +97,15 @@ def update_item(item_id: int, body: DdBody, _user=CurrentUser):
         )
         if dup:
             raise HTTPException(status_code=400, detail="同账号下已存在同名目录")
-
+        # id 是主键：body 里未传时 model_dump 会带 id=None，setattr 会把 rowid 写 NULL
+        # （sqlite 报 datatype mismatch）——更新语义下必须跳过。
         for k, v in body.model_dump().items():
-            if k in ("id", "strm_id"):
+            if k == "id":
                 continue
             setattr(row, k, v)
         db.commit()
         return _row(row)
+
 
 @router.delete("/dd/items/{item_id}")
 def delete_item(item_id: int, _user=CurrentUser):
@@ -101,6 +115,7 @@ def delete_item(item_id: int, _user=CurrentUser):
             db.delete(row)
             db.commit()
     return {"ok": True}
+
 
 @router.put("/dd/items/{item_id}/default")
 def set_default(item_id: int, _user=CurrentUser):
@@ -113,11 +128,13 @@ def set_default(item_id: int, _user=CurrentUser):
         db.commit()
     return {"ok": True}
 
+
 @router.get("/qms/paths")
 def qms_paths(_user=CurrentUser):
     with SessionLocal() as db:
         rows = db.query(QmsPath).order_by(QmsPath.id).all()
     return [{"id": r.id, "media_type": r.media_type, "source_path": r.source_path} for r in rows]
+
 
 @router.get("/strm/paths")
 def strm_paths(_user=CurrentUser):

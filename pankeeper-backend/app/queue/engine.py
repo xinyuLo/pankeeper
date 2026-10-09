@@ -1,3 +1,17 @@
+"""转存队列引擎（骨架层）——只管排队，不管转存怎么做。
+
+职责边界（2026-10-01 拆分，别再往回塞）：
+- 本文件：入队 / 状态 / 持久化恢复 / worker 线程调度 / 分发
+- 业务流程：app/transfer/manual.py（搜索页手动）与 auto.py（定时任务），
+  两条路径各自完整、刻意不共享代码——推送/回写/熔断规则不同
+- 网盘 API：app/adapters/ 下每盘一个独立文件（baidu/quark/pan115），构造入口 factory.py
+
+对齐前端契约（PanKeeper-vue3/src/queue/engine.ts 的状态形状与阶段机）：
+- 所有转存动作只做一件事：入队；串行慢跑，阶段机 transfer→waitqms→qms→waitstrm→strm→done
+- 线程数/转存间隔/QMS、STRM 延迟读 queue_cfg，改完对新任务生效
+- 已完成任务保留 1 小时后出队（历史在「转存记录」）
+- 内存是权威 + SQLite queue_tasks 快照，重启恢复（run 中断的任务回 wait，去重保证幂等）
+"""
 from __future__ import annotations
 
 import json
@@ -10,8 +24,9 @@ from ..models import QueueTaskRow
 from ..services.settings_svc import get_group
 from ..transfer import run_auto, run_manual
 
-KEEP_DONE = 60 * 60
+KEEP_DONE = 60 * 60  # 已完成任务保留 1 小时（秒），之后出队——历史去「转存记录」查
 TICK = 0.5
+
 
 class QueueEngine:
     def __init__(self, start_workers: bool = True) -> None:
@@ -20,8 +35,10 @@ class QueueEngine:
         self.state: dict[str, Any] = {"seq": 0, "lastTick": 0, "lastDone": 0, "tasks": []}
         self.restore()
         if start_workers:
-            for i in range(4):
+            for i in range(4):  # 线程上限 4，worker 按 cfg.threads 决定是否干活
                 threading.Thread(target=self._worker, args=(i,), daemon=True, name=f"pkq-worker-{i}").start()
+
+    # ---------- 状态与持久化 ----------
 
     def _persist(self) -> None:
         with SessionLocal() as s:
@@ -54,7 +71,7 @@ class QueueEngine:
             rows = s.query(QueueTaskRow).order_by(QueueTaskRow.id).all()
             tasks = []
             for r in rows:
-                status = "wait" if r.status == "run" else r.status
+                status = "wait" if r.status == "run" else r.status  # 中断的 run 回 wait（转存去重保证幂等）
                 tasks.append(
                     {
                         "id": r.id,
@@ -101,22 +118,30 @@ class QueueEngine:
             return json.loads(json.dumps(self.state, ensure_ascii=False))
 
     def wait_change(self, timeout: float = 2.0) -> None:
+        """SSE 用：状态变化或超时返回。"""
         with self._cond:
             self._cond.wait(timeout)
+
+    # ---------- 日志（转存流程层回调用） ----------
 
     def push_log(self, t: dict, lv: str, txt: str) -> None:
         t["logs"].append({"lv": lv, "txt": txt})
         if len(t["logs"]) > 40:
             t["logs"].pop(0)
 
+    # ---------- 对外 API ----------
+
     def enqueue(self, item: dict) -> int:
         with self._lock:
             share_url = item.get("share_url") or item.get("shareUrl") or ""
-
+            # 资源名/更名值洗掉 emoji 与文件名非法字符（pansou note 带emoji、当文件夹名
+            # 会撞 errno=2）。搜索结果已在 pansou 源头洗过，这里兜其他入口（含手填更名）。
             from ..services.names import sanitize_name
             clean_name = sanitize_name(item.get("name") or "")
             clean_rename = sanitize_name(item.get("rename") or "")
-
+            # 同链接去重：wait/run 中已有同一 shareUrl 的任务就不再入队（手动快速
+            # 转存连点两次 = 两个任务各打一遍百度全链，纯浪费请求喂风控）。
+            # 返回 -1 由前端提示「已在队列中」。
             if share_url:
                 for t in self.state["tasks"]:
                     if t["status"] in ("wait", "run") and t.get("shareUrl") == share_url:
@@ -138,28 +163,36 @@ class QueueEngine:
                 "shareUrl": item.get("share_url") or item.get("shareUrl") or "",
                 "shareCode": item.get("share_code") or item.get("shareCode") or "",
                 "includeSubdirs": bool(item.get("include_subdirs", True)),
-
+                # 任务来源：search=搜索转存（默认）/ auto=自动转存（定时调度入队时带）。
+                # 决定走 manual.py 还是 auto.py 流程（推送/回写/熔断规则不同）
                 "source": item.get("source") or "search",
-
+                # 自动任务链路：指定账号 / 来源 PaTask / 排除清单
                 "accId": item.get("acc_id"),
                 "paTaskId": item.get("pa_task_id"),
                 "enabled": bool(item.get("enabled", True)),
-
+                # ⚠️ 正则必须在这里落到任务状态上——2026-10-03 实锤：调度器一直传着
+                # regex_pattern，引擎却从没存过，run_auto 读到的永远是空 → 正则形同虚设，
+                # PNG 之类全量入库。改这里时同步检查 _persist / restore 两处持久化。
                 "regexPattern": (item.get("regex_pattern") or item.get("regexPattern") or ""),
                 "excludeNames": list(item.get("exclude_names") or []),
                 "excludeMd5s": list(item.get("exclude_md5s") or []),
                 "comparePath": item.get("compare_path") or "",
-
+                # 勾选清单（搜索页分享树勾选；空=全部）。注意：不持久化，
+                # 重启恢复的任务勾选丢失回全量——有 MD5/名字去重兜底，宁可多查不少删
                 "filePaths": list(item.get("file_paths") or []),
-
+                # 「建壳转存」（快速转存弹窗）：按资源名/更名值新建文件夹，剥壳转入。
+                # 与 filePaths 同款不持久化——重启恢复的任务退回普通模式（快速转存生命周期短，可接受）
                 "rename": clean_rename,
                 "withShell": bool(item.get("with_shell", False)),
-
+                # 显式联动目标（普通转存弹窗下拉）：不持久化（同 rename/withShell 生命周期）。
+                # STRM 2026-10-09 恢复弹窗可选：不传/空 = 目录值 → 自动配对兜底
                 "qmsId": item.get("qms_id"),
+                "strmId": item.get("strm_id"),
                 "mediaOff": bool(item.get("media_off", False)),
-
+                # LitePan 事件名（弹窗覆盖；空=回退目录/全局默认）。不持久化（同 qmsId 生命周期）
                 "lpEvent": (item.get("lp_event") or item.get("lpEvent") or "").strip(),
-
+                # 过滤其他文件（普通转存弹窗开关）：None=弹窗没带（快速转存/自动任务）→ 按目录配置；
+                # 显式 True/False = 以弹窗为准。不持久化（同 qmsId 生命周期）
                 "onlyVideo": item.get("only_video"),
             }
             self.state["tasks"].append(t)
@@ -170,6 +203,8 @@ class QueueEngine:
 
     def active_count(self) -> int:
         return sum(1 for t in self.state["tasks"] if t["status"] in ("wait", "run"))
+
+    # ---------- worker ----------
 
     def _worker(self, index: int) -> None:
         while True:
@@ -183,12 +218,13 @@ class QueueEngine:
                 continue
             try:
                 self._run_task(task, cfg)
-            except Exception as e:
+            except Exception as e:  # 兜底：任何异常不让 worker 死掉
                 self.push_log(task, "ERROR", f"引擎异常：{e}")
                 self._fail_task(task, f"引擎异常：{e}")
             self._persist()
 
     def _claim(self, cfg: dict) -> dict | None:
+        """提一个 wait 任务上场：空闲线程已保证（本 worker 就是线程位），还需距上次完成 >= gap。"""
         with self._lock:
             now_ms = int(time.time() * 1000)
             if self.state["tasks"] and now_ms - (self.state["lastDone"] or 0) < int(cfg.get("gap", 5)) * 1000:
@@ -203,12 +239,14 @@ class QueueEngine:
             return None
 
     def _run_task(self, t: dict, cfg: dict) -> None:
+        """按来源分发到对应流程文件——本层不做任何转存业务判断。"""
         if t.get("source") == "auto":
             run_auto(self, t, cfg)
         else:
             run_manual(self, t, cfg)
 
     def _fail_task(self, t: dict, message: str) -> None:
+        """worker 兜底用最简收尾：只改状态，业务层异常时不应走到这里。"""
         now_ms = int(time.time() * 1000)
         with self._lock:
             t["status"] = "fail"
@@ -235,13 +273,18 @@ class QueueEngine:
             )
             s.commit()
 
+    # ---------- 便捷入口（API 层用） ----------
+
     def state_public(self) -> dict:
+        """对前端的完整状态（与 queueView 同形）。"""
         snap = self.snapshot()
         now_ms = int(time.time() * 1000)
         self._prune(now_ms)
         return snap
 
+
 engine: QueueEngine | None = None
+
 
 def get_engine() -> QueueEngine:
     global engine
