@@ -114,7 +114,10 @@ def create_app() -> FastAPI:
             candidate = (WEB_DIR / full_path).resolve() if full_path else None
             if candidate and candidate.is_file() and str(candidate).startswith(str(WEB_DIR.resolve())):
                 return FileResponse(candidate)
-            return FileResponse(WEB_DIR / "index.html")
+            # ⚠️ index.html 绝不能进浏览器缓存：每次构建产物文件名 hash 都会变，
+            # 手机缓存旧 HTML 会引用已不存在的旧 CSS/JS → 整页裸样式（2026-10-09 实锤）。
+            # no-cache = 每次协商校验（etag 变了就拿新的）；/assets/* 文件名自带 hash，可放心缓存
+            return FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-cache"})
 
     @app.on_event("startup")
     def _startup():
