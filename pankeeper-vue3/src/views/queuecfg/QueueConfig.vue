@@ -66,10 +66,27 @@ watch(form, (v) => {
           <span class="muted cq-unit">秒</span>
         </div>
       </div>
+      <div class="formrow">
+        <label>QMS/STRM 反转</label>
+        <div class="ctl">
+          <a-switch v-model:checked="form.reverse" />
+        </div>
+      </div>
+      <div class="cq-reverse-desc">
+        开启后触发顺序<b>反转</b>：转存完成不再「先 QMS 刮削、等刮完再生成 STRM」，而是
+        <b>先生成 STRM、再触发 QMS 刮削</b>（不等刮削完成，STRM 扫的是转存原目录）。
+        反转开启时，联动 QMS 的地方必须显式选择 STRM 同步路径（转存配置 / 转存弹窗 / 自动任务）；
+        搜索历史里同时触发两者时也是 STRM 先行、QMS 隔 {{ form.strm }}s 跟上。
+      </div>
 
       <!-- 摘要条：模板直接绑表单值，改任意一项立即重算 -->
       <div class="cq-sum">
-        按当前配置：单任务在转存完成后 <b>{{ form.qms }}s</b> 触发 QMS、QMS 完成后 <b>{{ form.strm }}s</b> 触发 STRM，任务之间再隔 <b>{{ form.gap }}s</b>；线程数 <b>{{ form.threads }}</b>，同一时刻最多 {{ form.threads }} 个任务在跑。
+        <template v-if="form.reverse">
+          <b>反转已开启</b>：单任务在转存完成后 <b>{{ form.qms }}s</b> 先生成 STRM、再隔 <b>{{ form.strm }}s</b> 触发 QMS 刮削（任务之间仍隔 <b>{{ form.gap }}s</b>，线程数 <b>{{ form.threads }}</b>）。
+        </template>
+        <template v-else>
+          按当前配置：单任务在转存完成后 <b>{{ form.qms }}s</b> 触发 QMS、QMS 完成后 <b>{{ form.strm }}s</b> 触发 STRM，任务之间再隔 <b>{{ form.gap }}s</b>；线程数 <b>{{ form.threads }}</b>，同一时刻最多 {{ form.threads }} 个任务在跑。
+        </template>
       </div>
     </div>
 
@@ -125,5 +142,20 @@ watch(form, (v) => {
 }
 .cq-unit {
   margin-left: 8px;
+}
+/* 反转说明：紧贴开关行下方的浅色小字（cq-reverse-desc） */
+.cq-reverse-desc {
+  margin: 2px 22px 12px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  border: 1px dashed var(--border);
+  font-size: 12.5px;
+  color: var(--text2);
+  line-height: 1.7;
+}
+.cq-reverse-desc b {
+  color: var(--primary);
+  font-weight: 500;
 }
 </style>

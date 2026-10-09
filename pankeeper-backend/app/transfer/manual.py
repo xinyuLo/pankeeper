@@ -153,8 +153,9 @@ def run_manual(eng, t: dict, cfg: dict) -> None:
 
 
 def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict, dict]:
-    """触发 QMS / STRM。STRM **不再独立配置**（2026-10-04 用户定稿：配了 QMS 就自动联动
-    STRM，刮削成功才生成、失败不生成）——STRM 目标 = 与 QMS 配对的转存配置目录的 strm_id。
+    """触发 QMS / STRM。STRM 目标三档：**弹窗下拉显式选的**（2026-10-09 恢复）→
+    转存配置目录的 strm_id → 按 QMS 整理目标自动配对（strm_id_for_qms）；
+    刮削成功才生成、失败不生成。
 
     QMS 目标来源两档：任务显式指定的 qmsId（普通转存弹窗下拉）→ 按目标路径前缀匹配
     「转存配置」里 qms_on 的目录。解析结果挂在 t["_media"] 上——_finish 落库后挂
@@ -205,7 +206,14 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
     else:
         # STRM 与 QMS 自动配对：转存配置里同一条目录的 strm_id（该目录 qms_on 关了 = 没配）
         strm_id = _strm_for_qms(qms_id)
+    # 弹窗显式选了 STRM 优先（2026-10-09 恢复弹窗下拉）；没填维持上面的目录值/自动配对
+    if t.get("strmId") is not None:
+        strm_id = t.get("strmId")
     t["_media"] = {"qms_id": qms_id, "strm_id": strm_id}
+    # 反转开关（队列配置全局）：先生成 STRM 再触发 QMS。挂到 t 上，_finish 落库后的
+    # STRM 挂后台线程据此跳过（反转时 STRM 已经触发过，不能再等刮削）
+    reverse = bool(get_group("queue_cfg").get("reverse"))
+    t["_media_reverse"] = reverse
 
     qms_snap = {"st": "未执行", "cls": "t-off"}
     strm_snap = {"st": "未执行", "cls": "t-off"}
@@ -216,7 +224,19 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
         _push_log(t, "INFO", "没有新增文件，不触发 QMS（在库文件刮削无意义）")
         return qms_snap, strm_snap
 
-    _sleep_phase(eng, t, "waitqms", int(cfg.get("qms", 10)), f"等待 {cfg.get('qms', 10)} 秒后触发 QMS 刮削")
+    if reverse and strm_id is not None:
+        # 反转：先 STRM（扫的是转存原目录，不等刮削）、隔 strm 秒再触发 QMS
+        _sleep_phase(eng, t, "waitqms", int(cfg.get("qms", 10)), f"等待 {cfg.get('qms', 10)} 秒后触发 STRM 同步（反转模式：先生成 STRM）")
+        t["phase"] = "strm"
+        t["phaseStart"] = int(time.time() * 1000)
+        ok_s, msg_s = qms.trigger_strm(int(strm_id))
+        strm_snap = {"st": "已触发（反转·先行）" if ok_s else f"失败 · {msg_s}", "cls": "t-ok" if ok_s else "t-bad"}
+        _push_log(t, "INFO" if ok_s else "ERROR", f"（反转）STRM 同步 #{strm_id} 先行触发{'成功' if ok_s else '失败'}：{msg_s or '详见 QMS 侧日志'}")
+        _sleep_phase(eng, t, "waitstrm", int(cfg.get("strm", 10)), f"等待 {cfg.get('strm', 10)} 秒后触发 QMS 刮削（反转模式）")
+    elif reverse:
+        # 校验在前端拦了，这里是执行侧兜底：没 STRM 就按默认顺序走，不把联动弄丢
+        _push_log(t, "WARN", "反转模式需要 STRM 同步路径，本次未选——退回默认顺序（先 QMS 后 STRM）")
+
     t["phase"] = "qms"
     t["phaseStart"] = int(time.time() * 1000)
     # 触发**前**抓记录指纹：回填/推送只认本次触发产生的新记录（与 auto.py 同款，教训见 run_watch._wait）
@@ -227,8 +247,8 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
     # 触发受理 ≠ 刮削成功，快照先如实写「已触发」，真实结果由 run_watch 后台轮询回填
     qms_snap = {"st": "已触发" if ok else f"失败 · {msg}", "cls": "t-off" if ok else "t-bad"}
     _push_log(t, "INFO" if ok else "ERROR", f"QMS 刮削任务 #{qms_id} 触发{'成功' if ok else '失败'}：{msg or '详见 QMS 侧日志'}")
-    if strm_id is not None and ok:
-        # STRM 真等刮完再触发（刮削有失败不生成）：_finish 落库后挂 trigger_strm_after_scrape 后台线程
+    if strm_id is not None and ok and not t.get("_media_reverse"):
+        # 默认顺序：STRM 挂后台等刮削完成再触发。反转模式已在上面先触发过，不再挂
         strm_snap = {"st": "等待刮削完成…", "cls": "t-off"}
         _push_log(t, "STEP", f"STRM 联动已挂后台（同步目录 #{strm_id}）：QMS 刮削成功后自动触发定向同步临时任务（成功才生成）")
 
@@ -330,7 +350,8 @@ def _finish(eng, t: dict, status: str, message: str = "", qms_snap: dict | None 
         baseline = t.get("_qms_baseline") or {}
         strm_plan = None
         run_watch.watch_qms(rid, t["name"].split(".")[0], names, baseline=baseline, table=Record)
-        if strm_id:
+        if strm_id and not t.get("_media_reverse"):
+            # 反转模式 STRM 已先行触发过（run_watch 会回填 QMS 真实结果，但不再挂 STRM 线程）
             delay = int(get_group("queue_cfg").get("strm", 10))
             strm_plan = {"strm_id": int(strm_id), "delay": delay}
             run_watch.trigger_strm_after_scrape(rid, int(qms_id), int(strm_id), delay, table=Record)

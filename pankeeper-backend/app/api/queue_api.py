@@ -31,8 +31,10 @@ class EnqueueBody(BaseModel):
     rename: str = ""
     with_shell: bool = False
     # 显式指定 QMS 联动目标（普通转存弹窗下拉；空 = 按目标目录前缀匹配转存配置，旧行为）。
-    # STRM 不再单独指定——与 QMS 自动配对（同一条转存配置的 strm_id），刮削成功才生成
     qms_id: int | None = None
+    # 显式指定 STRM 同步路径（普通转存弹窗下拉，2026-10-09 恢复；空 = 先弹窗/目录值，
+    # 都没有再按 QMS 整理目标自动配对），刮削成功才生成
+    strm_id: int | None = None
     # 明确关闭联动（弹窗开关关掉）：连目录前缀匹配也不做，转存完什么都不触发
     media_off: bool = False
     # LitePan 事件名（media.backend=litepan 时弹窗可覆盖；空=回退转存配置目录/全局默认）
@@ -97,5 +99,7 @@ def put_queue_config(body: dict, _user=CurrentUser):
             else:
                 v = max(0, min(3600, v))
             cfg[k] = v
+    if "reverse" in body:
+        cfg["reverse"] = bool(body["reverse"])
     save_group("queue_cfg", cfg)
     return cfg

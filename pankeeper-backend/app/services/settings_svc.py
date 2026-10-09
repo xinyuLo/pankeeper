@@ -60,7 +60,9 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     # enabled 总闸（关=全部不推）；事件名不在这配（按目录/任务配，没填不联动）。
     # source 全局通知来源：填了才随事件传（LitePan 规则匹配大小写敏感），留空不传该字段。
     "litepan": {"enabled": False, "webhook_url": "", "apikey": "", "source": ""},
-    "queue_cfg": {"threads": 1, "gap": 5, "qms": 10, "strm": 10},
+    # QMS/STRM 触发延迟（转存完成后 qms 秒触发 QMS、刮完 strm 秒触发 STRM）；
+    # reverse = 反转触发顺序：先生成 STRM、再触发 QMS 刮削（不等刮削完成，2026-10-10）
+    "queue_cfg": {"threads": 1, "gap": 5, "qms": 10, "strm": 10, "reverse": False},
     # 网盘凭据每日探活（M3）：默认每天 10:00 跑一次。
     # 时间特意放在上午而不是凌晨——半夜探出失效也没人看，通知等于白发；
     # 10 点人都起来了，失效提醒当场就能处理。
@@ -128,6 +130,36 @@ def get_group(key: str) -> dict[str, Any]:
     return data
 
 
+def _normalize_base_url(u: Any) -> Any:
+    """服务地址清洗：剥掉 host:port 之后的路径/参数/锚点（2026-10-09）。
+
+    痛点：从浏览器复制地址时容易把整条链路带进来（如
+    `http://ip:8888/api/search?kw=x&res=merge`），后端拼 `/api/search` 就变成
+    `/api/search?kw=x/api/search` 直接 404/报错。这三个字段语义上都是「服务根地址」，
+    统一裁成 scheme://host[:port]，没写协议的补 http://。解析不了就原样放行（别把
+    能用的配置改坏）。"""
+    if not isinstance(u, str):
+        return u
+    u = u.strip().rstrip("/")
+    if not u:
+        return u
+    from urllib.parse import urlsplit
+
+    if "://" not in u:
+        u = "http://" + u
+    try:
+        p = urlsplit(u)
+        host = p.hostname or ""
+        if not host:
+            return u
+        if ":" in host:  # IPv6 字面量要保留方括号
+            host = f"[{host}]"
+        port = f":{p.port}" if p.port else ""
+        return f"{p.scheme}://{host}{port}"
+    except ValueError:
+        return u
+
+
 def save_group(key: str, value: dict[str, Any]) -> None:
     """保存分组：敏感字段值以 **** 开头视为「前端没改」，保留库里旧值。"""
 
@@ -139,6 +171,10 @@ def save_group(key: str, value: dict[str, Any]) -> None:
 
     if key == "settings":
         old = get_group(key)
+        # 服务根地址清洗：复制粘贴带进来的路径尾巴（/api/search?kw=... 这类）整段剥掉
+        for g, f in (("search", "pansou_url"), ("qms", "url"), ("qms", "tmdb_proxy")):
+            if g in value and f in (value.get(g) or {}):
+                value[g][f] = _normalize_base_url(value[g].get(f))
         for group in ("notify", "qms"):
             for field in ("sendkey", "apikey", "webhook", "tmdb_api_key"):
                 new_val = (value.get(group, {}) or {}).get(field, "")

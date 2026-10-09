@@ -12,7 +12,7 @@ import type { QueueCfg, QueueState, QueueTask } from '@/types/model'
  * 阶段机契约（两种模式一致）：transfer→waitqms→qms→waitstrm→strm→done，完成保留 30 分钟。
  * ===================================================================== */
 
-const CFG_DEF: QueueCfg = { threads: 1, gap: 5, qms: 10, strm: 10 }
+const CFG_DEF: QueueCfg = { threads: 1, gap: 5, qms: 10, strm: 10, reverse: false }
 const KEEP_DONE = 60 * 60 * 1000 // 完成任务保留 1 小时，之后出队——历史去「转存记录」查
 
 type Listener = (s: QueueState) => void
@@ -273,9 +273,10 @@ export const pkQueue = {
     /* 「建壳转存」（快速转存弹窗）：按资源名/更名值新建文件夹，分享内容剥壳转入 */
     rename?: string
     with_shell?: boolean
-    /* 显式 QMS 联动目标（普通转存弹窗下拉）：空 = 按目标目录前缀匹配转存配置。
-       STRM 不再单独指定——后端与 QMS 自动配对（同一条转存配置的 strm_id） */
+    /* 显式 QMS 联动目标（普通转存弹窗下拉）：空 = 按目标目录前缀匹配转存配置 */
     qms_id?: number | null
+    /* 显式 STRM 同步路径（普通转存弹窗下拉，2026-10-09 恢复）：空 = 目录值 → 自动配对兜底 */
+    strm_id?: number | null
     /* 明确关闭联动（开关关掉）：连目录前缀匹配都不做 */
     media_off?: boolean
     /** LitePan 事件名（media.backend=litepan 时弹窗覆盖；空=按转存配置/全局默认） */
@@ -331,6 +332,16 @@ export function pkQueueCfgGet(): QueueCfg {
     })
     .catch(() => {})
   return { ...cfgView }
+}
+
+/** 拉一次**最新**队列配置（真实模式打后端；cfgView 可能被别的页面留着旧值）。
+ * 弹窗校验（如反转模式下 STRM 必选）用这个，别信本地镜像。 */
+export function pkQueueCfgFetch(): Promise<QueueCfg> {
+  if (USE_MOCK) return Promise.resolve(loadCfgRaw())
+  return get<QueueCfg>('/queue/config').then((c) => {
+    Object.assign(cfgView, c)
+    return { ...c }
+  })
 }
 
 export function pkQueueCfgSet(c: QueueCfg) {

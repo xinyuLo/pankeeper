@@ -33,16 +33,17 @@ import PkTree from '@/components/PkTree.vue'
 import LazyDirTree from '@/components/LazyDirTree.vue'
 import { USE_MOCK } from '@/api/http'
 import { getRootDirs } from '@/api/modules/accounts'
-import { listDdItems, listQmsPaths } from '@/api/modules/dd'
+import { listDdItems, listQmsPaths, listStrmPaths } from '@/api/modules/dd'
 import { getSearchShareFiles } from '@/api/modules/search'
 import { recognizeShare, type RecognizeCandidate } from '@/api/modules/recognize'
 import { getSettings } from '@/api/modules/settings'
+import { pkQueueCfgFetch } from '@/queue/engine'
 import { ddStore } from '@/api/mock/dd'
 import RecognizePicker from '@/components/RecognizePicker.vue'
 import { pkQueue } from '@/queue/engine'
 import { DRIVE_META } from '@/api/mock/meta'
 import { MINE_TREE } from '@/api/mock/tree'
-import type { DdItem, DdQmsPath, MainDriveType, TreeNode } from '@/types/model'
+import type { DdItem, DdQmsPath, DdStrmPath, MainDriveType, TreeNode } from '@/types/model'
 
 import { useBackGuard } from '@/composables/useBackGuard'
 const props = defineProps<{ open: boolean; target: TransferTarget | null }>()
@@ -200,12 +201,12 @@ const includeSub = ref(true)
 const renameInput = ref('')
 
 /* ---- QMS 联动（对齐任务弹窗样式：开关 + 全宽下拉）。
- *  STRM 不再单独选（2026-10-04 用户定稿）：配了 QMS，刮削成功自动联动 STRM 生成、
- *  失败不生成——STRM 目标 = 与该 QMS 配对的转存配置目录的 strm_id。
+ *  STRM 2026-10-09 恢复弹窗可选：不选 = 目录值 → 自动配对兜底；选了 = 按指定的触发。
  *  下拉默认按目标位置前缀自动带出；用户手动改过就不再自动覆盖。
  *  开关关 = 明确不联动（media_off，连目录匹配都不做）。 ---- */
 const mediaOn = ref(true)
 const qmsSel = ref<number | null>(null)
+const strmSel = ref<number | null>(null)
 /** 过滤其他文件：默认开——本次转存只保存视频文件（mkv/mp4/iso 等），nfo/图片等杂件直接跳过 */
 const onlyVideo = ref(true)
 // 开「过滤其他文件」的瞬间：把已勾选的非视频路径剔掉（否则禁选行还挂着勾、计数也错）
@@ -216,6 +217,8 @@ watch(onlyVideo, (v) => {
 const lpOn = ref(true)
 const lpEvent = ref('')
 const mediaBackend = ref<'qms' | 'litepan'>('qms')
+/** QMS/STRM 反转（队列配置全局）：开启时联动 QMS 必须选 STRM 同步路径 */
+const reverseOn = ref(false)
 /** 转存路径 = 目标位置 + 壳名（更名值优先，回落资源名） */
 const savePath = computed(() => {
   const dir = (selectedDir.value || '').replace(/\/+$/, '')
@@ -223,10 +226,12 @@ const savePath = computed(() => {
   return `${dir}/${shell}`
 })
 const qmsPaths = ref<DdQmsPath[]>([])
+const strmPaths = ref<DdStrmPath[]>([])
 const pathsLoading = ref(false)
 const mediaTouched = ref(false)
 
 const qmsOpts = computed(() => qmsPaths.value.map((p) => ({ value: p.id, label: `#${p.id} · ${p.source_path}` })))
+const strmOpts = computed(() => strmPaths.value.map((p) => ({ value: p.id, label: `#${p.id} · ${p.remote_path}` })))
 
 /** 目标目录命中的转存配置（最长前缀优先，对齐后端 _match_dd_link 语义） */
 function hitDd(pred: (d: DdItem) => boolean): DdItem | null {
@@ -250,6 +255,7 @@ function resetMedia() {
   mediaOn.value = true
   lpOn.value = true
   qmsSel.value = qmsHit.value?.qms_id ?? null
+  strmSel.value = qmsHit.value?.strm_id ?? null
   lpEvent.value = lpHit.value?.lp_event || ''
 }
 /** 点目录跟随带出联动目标（对齐后端 _match_dd_link 语义）。
@@ -257,7 +263,10 @@ function resetMedia() {
  *  （2026-10-08 用户实锤）；开着才跟随目录切换带出该目录配的默认值。 */
 function autoMatchMedia() {
   if (mediaBackend.value === 'qms') {
-    if (mediaOn.value) qmsSel.value = qmsHit.value?.qms_id ?? null
+    if (mediaOn.value) {
+      qmsSel.value = qmsHit.value?.qms_id ?? null
+      strmSel.value = qmsHit.value?.strm_id ?? null
+    }
   } else if (lpOn.value) {
     lpEvent.value = lpHit.value?.lp_event || ''
   }
@@ -267,7 +276,10 @@ watch(selectedDir, () => {
 })
 // 关掉再打开：目录默认值立刻带回来（下拉没被手动改过时）
 watch(mediaOn, (v) => {
-  if (v && !mediaTouched.value && mediaBackend.value === 'qms') qmsSel.value = qmsHit.value?.qms_id ?? null
+  if (v && !mediaTouched.value && mediaBackend.value === 'qms') {
+    qmsSel.value = qmsHit.value?.qms_id ?? null
+    strmSel.value = qmsHit.value?.strm_id ?? null
+  }
 })
 watch(lpOn, (v) => {
   if (v && !mediaTouched.value && mediaBackend.value === 'litepan') lpEvent.value = lpHit.value?.lp_event || ''
@@ -290,6 +302,7 @@ watch(lpOn, (v) => {
     selectedDir.value = rootDir.value || DEFAULT_DIR
     includeSub.value = true
     getSettings().then((d) => (mediaBackend.value = d.media?.backend || 'qms')).catch(() => {})
+    pkQueueCfgFetch().then((c) => (reverseOn.value = !!c.reverse)).catch(() => {})
     onlyVideo.value = true
     mediaTouched.value = false
     // QMS/STRM 目录清单后台拉（QMS 在 NAS 上，秒级）；到货后按目标目录带默认值
@@ -297,6 +310,7 @@ watch(lpOn, (v) => {
       listDdItems().catch(() => {})
       pathsLoading.value = true
       const qs = await listQmsPaths().catch(() => [])
+      strmPaths.value = await listStrmPaths().catch(() => [])
       pathsLoading.value = false
       qmsPaths.value = qs
     }
@@ -334,6 +348,10 @@ function start() {
   }
   const rename = renameInput.value.trim()
   const files = fileRows.value.length
+  if (mediaBackend.value === 'qms' && mediaOn.value && reverseOn.value && strmSel.value == null) {
+    message.warning('已开启 QMS/STRM 反转：请选择 STRM 同步路径（可到「队列配置」关闭反转）')
+    return
+  }
   const pos = pkQueue.enqueue({
     name: t.name,
     type: t.type,
@@ -349,10 +367,11 @@ function start() {
     /* 勾选了嵌套路径时必须带子目录列举，否则 only_paths 找不到文件 */
     include_subdirs: includeSub.value || picked.some((x) => x.includes('/')),
     /* 联动：开关关 = 明确不触发；开 = 用下拉选的 QMS（默认按目标位置自动带出）。
-       STRM 不传——后端与 QMS 自动配对，刮削成功才生成。
+       STRM 同款：弹窗选了就直传，没选 = 后端目录值 → 自动配对兜底，刮削成功才生成。
        LitePan 模式：lp_event 带弹窗填的事件名（后端按 media.backend 分流，qms 时忽略） */
     media_off: mediaBackend.value === 'litepan' ? !lpOn.value : !mediaOn.value,
     qms_id: mediaBackend.value === 'qms' && mediaOn.value ? qmsSel.value : null,
+    strm_id: mediaBackend.value === 'qms' && mediaOn.value ? strmSel.value : null,
     lp_event: mediaBackend.value === 'litepan' && lpOn.value ? lpEvent.value.trim() : '',
     only_video: onlyVideo.value,
   })
@@ -428,8 +447,18 @@ function start() {
               allow-clear
               @change="mediaTouched = true"
             />
+            <a-select
+              v-model:value="strmSel"
+              :options="strmOpts"
+              style="width: 100%; margin-top: 10px"
+              :loading="pathsLoading"
+              :placeholder="pathsLoading ? '正在加载 STRM 同步路径…' : strmPaths.length ? '选择 STRM 同步路径（可选）' : 'QMS 暂无 STRM 同步路径，不选则自动配对'"
+              allow-clear
+              @change="mediaTouched = true"
+            />
             <div class="tm-hint">
-              默认按目标位置自动带出。QMS 整理成功后自动生成 STRM，失败不生成；不需要就清空。
+              默认按目标位置自动带出。STRM 不选 = 自动配对（同步路径的来源 = QMS 整理目标时生效），选了 = 按指定的触发；
+              QMS 整理成功才生成 STRM，失败不生成。
             </div>
           </template>
           <div v-else class="tm-hint">
