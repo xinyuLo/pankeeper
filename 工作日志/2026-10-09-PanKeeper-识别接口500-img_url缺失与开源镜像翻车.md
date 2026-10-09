@@ -40,3 +40,36 @@
 - 用户把修复版 pankeeper-git 同步 GitHub → 重建推送 Docker Hub/ghcr → NAS compose 换回
   docker-compose.image.yml + pull（镜像模式才能带上修复）
 - magnet 测试断言遗留（主仓库同样失败，磁力类型已支持未更新测试）
+
+## 连环坑之二：返回护栏嵌套冲突（识别候选卡把转存弹窗带走了）
+
+img_url 修好后用户终于走到识别候选卡这一步，立刻踩到第二个 bug：**点候选卡片，
+快速转存弹窗整个被关掉**。根因：快速转存弹窗与识别候选弹窗（RecognizePicker）各自
+挂了一个 useBackGuard（10-08 批次全站接入的侧滑护栏），嵌套打开时历史栈压了两层
+占位；候选关闭执行 history.back() 弹掉**自己那层**，popstate 被外层护栏也听到，
+外层误判"用户按返回"→ 把转存弹窗关了。
+
+**修法**：占位 state 写入实例唯一 id（guardSeq 递增），popstate 时只有"当前栈顶
+不是我的占位"（= 我的占位被弹掉）才关自己；弹掉的是更上层的占位一律忽略。
+嵌套任意层互不误伤。merge 9a749b4 / pankeeper-git df8f70e。
+
+**验证坑**：生产构建压缩会改掉变量名，用源码变量名（myId）grep 产物判断新旧=无效；
+要用**字符串字面量**（pkBackGuard: 后面是 1=旧逻辑、是压缩变量=新逻辑）。
+另：仓库根 docker-compose.yml 已改为镜像模式（用户拉取用），**NAS 源码构建必须走
+显式 docker build --build-context frontend=...**，compose build 在该目录是空操作
+（无 build 段），且 tag 会打到旧镜像上——1.0.2 首推就是 stale 的，重推后才正确。
+
+## 端到端验收（NAS 1.0.2 真实实例）
+
+狂飙（10-06 歧义实锤案例）→ 快速转存 → 识别 → 2 候选卡 → 点选 F1 → 候选关闭、
+**转存弹窗保持打开**、更名回填「F1：狂飙飞车 (2025)」。白蛇2 高置信案例直接回填
+《白蛇2：青蛇劫起 (2021)》。全程未触发真实转存。
+
+## 遗留
+
+- ghcr.io/xinyulo/pankeeper:1.0.1 带护栏 bug（已发布数小时），1.0.2 为修复版；
+  1.0.1 标签要不要删由用户决定
+- Docker Hub 推送：NAS 到 registry-1.docker.io 被墙，24h 自动重试循环挂在
+  /tmp/dh_push_retry.sh（日志 /tmp/dh_push_retry.log），通了自动推 1.0.2+latest；
+  用户也可在昨晚推成功过的那台电脑手动 push
+- ghcr 包默认私有，开源需在 GitHub Packages 设置改 Public
