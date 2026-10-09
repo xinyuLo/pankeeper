@@ -1,20 +1,31 @@
 import { computed, onUnmounted, watch, type Ref } from 'vue'
 
 /**
- * 移动端侧滑返回护栏：弹层（抽屉/弹窗）打开时推一个**占位历史栈**。
- * 浏览器边缘侧滑返回（iOS/Android 手势）会先弹占位栈——把弹层关掉，
- * 而不是退出当前页面（2026-10-08 用户实锤：记录详情抽屉侧滑直接退回上一页）。
+ * 移动端侧滑返回护栏（全局单例管理器版，2026-10-09 重构）。
  *
- * 用法：const open = ref(false); useBackGuard(open)
- * 用户点关闭按钮/遮罩时 open 变 false，自动把占位栈弹掉（popstate 无副作用）。
+ * 背景：每个弹层打开时压一个占位历史栈，浏览器侧滑/返回先弹占位栈——关掉对应弹层
+ * 而不是退出页面（2026-10-08 用户实锤）。
  *
- * 嵌套规则（2026-10-09 实锤：快速转存弹窗内开识别候选弹窗，候选关闭的
- * history.back() 会被外层护栏误判成"用户按返回"→ 把转存弹窗也关了）：
- * 每个实例的占位 state 写入**自己的唯一 id**，popstate 时只有"当前栈顶
- * 不是我的占位"（= 我的占位被弹掉）才关自己；弹掉的是更上层的占位就忽略。
+ * ⚠️ 为什么是全局单例而不是每实例一个监听：弹层会嵌套（快速转存弹窗里再开识别候选
+ * 卡片）。每实例各自监听 popstate 时，内层关闭触发的 history.back() 会被**所有**
+ * 外层实例听到——外层误判"我的占位被弹了"→ 把转存弹窗也关了（2026-10-09 用户实锤：
+ * 选完候选两个弹窗瞬间全关）。单例统一管栈：popstate 时只关**栈顶那一层**。
+ *
+ * pendingPop 标记：主动关闭（点 X/取消/选候选）也要 history.back() 弹掉自己的占位，
+ * 那次 popstate 不应该关任何层——用标记核销。
  */
+interface GuardEntry {
+  id: number
+  setOpen: (v: boolean) => void
+  onClose?: () => void
+}
+
+const stack: GuardEntry[] = []   // 占位栈：index 0 = 最外层，末位 = 栈顶
+let pendingPop = false           // 我们主动 back() 后等待核销的 popstate
+let seq = 0
 let styleInjected = false
-let guardSeq = 0
+let listenersReady = false
+
 function injectNoAnimStyle() {
   if (styleInjected) return
   styleInjected = true
@@ -26,35 +37,57 @@ function injectNoAnimStyle() {
   document.head.appendChild(st)
 }
 
+function ensureListeners() {
+  if (listenersReady) return
+  listenersReady = true
+  window.addEventListener('popstate', () => {
+    if (pendingPop) {
+      pendingPop = false            // 我们主动 back() 的那次：占位已核销，不关任何层
+      return
+    }
+    if (stack.length) {
+      // 用户返回/侧滑：只关栈顶那一层，其余层（外层）不动
+      const top = stack.pop()!
+      injectNoAnimStyle()
+      document.documentElement.classList.add('pk-no-anim')
+      setTimeout(() => document.documentElement.classList.remove('pk-no-anim'), 400)
+      top.setOpen(false)
+      top.onClose?.()
+    }
+    // 栈已空的返回：真实离开页面，不拦
+  })
+}
+
 export function useBackGuard(open: Ref<boolean> | (() => boolean), onClose?: () => void) {
   // getter 入参（组件 v-model:open 场景）经 computed 包装，写回走 emit——这里统一按可写 Ref 用
   const isOpen = (typeof open === 'function' ? computed(open) : open) as Ref<boolean>
-  const myId = ++guardSeq
-  let guard = false
-  const onPop = () => {
-    if (!guard) return
-    // 栈顶还是我的占位 = 这次 pop 弹掉的是更上层的占位（嵌套内层弹层关闭），忽略
-    if ((history.state as { pkBackGuard?: number } | null)?.pkBackGuard === myId) return
-    guard = false
-    injectNoAnimStyle()
-    document.documentElement.classList.add('pk-no-anim')
-    setTimeout(() => document.documentElement.classList.remove('pk-no-anim'), 400)
-    isOpen.value = false
-    onClose?.()
+  const myId = ++seq
+  const myIndex = () => stack.findIndex(e => e.id === myId)
+
+  const unregister = () => {
+    const i = myIndex()
+    if (i >= 0) stack.splice(i, 1)
   }
-  window.addEventListener('popstate', onPop)
-  onUnmounted(() => window.removeEventListener('popstate', onPop))
+
+  onUnmounted(() => {
+    // 组件卸载（destroy-on-close）时还开着：摘掉占位登记，避免历史栈里留孤儿
+    unregister()
+  })
 
   watch(isOpen, (v) => {
-    if (v && !guard) {
-      guard = true
-      // ⚠️ 必须克隆 vue-router 自己的历史 state 再加标记：推一个"外来" state 的话，
-      // popstate 时 router 认不出 current 会触发同路径重导航 → 页面闪刷、弹层闪一下
-      // 又缩回（2026-10-08 用户实测）。克隆后 router 看到的是同路由，静默处理。
+    if (v && myIndex() < 0) {
+      ensureListeners()
+      stack.push({ id: myId, setOpen: vv => (isOpen.value = vv), onClose })
       history.pushState({ ...history.state, pkBackGuard: myId }, '')
-    } else if (!v && guard) {
-      guard = false
-      history.back() // 弹掉占位栈；popstate 时 open 已是 false，无副作用
+    } else if (!v && myIndex() >= 0) {
+      const i = myIndex()
+      const isTop = i === stack.length - 1
+      stack.splice(i, 1)
+      if (isTop) {
+        pendingPop = true          // 核销这次 back() 的 popstate：不关任何层
+        history.back()
+      }
+      // 非栈顶的主动关闭（理论上被内层遮罩挡住不会发生）：直接关，不动历史
     }
   })
 }
