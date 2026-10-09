@@ -29,6 +29,16 @@ IMG_W500 = "https://image.tmdb.org/t/p/w500"
 LANGUAGE = "zh-CN"
 
 
+def img_url(path: str | None) -> str | None:
+    """poster_path/still_path/backdrop_path → 完整 w500 URL；空路径返回 None。
+
+    注意：图片 URL 由 Server酱客户端（手机端）拉取，通常手机网络直连
+    image.tmdb.org 是通的，这里只拼不下载，代理/host 映射对它不生效。"""
+    if not path:
+        return None
+    return f"{IMG_W500}{path}"
+
+
 def _host_ips(cfg: dict, domain: str) -> list[str]:
     """hosts 表里 domain 的全部候选 IP（按行序，ip 为空的行跳过，重复 IP 去重）。"""
     hosts = cfg.get("tmdb_hosts")
