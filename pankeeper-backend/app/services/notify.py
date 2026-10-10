@@ -91,30 +91,46 @@ def _sc_request(sendkey: str, data: dict) -> httpx.Response:
         data = {**data, "tags": SC_TAG}
     else:
         url = f"https://sctapi.ftqq.com/{sendkey}.send"
-    return httpx.post(url, data=data, timeout=10)
+    # 15s：ft07 端点握手常慢（2026-10-10 实测根路径 12s 无响应），10s 偏紧
+    return httpx.post(url, data=data, timeout=15)
 
 
 def _serverchan(sendkey: str, title: str, content: str, short: str | None = None) -> tuple[bool, str]:
-    """返回 (是否成功, 失败原因)。判活口径与 test_sendkey 一致：HTTP 200 且 body code∈(0, None)。"""
-    try:
-        data = {"title": title, "desp": content}
-        if short:
-            data["short"] = short
-        resp = _sc_request(sendkey, data)
-    except httpx.HTTPError as e:
-        return False, _human_net_error(e)
-    if resp.status_code != 200:
-        # 带上 Server酱 原始原因——只写「HTTP 400」等于没说，实测这里能直接看到
-        # 「[AUTH]错误的Key」（占位符 sendkey）之类，秒定位（2026-10-04 踩坑）
-        return False, f"HTTP {resp.status_code}{_sc_reason(resp)}"
-    try:
-        body = resp.json()
-    except ValueError:
-        return True, ""
-    code = body.get("code")
-    if code in (0, None):
-        return True, ""
-    return False, str(body.get("message") or f"code={code}")
+    """返回 (是否成功, 失败原因)。判活口径与 test_sendkey 一致：HTTP 200 且 body code∈(0, None)。
+
+    ft07 端点抖（2026-10-10 实测：最近 30 推 19 成 1 超时，根路径 12s 无响应）——
+    网络级错误重试至多 2 次（隔 3s）；Server酱 body 明确拒绝（code≠0 / 4xx）不重试，重试也没用。"""
+    last_err = ""
+    for attempt in range(3):
+        try:
+            data = {"title": title, "desp": content}
+            if short:
+                data["short"] = short
+            resp = _sc_request(sendkey, data)
+        except httpx.HTTPError as e:
+            last_err = _human_net_error(e)
+            if attempt < 2:
+                time.sleep(3)
+                continue
+            return False, last_err
+        if resp.status_code >= 500:
+            last_err = f"HTTP {resp.status_code}（服务端错误）"
+            if attempt < 2:
+                time.sleep(3)
+                continue
+            return False, last_err
+        if resp.status_code != 200:
+            # 带上 Server酱 原始原因——只写「HTTP 400」等于没说，实测这里能直接看到
+            # 「[AUTH]错误的Key」（占位符 sendkey）之类，秒定位（2026-10-04 踩坑）
+            return False, f"HTTP {resp.status_code}{_sc_reason(resp)}"
+        try:
+            body = resp.json()
+        except ValueError:
+            return True, ""
+        code = body.get("code")
+        if code in (0, None):
+            return True, ""
+        return False, str(body.get("message") or f"code={code}")
 
 
 def _human_net_error(e: Exception) -> str:
