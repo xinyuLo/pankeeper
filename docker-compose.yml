@@ -1,0 +1,15 @@
+# PanKeeper 镜像部署：直接拉取预构建镜像，无需本地构建。
+# 用法：docker compose up -d
+# 数据（SQLite + 密钥）都在 ./data 目录，备份它即备份一切。
+services:
+  pankeeper:
+    image: ghcr.io/xinyulo/pankeeper:latest
+    # Docker Hub 备选：docker.io/7yueyue/pankeeper:latest
+    container_name: pankeeper
+    restart: unless-stopped
+    ports:
+      - "8031:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
