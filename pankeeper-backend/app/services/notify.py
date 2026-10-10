@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+import threading
 import time
 
 import httpx
@@ -38,6 +39,13 @@ def push(title: str, content: str, kind: str = "info", short: str | None = None)
     if flag and not cfg.get(flag, True):
         return
 
+    # 后台线程发送：Server酱抖时单次等 30s + 重试，最坏可占 1 分多钟——
+    # 不能堵在转存完成回调/队列线程上（2026-10-10 用户定案：宁可慢，不能一条电影推 3 遍）
+    threading.Thread(target=_deliver, args=(cfg, title, content, kind, short), daemon=True).start()
+
+
+def _deliver(cfg: dict, title: str, content: str, kind: str, short: str | None) -> None:
+    """实际投递 + 落库（后台线程里跑）。"""
     errors: list[str] = []
     if cfg.get("sendkey"):
         ok, err = _serverchan(cfg["sendkey"], f"{title}", content, short)
@@ -91,8 +99,9 @@ def _sc_request(sendkey: str, data: dict) -> httpx.Response:
         data = {**data, "tags": SC_TAG}
     else:
         url = f"https://sctapi.ftqq.com/{sendkey}.send"
-    # 15s：ft07 端点握手常慢（2026-10-10 实测根路径 12s 无响应），10s 偏紧
-    return httpx.post(url, data=data, timeout=15)
+    # 30s（2026-10-10 用户定案）：ft07 偶发「送达了但响应慢」，等太短就重发会变成
+    # 同一条电影推 2-3 遍；宁可多等也不重发——真没响应 30s 后才进下一次
+    return httpx.post(url, data=data, timeout=30)
 
 
 def _serverchan(sendkey: str, title: str, content: str, short: str | None = None) -> tuple[bool, str]:
