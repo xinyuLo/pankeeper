@@ -7,15 +7,24 @@
  * ===================================================================== */
 import { reactive, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import { pkQueueCfgGet, pkQueueCfgSet } from '@/queue/engine'
+import { pkQueueCfgGet, pkQueueCfgFetch, pkQueueCfgSet } from '@/queue/engine'
 import type { QueueCfg } from '@/types/model'
 
-/* ===== 四项配置：初始值从引擎取一次，此后本地表单为准（引擎镜像 cfgView 供别处渲染用） ===== */
+/* ===== 配置：先快照起步（F5 时引擎镜像还是默认值），异步拉到后端最新值再回填表单 =====
+ * 只用 pkQueueCfgGet 的同步快照是 2026-10-03「反转刷新自己关闭」的根因：
+ * 后端存着 true，表单却从默认 false 起步，看起来像开关自己弹回。 */
 const form = reactive<QueueCfg>({ ...pkQueueCfgGet() })
+let ready = false
+pkQueueCfgFetch().then((c) => {
+  Object.assign(form, c)
+  ready = true
+})
 
-/* 任意一项变化 → 夹紧合法范围 → 写回引擎（即时生效）；提示防抖，数字框连点不刷屏 */
+/* 任意一项变化 → 夹紧合法范围 → 写回引擎（即时生效）；提示防抖，数字框连点不刷屏。
+ * ready 前的变更（回填触发）不写回不弹提示——那不是用户在改。 */
 let toastTimer: number | undefined
 watch(form, (v) => {
+  if (!ready) return
   v.threads = Math.min(4, Math.max(1, Math.round(Number(v.threads) || 1)))
   v.gap = Math.max(0, Math.round(Number(v.gap) || 0))
   v.qms = Math.max(0, Math.round(Number(v.qms) || 0))
@@ -75,8 +84,6 @@ watch(form, (v) => {
       <div class="cq-reverse-desc">
         开启后触发顺序<b>反转</b>：转存完成不再「先 QMS 刮削、等刮完再生成 STRM」，而是
         <b>先生成 STRM、再触发 QMS 刮削</b>（不等刮削完成，STRM 扫的是转存原目录）。
-        反转开启时，联动 QMS 的地方必须显式选择 STRM 同步路径（转存配置 / 转存弹窗 / 自动任务）；
-        搜索历史里同时触发两者时也是 STRM 先行、QMS 隔 {{ form.strm }}s 跟上。
       </div>
 
       <!-- 摘要条：模板直接绑表单值，改任意一项立即重算 -->
