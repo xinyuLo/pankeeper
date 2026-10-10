@@ -1,7 +1,8 @@
 # PanKeeper 工作交接（2026-10-06 更新）
 
 > 交接范围：本地开发（Windows，`D:\zcodeWork\pankeeper\pankeeper`）+ NAS 部署（192.168.2.77 / 外网 100.66.1.1）。  
-> 本文档上一版为 2026-10-04 晚版（b9dda21），本次 LitePan 对接批次增量更新，历史版本在 git 里。
+> 本文档上一版为 2026-10-04 晚版（b9dda21），本次 LitePan 对接批次增量更新，历史版本在 git 里。  
+> **2026-10-10 增补（v1.0.5 发布 + 部署模式变更）**：① NAS 部署改为**拉镜像模式**——compose 直接跑 Docker Hub `7yueyue/pankeeper:latest`，更新=`/vol1/1001/compose/pankeeper` 下 `compose pull && up -d`，不再 NAS 源码构建（源码构建必须带 `--build-context frontend=<clone>/pankeeper-vue3`）；② **双仓库定式**：Gitea=开发真相，GitHub `xinyuLo/pankeeper`=发布侧（独立历史已用 `--allow-unrelated-histories -X ours` 合并打通，含 CI 双 registry 构建流），推 GitHub 的 main/`v*` tag 触发 CI 自动出 GHCR + Docker Hub 镜像（amd64+arm64，secrets DOCKERHUB_* 已配）；③ **版本规则**：GHCR 标签被占即 patch+1（1.0.4 被占→1.0.5），徽标 BasicLayout pc-ver + package.json + lock 三处同步 = tag = 镜像标签；④ v1.0.5 已发布（Release 已建），NAS 已更新，线上徽标实测 v1.0.5；⑤ 修复反转开关刷新回弹（表单异步回填）。完整过程见 `工作日志/2026-10-10-PanKeeper-v1.0.5发布一条龙与反转开关修复.md`；**发布全流程已沉淀为技能 `pankeeper-release`（~/.zcode/skills/pankeeper-release/SKILL.md）**。
 
 ## 0. 一句话状态
 
