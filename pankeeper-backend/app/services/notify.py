@@ -180,18 +180,6 @@ def _webhook(url: str, title: str, content: str) -> tuple[bool, str]:
 
 
 def test_sendkey(sendkey: str) -> tuple[bool, str]:
-    try:
-        resp = _sc_request(sendkey, {"title": "PanKeeper 测试", "desp": "推送链路已打通，PanKeeper 的消息会带这个标签。"})
-    except httpx.HTTPError as e:
-        return False, _human_net_error(e)
-    if resp.status_code != 200:
-        return False, f"HTTP {resp.status_code}{_sc_reason(resp)}"
-    # 两个版本都回 {code, message}：HTTP 200 也可能 body 里报错，得看 code
-    try:
-        body = resp.json()
-    except ValueError:
-        return True, "HTTP 200"
-    code = body.get("code")
-    if code in (0, None):
-        return True, "发送成功"
-    return False, str(body.get("message") or f"code={code}")
+    """设置页「测试」按钮：与真实推送同走 _serverchan（含重试）——
+    测试口径和实际投递不一致会误导排障（2026-10-10：按钮单发超时、真实推送却成功）。"""
+    return _serverchan(sendkey, "PanKeeper 测试", "推送链路已打通，PanKeeper 的消息会带这个标签。")
