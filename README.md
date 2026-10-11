@@ -6,6 +6,8 @@
 
 > 📘 **新用户请从[《使用说明》](docs/USAGE.md)开始**：全部页面的功能与操作详解——搜索转存 / 自动转存 / 转存配置 / 网盘连接 / 系统设置 / 日志管理，以及「一次转存背后发生了什么」与常见问题。
 
+> 🤖 **已支持 AI Skill 一句话转存电影 / 电视剧**：配套 AI Skill [watch-movie](skills/watch-movie/)——对 AI 说「我想看 xxx」或直接甩一个网盘分享链接，AI 自动搜资源、4K 优先挑正片、与你确认后调 PanKeeper 转存入队，后续队列 / 过滤 / 刮削 / 推送照旧全自动。安装与配置见[《Skill 说明》](skills/watch-movie/README.md)。
+
 ## 功能特性
 
 - **多网盘适配**：百度网盘 / 夸克 / 115，统一抽象（列目录、分享解析、转存、改名、目录管理），内置每账号限速闸与连败熔断
@@ -16,6 +18,7 @@
 - **推送通知**：Server 酱富文本推送，推送历史与正文详情
 - **队列引擎**：单工串行 + 间隔节奏配置，前后端实时状态同步（SSE）
 - **缓存预热**：目录树缓存策略可配，支持一键全量预热与实时进度
+- **AI Skill 一句话转存**：官方配套 [watch-movie](skills/watch-movie/) Skill，AI 帮你找片、挑 4K 正片、转存入队，全程一句话
 
 ## 技术栈
 
@@ -123,6 +126,7 @@ npm run dev
 pankeeper-git
 ├── pankeeper-backend     # FastAPI 后端（adapters 网盘适配 / api 接口 / services 业务 / transfer 转存链路）
 ├── pankeeper-vue3        # Vue3 前端（views 页面 / api 双模式接口层 / queue 队列前端引擎）
+├── skills/watch-movie    # AI Skill：一句话找片转存（拷进 AI 的 skills 目录即可用）
 └── docker-compose.yml
 ```
 

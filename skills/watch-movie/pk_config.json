@@ -1,0 +1,10 @@
+{
+  "base_url": "",
+  "api_key": "",
+  "username": "admin",
+  "password": "",
+  "min_interval_sec": 3,
+  "tmdb_api_key": "",
+  "tmdb_proxy": "",
+  "tmdb_ip": ""
+}
