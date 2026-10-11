@@ -262,7 +262,9 @@ const pv = computed(() => {
 })
 
 /** 确认 = 入队即走，绝不弹进度条。资源检测中/没过（清单失败=疑似坏链）都不允许提交
- *  （2026-10-08 用户定稿：文件检测是最终守门，没过就不转） */
+ *  （2026-10-08 用户定稿：文件检测是最终守门，没过就不转）。
+ *  勾选清单（电影目录+多文件）：勾了几个转几个，一个没勾不允许提交——
+ *  勾选此前只是展示没接入提交，「勾 1 个全转 4 个」实锤修复（2026-10-11） */
 function onOk() {
   if (filesLoading.value) {
     message.warning('正在检测资源，请稍候…')
@@ -277,6 +279,11 @@ function onOk() {
     message.warning('请先选择保存位置')
     return
   }
+  const filePaths = showFilePicker.value ? [...selPaths.value] : [] // 空数组=不过滤，全转
+  if (showFilePicker.value && !filePaths.length) {
+    message.warning('请勾选要转存的文件（至少 1 个）')
+    return
+  }
   const raw = rename.value.trim()
   const pos = pkQueue.enqueue({
     name: raw || props.shareName || '分享资源',
@@ -289,6 +296,8 @@ function onOk() {
        记录页显示的名字和盘里的文件夹名天然一致 */
     rename: raw,
     with_shell: true,
+    /* 勾选清单（分享内相对路径）：建壳分支按它过滤壳内文件；空=全转（电视/单文件场景） */
+    file_paths: filePaths,
     // 转存配置条目属于哪个账号就用哪个转（account 是账号 id 字符串）；
     // 空 = 该类型默认账号（后端兜底取 id 最小）
     acc_id: it.account ? Number(it.account) : null,
@@ -349,7 +358,7 @@ function onOk() {
           </a-input>
         </div>
 
-        <!-- 电影目录内容判断：多文件 → 展开多选框列表（转存按钮行为待定稿）；
+        <!-- 电影目录内容判断：多文件 → 展开多选框列表（勾了几个转几个，空勾选拦截）；
              电视节目目录 / 单文件 / 清单失败 → 不展示，照旧直接转 -->
         <div class="dd-field">
           <label class="dd-label">资源检测</label>
