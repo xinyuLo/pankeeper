@@ -92,6 +92,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '队列配置' },
       },
       {
+        path: 'api-keys',
+        name: 'api-keys',
+        component: () => import('@/views/apikeys/ApiKeys.vue'),
+        meta: { title: 'API Key' },
+      },
+      {
         path: 'settings',
         name: 'settings',
         component: () => import('@/views/settings/Settings.vue'),

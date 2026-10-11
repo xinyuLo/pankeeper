@@ -55,14 +55,18 @@ def test_map_merged_types_and_drop():
     }
     rows = _map_merged(merged)
     types = {r["t"] for r in rows}
-    assert types == {"quark", "ali"}
+    # magnet 2026-10-06 放行（只展示+复制，不能转存网盘）；天翼等仍丢弃
+    assert types == {"quark", "ali", "magnet"}
     quark_row = next(r for r in rows if r["t"] == "quark")
     assert quark_row["n"] == "庆余年 4K"
     assert quark_row["share_code"] == "12ab"
     assert quark_row["d"] == "2026-09-01"
     assert quark_row["url"].endswith("/s/a")
-    # 不支持的类型（magnet/天翼）被丢弃
-    assert len(TYPE_MAP) == 7
+    magnet_row = next(r for r in rows if r["t"] == "magnet")
+    assert magnet_row["n"] == "种子"
+    assert magnet_row["url"] == "magnet:?xt=1"
+    # TYPE_MAP = baidu/quark/115/123/aliyun/xunlei/uc/magnet 共 8 个
+    assert len(TYPE_MAP) == 8
 
 
 # ---------- 限速门 ----------
