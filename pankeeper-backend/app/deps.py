@@ -40,6 +40,19 @@ def is_local_request(request: Request) -> bool:
 def get_current_user(request: Request) -> str:
     if is_local_request(request):
         return "local"
+    # API Key 等效登录态（auth_guard 中间件已验过的在 state 里留了 key id；
+    # 这里兜一遍是防直接调依赖的路径）。返回值只当「已登录」标记用，非真实用户名。
+    if getattr(request.state, "via_api_key", None) is not None:
+        return "apikey"
+    from .services import apikey_svc
+
+    raw = request.headers.get("x-api-key") or request.query_params.get("api_key") or ""
+    if raw:
+        row = apikey_svc.validate(raw)
+        if row is not None:
+            request.state.via_api_key = row.id
+            apikey_svc.touch_later(row.id)
+            return "apikey"
     auth = request.headers.get("authorization", "")
     token = auth[7:] if auth.startswith("Bearer ") else ""
     username = parse_token(token)

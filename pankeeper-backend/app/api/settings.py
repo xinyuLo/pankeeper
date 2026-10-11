@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from ..db import SessionLocal
@@ -44,8 +44,13 @@ class SecurityBody(BaseModel):
 
 
 @router.put("/settings/security")
-def put_security(body: SecurityBody, _user=CurrentUser):
-    """⚠️ 必须注册在 /settings/{group} 之前，否则会被通配路由吃掉（已按顺序排放）。"""
+def put_security(body: SecurityBody, request: Request, _user=CurrentUser):
+    """⚠️ 必须注册在 /settings/{group} 之前，否则会被通配路由吃掉（已按顺序排放）。
+
+    ⚠️ API Key 的唯一禁区（2026-10-11 用户定案）：拿着 Key 可以调其余所有接口，
+    但账号安全（用户名/改密码）必须本人登录态操作——Key 泄露也不能改密锁死主人。"""
+    if getattr(request.state, "via_api_key", None) is not None:
+        raise HTTPException(status_code=403, detail="API Key 不允许修改账号安全信息，请用登录态操作")
     current = get_group("settings")
     current["security"]["username"] = body.username or "admin"
     if body.session_days:

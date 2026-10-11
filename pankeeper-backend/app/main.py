@@ -9,11 +9,12 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .api import accounts, auth, cache_api, dd, drive_logs, pa, qms_api, queue_api, recognize, records, search, settings as settings_api
+from .api import accounts, apikeys, auth, cache_api, dd, drive_logs, pa, qms_api, queue_api, recognize, records, search, settings as settings_api
 from .api.auth import ensure_admin
 from .db import init_db
 from .deps import is_local_request
 from .security import parse_token
+from .services import apikey_svc
 
 # Docker 镜像里的前端静态包（Dockerfile 阶段 1 构建产物 COPY 到 ./web）；
 # 本地开发无此目录，自动跳过——开发期前端仍走 vite :5173。
@@ -40,6 +41,11 @@ def _token_of(request: Request) -> str:
     return request.query_params.get("token", "")
 
 
+def _api_key_of(request: Request) -> str:
+    """API Key 取值：X-API-Key 头优先（URL 参数会进访问日志，头更安全），query 兜底。"""
+    return request.headers.get("x-api-key") or request.query_params.get("api_key") or ""
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="PanKeeper API", version="0.1.0")
 
@@ -48,9 +54,15 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def auth_guard(request: Request, call_next):
         if _needs_auth(request.url.path):
-            # 本机回环豁免（本地开发零负担）；局域网/外网一律要 token
-            if not is_local_request(request) and not parse_token(_token_of(request)):
-                return JSONResponse(status_code=401, content={"detail": "登录凭证不存在或已过期"})
+            if not is_local_request(request):
+                # API Key 与登录 token 等效（deps.get_current_user 里做同一校验并记
+                # via_api_key，改密码接口据此拒绝）。key 没带/没命中就回落 token 校验。
+                key_row = apikey_svc.validate(_api_key_of(request)) if _api_key_of(request) else None
+                if key_row is not None:
+                    request.state.via_api_key = key_row.id
+                    apikey_svc.touch_later(key_row.id)
+                elif not parse_token(_token_of(request)):
+                    return JSONResponse(status_code=401, content={"detail": "登录凭证不存在或已过期"})
         return await call_next(request)
 
     app.add_middleware(
@@ -64,6 +76,7 @@ def create_app() -> FastAPI:
 
     app.include_router(auth.router)
     app.include_router(settings_api.router)
+    app.include_router(apikeys.router)
     app.include_router(accounts.router)
     app.include_router(dd.router)
     app.include_router(search.router)

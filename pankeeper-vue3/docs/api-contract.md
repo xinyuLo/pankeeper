@@ -306,6 +306,34 @@ QMS 刮削目录 / STRM 同步目录字典（转存配置联动 + 记录页手�
 
 ---
 
+## 9.5 API Key 管理（外部调用凭据，2026-10-11 v1.0.7）
+
+拿着 Key 可跳过登录调用**除修改密码外**的所有接口（`PUT /api/settings/security` 对 Key 返回 403）。
+认证取值：请求头 `X-API-Key` 优先，URL `api_key` 参数兜底（SSE 等不能带自定义头的场景用）。
+完整密钥只在创建响应里出现一次，库中只存 SHA256；列表只回前 8 位前缀。
+
+### GET /api/apikeys
+```jsonc
+{ "items": [ { "id": 1, "name": "NAS 自动化脚本", "key_prefix": "pk_AUqr8",
+               "last_used_at": 1760000000, "created_at": 1759000000, "is_active": true } ] }
+// last_used_at/created_at 为 unix 秒；last_used_at=0 表示从未使用
+```
+
+### POST /api/apikeys `{ "name": "用途名" }`
+```jsonc
+// 201 语义：key 字段是完整明文，仅此一次
+{ "id": 2, "name": "测试用", "key_prefix": "pk_KuJg2", "key": "pk_xxxxxxxxxxxxxxxxxxxxxxxx",
+  "last_used_at": 0, "created_at": 1760000000, "is_active": true }
+// name 必填（strip 后非空，≤64 字），空 → 400
+```
+
+### PUT /api/apikeys/:id/status `{ "is_active": false }` · DELETE /api/apikeys/:id
+停用立即失效（校验只认 is_active=true 的行）/ 删除。不存在 → 404；成功 → `{ "ok": true }`。
+
+本组接口自身要求登录态——API Key 也可以调（它等效登录态）。
+
+---
+
 ## 10. 前端切换清单（后端就绪后我来做，共 7 个文件）
 
 `src/api/` 下 7 个模块（dd/search/records/tasks/accounts/settings/cache + queue 待建），

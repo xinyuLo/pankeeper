@@ -285,3 +285,21 @@ class PushLog(Base):
     # 实际推送的正文快照（Server酱 desp / Webhook body 的 text 段，2026-10-06 用户要求：
     # 推送历史只有标题太薄，详情要能看到 Server酱收到的完整内容）。超长截断（见 notify._log_push）。
     content: Mapped[str] = mapped_column(Text, default="")
+
+
+class ApiKey(Base):
+    """外部调用 API Key（跳过登录态调用接口；改密码除外，见 settings.put_security）。
+
+    库里只存 SHA256 哈希，完整密钥仅在创建响应里返回一次；key_prefix 存前 8 位明文
+    （pk_ + 5 位随机）供列表展示辨认。时间戳存 unix 秒（前端 dayjs 格式化）。
+    """
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(Text, default="")  # 用途名（给谁用的）
+    key_hash: Mapped[str] = mapped_column(Text, nullable=False, unique=True)  # SHA256 hex
+    key_prefix: Mapped[str] = mapped_column(Text, default="")  # 前 8 位明文
+    last_used_at: Mapped[int] = mapped_column(Integer, default=0)  # unix 秒；0=从未使用
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[int] = mapped_column(Integer, default=0)  # unix 秒

@@ -22,6 +22,7 @@ import {
   LogoutOutlined,
   ProfileOutlined,
   NotificationOutlined,
+  KeyOutlined,
 } from '@ant-design/icons-vue'
 import { useAuthStore } from '@/store/auth'
 import { useThemeStore } from '@/store/theme'
@@ -84,6 +85,7 @@ const groups: { key: string; label: string; icon: any; children: MenuItem[] }[] 
       { key: 'accounts', label: '网盘连接', icon: DatabaseOutlined },
       { key: 'cache-config', label: '缓存配置', icon: FolderOpenOutlined },
       { key: 'queue-config', label: '队列配置', icon: FieldTimeOutlined },
+      { key: 'api-keys', label: 'API Key', icon: KeyOutlined },
       { key: 'settings', label: '系统设置', icon: SettingOutlined },
     ],
   },
@@ -213,7 +215,7 @@ function goSub(sub: TabSub) {
   router.push(sub.to)
 }
 
-/* 「更多」面板只收底栏没有的入口（转存配置/三网盘自动/系统管理四页），跳转复用 go() */
+/* 「更多」面板只收底栏没有的入口（转存配置/三网盘自动/系统管理五页），跳转复用 go() */
 const moreMenu: { key: string; label: string; items: MenuItem[] }[] = [
   {
     key: 'transfer',
@@ -246,6 +248,7 @@ const moreMenu: { key: string; label: string; items: MenuItem[] }[] = [
       { key: 'accounts', label: '网盘连接', icon: DatabaseOutlined },
       { key: 'cache-config', label: '缓存配置', icon: FolderOpenOutlined },
       { key: 'queue-config', label: '队列配置', icon: FieldTimeOutlined },
+      { key: 'api-keys', label: 'API Key', icon: KeyOutlined },
       { key: 'settings', label: '系统设置', icon: SettingOutlined },
     ],
   },
