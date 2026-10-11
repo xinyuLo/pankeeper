@@ -165,12 +165,12 @@ async function remove(r: ApiKeyItem) {
       <table v-if="!isMobile" class="ak-table">
         <thead>
           <tr>
-            <th>名称</th>
-            <th style="width: 140px">API Key 前缀</th>
-            <th style="width: 170px">状态</th>
-            <th style="width: 190px">最后使用</th>
-            <th style="width: 190px">创建时间</th>
-            <th style="width: 64px; text-align: left">操作</th>
+            <th style="width: 18%">名称</th>
+            <th style="width: 88px">API Key 前缀</th>
+            <th style="width: 112px">状态</th>
+            <th style="width: 27%">最后使用</th>
+            <th style="width: 27%">创建时间</th>
+            <th style="width: 90px">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -198,9 +198,13 @@ async function remove(r: ApiKeyItem) {
                 :title="`删除后用这个 Key 的调用会立即失效，确定删除「${r.name}」？`"
                 ok-text="删除"
                 cancel-text="取消"
+                :ok-button-props="{ danger: true }"
                 @confirm="remove(r)"
               >
-                <a class="ak-del"><DeleteOutlined /> 删除</a>
+                <a-button size="small" danger>
+                  <template #icon><DeleteOutlined /></template>
+                  删除
+                </a-button>
               </a-popconfirm>
             </td>
           </tr>
@@ -232,9 +236,13 @@ async function remove(r: ApiKeyItem) {
               :title="`删除后用这个 Key 的调用会立即失效，确定删除？`"
               ok-text="删除"
               cancel-text="取消"
+              :ok-button-props="{ danger: true }"
               @confirm="remove(r)"
             >
-              <a class="ak-del"><DeleteOutlined /> 删除</a>
+              <a-button size="small" danger>
+                <template #icon><DeleteOutlined /></template>
+                删除
+              </a-button>
             </a-popconfirm>
           </div>
         </div>
@@ -313,10 +321,28 @@ async function remove(r: ApiKeyItem) {
   font-size: 12px;
 }
 
+/* 固定布局 + 比例列宽：状态列(11%)紧跟前缀列(14%)，时间列吃剩余宽度——对齐 QMS 口径；
+   名称格限最大宽度防超长名溢出 */
 .ak-table { table-layout: fixed; }
+/* 前缀(88px,容 pk_+5 位 chip)/状态(112px)两列按内容定宽贴住：间距 = 状态列 padding-left 8
+   + 前缀列 padding-right 7 = 15px */
+.ak-table th:nth-child(2),
+.ak-table td:nth-child(2) { padding-right: 7px; }
+.ak-table th:nth-child(3),
+.ak-table td:nth-child(3) { padding-left: 8px; }
+/* 全站表头/单元格默认左对齐（pk.css th），本页对齐 QMS 口径整体居中 */
 .ak-table th,
-.ak-table td { padding-left: 16px; padding-right: 16px; }
-.ak-name { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ak-table td { text-align: center; }
+.ak-table th,
+.ak-table td { padding-left: 12px; padding-right: 12px; }
+.ak-name {
+  font-size: 13.5px;
+  max-width: 240px;
+  margin: 0 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .ak-prefix {
   background: var(--surface-2);
   border: 1px solid var(--split);
@@ -325,16 +351,6 @@ async function remove(r: ApiKeyItem) {
   font-size: 12px;
 }
 .ak-status { display: inline-flex; align-items: center; gap: 7px; }
-.ak-del {
-  font-size: 12.5px;
-  color: var(--error);
-  white-space: nowrap;
-  cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-  text-decoration-color: rgba(255, 77, 79, 0.35);
-}
-.ak-del:hover { text-decoration-color: var(--error); }
 
 /* 手机卡片 */
 .ak-cards { display: block; }
