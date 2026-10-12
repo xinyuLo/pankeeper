@@ -98,7 +98,7 @@ def _watch_own(ctx: dict) -> None:
             "",
             f"![{name_line}]({cover})" if cover else "",
             "",
-            f"**简介：{_clip(overview)}**" if overview else "",
+            f"　　**简介：{_clip(overview)}**" if overview else "",
             "",
             f"**本次转存 {len(names)} 个文件：**",
             *file_lines,
@@ -187,7 +187,7 @@ def _header(ctx: dict, records: list[dict], strm_res: dict | None = None, emby: 
     st_icon, st_text = _overall_status(ctx, records, strm_res)
     stats = " · ".join(_stats_list(ctx, records, strm_res))
     if emby:
-        stats += f"\n🎬 触发 Emby「{emby}」库刷新"
+        stats += f"\n\n🎬 触发 Emby「{emby}」库刷新"
     lines = [f"{icon} **{drive_name} · {ctx.get('task', '')}** {st_icon} {st_text}", "", stats]
     return "\n".join(lines)
 
@@ -222,7 +222,7 @@ def _bark_markdown(ctx: dict, records: list[dict], strm_res: dict | None, body_m
     走 image 参数展示。emby 给了就统计行下面单独一行「🎬 触发 Emby「库」库刷新」。"""
     stats = " · ".join(_stats_list(ctx, records, strm_res))
     if emby:
-        stats += f"\n🎬 触发 Emby「{emby}」库刷新"
+        stats += f"\n\n🎬 触发 Emby「{emby}」库刷新"
     md = _bark_md(body_md)
     return f"{stats}\n\n{md}" if md else stats
 
@@ -356,7 +356,7 @@ def _tv_block(tmdb_id: int, media_name: str, items: list[dict]) -> tuple[str, st
 
     lines = [f"## {media_name}", "", f"![{media_name}]({backdrop})" if backdrop else "", ""]
     if compact:
-        lines += [f"**简介：{_clip(show_overview)}**" if show_overview else "", ""]
+        lines += [f"　　**简介：{_clip(show_overview)}**" if show_overview else "", ""]
     for ep_no, ep_name, overview, still in ep_rows:
         lines += [
             f"### **集：S{season:02d}E{ep_no:02d} - {ep_name}**",
@@ -365,7 +365,7 @@ def _tv_block(tmdb_id: int, media_name: str, items: list[dict]) -> tuple[str, st
             "",
         ]
         if not compact:
-            lines += [f"**简介：{_clip(overview)}**", ""]
+            lines += [f"　　**简介：{_clip(overview)}**", ""]
         lines += ["", "", ""]  # 集间留白 3 空行（规范 §3）
     return "\n".join(lines).rstrip() + "\n", media_name
 
@@ -383,7 +383,7 @@ def _movie_block(tmdb_id: int, media_name: str, items: list[dict]) -> tuple[str,
         "",
         f"![{media_name}]({backdrop})" if backdrop else "",
         "",
-        f"**简介：{head}{_clip(overview)}**",
+        f"　　**简介：{head}{_clip(overview)}**",
     ]
     return "\n".join(lines), media_name
 
