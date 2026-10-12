@@ -21,9 +21,13 @@ GROUPS = ("search", "notify", "qms", "media")
 @router.get("/settings")
 def get_settings(_user=CurrentUser):
     data = get_group("settings")
-    # sendkey/apikey 只回掩码，绝不回明文（契约：值为 **** 开头 = 前端没改，保存时保留旧值）
-    if data["notify"].get("sendkey"):
-        data["notify"]["sendkey"] = "****" + data["notify"]["sendkey"][-4:]
+    # 通道密钥只回掩码，绝不回明文（契约：值为 **** 开头 = 前端没改，保存时保留旧值）
+    sc = data["notify"].get("serverchan") or {}
+    if sc.get("sendkey"):
+        data["notify"]["serverchan"]["sendkey"] = "****" + sc["sendkey"][-4:]
+    bark = data["notify"].get("bark") or {}
+    if bark.get("device_key"):
+        data["notify"]["bark"]["device_key"] = "****" + bark["device_key"][-4:]
     if data["qms"].get("apikey"):
         data["qms"]["apikey"] = "****" + data["qms"]["apikey"][-4:]
     if data["qms"].get("tmdb_api_key"):
@@ -220,11 +224,31 @@ def test_search(body: dict, _user=CurrentUser):
 
 @router.post("/settings/notify/test")
 def test_notify(body: dict, _user=CurrentUser):
-    # 掩码值（****开头）= 没改 → 用库里已保存的 sendkey 测，别把掩码当真 key 发
-    sendkey = (body.get("sendkey") or "").strip()
-    if sendkey.startswith("****"):
-        sendkey = get_group("settings")["notify"].get("sendkey") or ""
-    ok, msg = notify.test_sendkey(sendkey)
+    """按通道测试（参数传「输入框正在编辑的值」，不等自动保存）。
+
+    掩码值（****开头）= 没改 → 回落库里已保存的密钥，别把掩码当真 key 发；
+    未传的字段也回落已保存配置。与真实投递同链路（含重试）。"""
+    body = body or {}
+    saved = get_group("settings")["notify"]
+    channel = body.get("channel")
+    if channel == "bark":
+        b = dict(body.get("bark") or {})
+        sb = saved.get("bark") or {}
+        for f in ("server", "device_key"):
+            v = (b.get(f) or "").strip()
+            if not v or v.startswith("****"):
+                b[f] = sb.get(f) or ""
+        ok, msg = notify.test_bark(b)
+    elif channel == "webhook":
+        url = (body.get("url") or "").strip()
+        if not url or url.startswith("****"):
+            url = (saved.get("webhook") or {}).get("url") or ""
+        ok, msg = notify.test_webhook(url)
+    else:
+        sendkey = (body.get("sendkey") or "").strip()
+        if not sendkey or sendkey.startswith("****"):
+            sendkey = (saved.get("serverchan") or {}).get("sendkey") or ""
+        ok, msg = notify.test_serverchan(sendkey)
     return {"ok": ok, "message": msg}
 
 
@@ -295,6 +319,7 @@ def push_history(limit: int = 50, _user=CurrentUser):
                 "status": r.status, "error": r.error or "",
                 "content": (r.content or "")[:200],
                 "has_more": bool(r.content and len(r.content) > 200),
+                "has_bark": bool(r.bark_id),  # 有 id 才谈得上联动删手机端（前端确认文案用）
             }
             for r in rows
         ]
@@ -316,5 +341,26 @@ def push_history_detail(log_id: int, _user=CurrentUser):
             "id": r.id, "ts": r.ts, "title": r.title, "kind": r.kind,
             "status": r.status, "error": r.error or "", "content": r.content or "",
         }
+
+
+@router.delete("/notify/history/{log_id}")
+def delete_push_history(log_id: int, _user=CurrentUser):
+    """删除单条推送历史；行里存有 bark_id 时联动下发 Bark delete 指令，
+    手机端通知中心 / App 历史里的对应推送一并删掉（2026-10-12 接入 Bark id/delete 机制）。
+
+    Bark 的删除是静默推送：HTTP 200 只代表 bark-server 受理了指令，手机端实际删除
+    取决于 Bark 的「后台 App 刷新」开关——结果如实回给前端提示。"""
+    with SessionLocal() as db:
+        r = db.get(PushLog, log_id)
+        if r is None:
+            raise HTTPException(status_code=404, detail="推送记录不存在")
+        bark_id = r.bark_id or ""
+        db.delete(r)
+        db.commit()
+    bark = {"sent": False, "message": ""}
+    if bark_id:
+        ok, msg = notify.delete_bark(bark_id)
+        bark = {"sent": ok, "message": msg}
+    return {"ok": True, "bark": bark}
 
 

@@ -12,8 +12,11 @@ from ..db import SessionLocal
 from ..models import Setting
 from ..security import decrypt_credential, encrypt_credential
 
-# 落库加密的敏感字段：密文加 fernet: 前缀，get_group 读取时自动解密
+# 落库加密的敏感字段（扁平结构组：qms / litepan）：密文加 fernet: 前缀，get_group 读取时自动解密
 _SENSITIVE_FIELDS = ("sendkey", "apikey", "webhook", "tmdb_api_key")
+# notify 通知通道（2026-10-12 定案：下拉单选，只发选中通道）：通道子对象 → 其中的敏感字段
+_NOTIFY_CHANNELS = ("serverchan", "bark", "webhook")
+_NOTIFY_SENSITIVE = {"serverchan": ("sendkey",), "bark": ("device_key",), "webhook": ("url",)}
 
 DEFAULTS: dict[str, dict[str, Any]] = {
     "settings": {
@@ -29,8 +32,27 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         },
         "notify": {
             "enabled": False,
-            "sendkey": "",
-            "webhook": "",
+            # 通知通道单选（2026-10-12 定案）：三选一，切换时前端参数表单跟着换，各通道参数分开保存
+            "channel": "serverchan",
+            # Server 酱（sendkey 形态自适应 Turbo / Server酱³，见 services/notify.py）
+            "serverchan": {"sendkey": ""},
+            # Bark（iOS 推送）：server=bark-server 根地址（内网地址或外网隧道地址），
+            # group 是分组前缀（实际分组=「前缀·自动转存」等，见 notify._bark_group），
+            # level 只开放 active/timeSensitive/passive（critical 需 App 授权且体验打扰，不做）
+            "bark": {
+                "server": "",
+                "device_key": "",
+                "group": "PanKeeper",
+                "level": "active",
+                "sound": "",
+                "icon": "",
+                "is_archive": True,
+            },
+            # 自定义 Webhook：POST JSON {title, subtitle?, content}
+            "webhook": {"url": ""},
+            # 推送历史保留天数（两端共用，2026-10-12 用户定案）：电脑端每日定时清 push_logs，
+            # Bark 历史靠推送时带的唯一 id 由同一任务发 delete 指令删手机端
+            "retain_days": 30,
             # 推送时机三开关：自动转存 / 搜索转存 / 凭据过期告警
             "on_auto": True,
             "on_search": True,
@@ -95,6 +117,35 @@ DEFAULTS: dict[str, dict[str, Any]] = {
 }
 
 
+def _migrate_notify(cfg: dict) -> None:
+    """旧扁平结构（sendkey/webhook 直接挂在 notify 根上）→ 通道嵌套结构，就地迁移。
+
+    get_group / save_group 都会进来，幂等：没有扁平键时只校正 channel 合法性。
+    通道选择沿用旧「配了就发」的第一优先：有 sendkey 选 serverchan，否则配了 webhook 选 webhook。"""
+    # 只弹「扁平形态」（字符串）的旧键——迁移收敛后 notify.webhook 等已是嵌套 dict，不能误删
+    flat_key = cfg.pop("sendkey") if isinstance(cfg.get("sendkey"), str) else ""
+    flat_hook = cfg.pop("webhook") if isinstance(cfg.get("webhook"), str) else ""
+    if flat_key and not (cfg.get("serverchan") or {}).get("sendkey"):
+        cfg.setdefault("serverchan", {})["sendkey"] = flat_key
+    if flat_hook and not (cfg.get("webhook") or {}).get("url"):
+        cfg.setdefault("webhook", {})["url"] = flat_hook
+    if flat_key:
+        cfg["channel"] = "serverchan"
+    elif flat_hook:
+        cfg["channel"] = "webhook"
+    if cfg.get("channel") not in _NOTIFY_CHANNELS:
+        cfg["channel"] = "serverchan"
+
+
+def _walk_notify_sensitive(cfg: dict, fn) -> None:
+    """对 notify 各通道子对象的敏感字段逐一执行 fn(node, field, sub)（加解密/掩码共用遍历）。"""
+    for sub, fields in _NOTIFY_SENSITIVE.items():
+        node = cfg.get(sub)
+        if isinstance(node, dict):
+            for f in fields:
+                fn(node, f, sub)
+
+
 def get_group(key: str) -> dict[str, Any]:
     """读取分组并深合并默认值（新增配置项无需迁移）。"""
     merged = DEFAULTS.get(key, {})
@@ -123,11 +174,28 @@ def get_group(key: str) -> dict[str, Any]:
                     group[f] = ""
 
     if key == "settings":
-        _decrypt(data.get("notify", {}))
+        notify_cfg = data.get("notify", {})
+        _migrate_notify(notify_cfg)
+        _walk_notify_sensitive(notify_cfg, lambda node, field, _sub: _decrypt_one(node, field))
         _decrypt(data.get("qms", {}))
     elif key == "litepan":
         _decrypt(data)
     return data
+
+
+def _decrypt_one(node: dict, field: str) -> None:
+    v = node.get(field)
+    if isinstance(v, str) and v.startswith("fernet:"):
+        try:
+            node[field] = decrypt_credential(v[len("fernet:"):])
+        except Exception:
+            node[field] = ""
+
+
+def _encrypt_one(node: dict, field: str) -> None:
+    v = node.get(field)
+    if isinstance(v, str) and v and not v.startswith("fernet:"):
+        node[field] = "fernet:" + encrypt_credential(v)
 
 
 def _normalize_base_url(u: Any) -> Any:
@@ -175,13 +243,22 @@ def save_group(key: str, value: dict[str, Any]) -> None:
         for g, f in (("search", "pansou_url"), ("qms", "url"), ("qms", "tmdb_proxy")):
             if g in value and f in (value.get(g) or {}):
                 value[g][f] = _normalize_base_url(value[g].get(f))
-        for group in ("notify", "qms"):
-            for field in ("sendkey", "apikey", "webhook", "tmdb_api_key"):
-                new_val = (value.get(group, {}) or {}).get(field, "")
-                if isinstance(new_val, str) and new_val.startswith("****"):
-                    value.setdefault(group, {})[field] = old.get(group, {}).get(field, "")
+        notify_new = value.get("notify")
+        if isinstance(notify_new, dict):
+            _migrate_notify(notify_new)  # 兼容旧页面/旧库存量扁平键，落库前统一成嵌套
+            old_notify = old.get("notify", {})
 
-        _encrypt(value.get("notify", {}))
+            def _keep_masked(node: dict, field: str, sub: str) -> None:
+                v = node.get(field)
+                if isinstance(v, str) and v.startswith("****"):
+                    node[field] = (old_notify.get(sub) or {}).get(field, "")
+
+            _walk_notify_sensitive(notify_new, _keep_masked)
+            _walk_notify_sensitive(notify_new, lambda node, field, _sub: _encrypt_one(node, field))
+        for field in ("apikey", "tmdb_api_key"):
+            new_val = (value.get("qms", {}) or {}).get(field, "")
+            if isinstance(new_val, str) and new_val.startswith("****"):
+                value.setdefault("qms", {})[field] = old.get("qms", {}).get(field, "")
         _encrypt(value.get("qms", {}))
     elif key == "litepan":
         old = get_group(key)
