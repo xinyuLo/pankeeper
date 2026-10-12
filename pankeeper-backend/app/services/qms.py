@@ -286,22 +286,42 @@ def refresh_emby_library(path_hint: str | None = None) -> tuple[bool, str]:
         return False, f"Emby 连接失败：{e}"
 
 
-def _refresh_emby_scoped(url: str, key: str, path_hint: str) -> str:
-    """按库刷新：找到包含 path_hint 的虚拟库只刷它，成功返回「已按库刷新：<库名>」；
-    找不到所属库 / 接口不支持 / Emby 拒绝，返回空串（调用方退回全库刷新）。"""
+def emby_library_name(path_hint: str) -> str:
+    """按路径匹配 Emby 虚拟库名（推送文案用）：Emby 配置齐备且「同步完成后刷新媒体库」
+    开关开着才去找；找不到所属库/接口不支持返回空串。"""
+    cfg = get_emby_config()
+    if not cfg:
+        return ""
+    url = (cfg.get("emby_url") or "").rstrip("/")
+    key = cfg.get("emby_api_key") or ""
+    if not url or not key or int(cfg.get("enable_refresh_library") or 0) != 1:
+        return ""
+    try:
+        folder = _match_emby_folder(url, key, path_hint)
+        return str((folder or {}).get("Name") or "")
+    except httpx.HTTPError:
+        return ""
+
+
+def _match_emby_folder(url: str, key: str, path_hint: str) -> dict | None:
+    """在 Emby 虚拟库列表里找包含 path_hint 的库（Locations 前缀互含即命中），
+    找不到返回 None。"""
     hint = path_hint.strip().strip("/")
     vf = httpx.get(f"{url}/Library/VirtualFolders", params={"api_key": key}, timeout=15)
     if vf.status_code != 200:
-        return ""
-    target = None
+        return None
     for folder in vf.json() or []:
         for loc in folder.get("Locations") or []:
             loc_n = str(loc).strip().strip("/")
             if hint and loc_n and (hint.startswith(loc_n + "/") or hint == loc_n or loc_n.startswith(hint + "/")):
-                target = folder
-                break
-        if target:
-            break
+                return folder
+    return None
+
+
+def _refresh_emby_scoped(url: str, key: str, path_hint: str) -> str:
+    """按库刷新：找到包含 path_hint 的虚拟库只刷它，成功返回「已按库刷新：<库名>」；
+    找不到所属库 / 接口不支持 / Emby 拒绝，返回空串（调用方退回全库刷新）。"""
+    target = _match_emby_folder(url, key, path_hint)
     item_id = (target or {}).get("ItemId")
     if not target or not item_id:
         return ""

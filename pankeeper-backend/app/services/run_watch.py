@@ -149,12 +149,16 @@ def _fire_strm(strm_id: int, names: set[str]) -> dict:
                 raise AdapterError(f"QMS 拒绝定向同步 {d}：{msg}")
             print(f"[run-watch] STRM 定向同步：{d}（只扫本次目录）", flush=True)
 
+        # STRM 落盘目录 = 同步 local_path + 本次刮削目录相对 remote 的部分
+        hint = local.rstrip("/") + dests[0][len(remote):]
+        # 推送文案用：Emby 刷新是否已排定 + 所属库名（开关没开/匹配不到就空，推送不展示）
+        emby_name = qms.emby_library_name(hint)
+        watchable = os.path.isdir(local)
+
         def _emby_later() -> None:
             # 等 STRM 真落盘（2026-10-13 用户定稿）：轮询本次目录里的 .strm 文件，
             # 落盘即刻按「所属媒体库」刷 Emby，不全库扫；容器看不到 STRM 本地挂载
-            # （os.path.isdir(local) 为假）时退回 90s 定时；轮询 5 分钟没见到也照刷兜底
-            hint = local.rstrip("/") + dests[0][len(remote):]
-            watchable = os.path.isdir(local)
+            # （watchable 为假）时退回 90s 定时；轮询 5 分钟没见到也照刷兜底
             if watchable:
                 deadline = time.time() + 300
                 while time.time() < deadline:
@@ -169,7 +173,7 @@ def _fire_strm(strm_id: int, names: set[str]) -> dict:
         threading.Thread(target=_emby_later, daemon=True).start()
         # 定向同步是"直接生成"（QMS 日志里就是 [生成 STRM]），不是触发同步目录任务——
         # 口径如实：QMS 任务列表里看到的是 ID=0 的临时任务（2026-10-04 用户纠正日志口径）
-        return {"st": "已触发（定向临时任务）", "cls": "t-ok"}
+        return {"st": "已触发（定向临时任务）", "cls": "t-ok", "emby": emby_name}
     except Exception as e:  # noqa: BLE001 —— 回退口：定向失败绝不把 STRM 弄丢
         print(f"[run-watch] STRM 定向同步失败（{e}），回退整路径同步", flush=True)
         ok, msg = qms.trigger_strm(strm_id)
