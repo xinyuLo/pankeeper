@@ -180,10 +180,15 @@ def _wait_records(ctx: dict) -> list[dict]:
 
 
 def _header(ctx: dict, records: list[dict], strm_res: dict | None = None, emby: str | None = None) -> str:
-    """信息条：网盘 · 任务名 + 整单状态徽章 / 转存集数 / QMS 结果 / STRM 结果（带图标）。"""
+    """信息条：网盘 · 任务名 + 整单状态徽章 / 转存集数 / QMS 结果 / STRM 结果（带图标）。
+
+    emby 给了就单独一行「🎬 触发 Emby「库」库刷新」（2026-10-13 用户定案：不并进 · 分隔长行）。"""
     icon, drive_name = DRIVE_META.get(ctx.get("drive"), ("📁", ctx.get("drive", "")))
     st_icon, st_text = _overall_status(ctx, records, strm_res)
-    lines = [f"{icon} **{drive_name} · {ctx.get('task', '')}** {st_icon} {st_text}", "", " · ".join(_stats_list(ctx, records, strm_res, emby))]
+    stats = " · ".join(_stats_list(ctx, records, strm_res))
+    if emby:
+        stats += f"\n🎬 触发 Emby「{emby}」库刷新"
+    lines = [f"{icon} **{drive_name} · {ctx.get('task', '')}** {st_icon} {st_text}", "", stats]
     return "\n".join(lines)
 
 
@@ -214,20 +219,21 @@ def _bark_markdown(ctx: dict, records: list[dict], strm_res: dict | None, body_m
     """Bark markdown 正文（2026-10-13 用户定案）：统计行 + 富文本去图。
 
     App 历史里渲染加粗/标题/列表（横幅降级纯文本）；图片不进 markdown（降级成裸链接），
-    走 image 参数展示。"""
-    stats = " · ".join(_stats_list(ctx, records, strm_res, emby))
+    走 image 参数展示。emby 给了就统计行下面单独一行「🎬 触发 Emby「库」库刷新」。"""
+    stats = " · ".join(_stats_list(ctx, records, strm_res))
+    if emby:
+        stats += f"\n🎬 触发 Emby「{emby}」库刷新"
     md = _bark_md(body_md)
     return f"{stats}\n\n{md}" if md else stats
 
 
-def _stats_list(ctx: dict, records: list[dict], strm_res: dict | None = None, emby: str | None = None) -> list[str]:
-    """信息条统计段（转存数 / QMS 结果 / STRM 结果 / Emby 刷新），Server酱 信息条与 Bark 正文共用。
+def _stats_list(ctx: dict, records: list[dict], strm_res: dict | None = None) -> list[str]:
+    """信息条统计段（转存数 / QMS 结果 / STRM 结果），Server酱 信息条与 Bark 正文共用。
 
     口径（2026-10-13 定案）：完整文字不压缩（✅ QMS 刮削成功 / ✅ STRM 已生成）；
     带原因/数量注释的条目（⚠️ 部分失败 / 未见记录 / t-bad 的失败原因）原样保留；
     没等到 STRM 返回值一律按 ❌ 标（2026-10-12 用户定案）。
-    emby：PanKeeper 已排定 Emby 按库刷新时填所属库名，追加「✅ 触发 Emby「库」库刷新」；
-    空（回退整路径由 QMS 自刷 / 未配 / 开关没开）就不展示这项。"""
+    Emby 段不在这里——由 _header/_bark_markdown 单独一行拼（2026-10-13 用户定案）。"""
     stats: list[str] = []
     is_tv = any(r.get("type") == "tvshow" for r in records) if records else False
     unit = "集" if is_tv else "个文件"
@@ -266,8 +272,6 @@ def _stats_list(ctx: dict, records: list[dict], strm_res: dict | None = None, em
         stats.append("✅ STRM 已生成")
     else:
         stats.append("❌ STRM 未返回")
-    if emby:
-        stats.append(f"🎬 触发 Emby「{emby}」库刷新")
     return stats
 
 
