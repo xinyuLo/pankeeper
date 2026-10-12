@@ -121,7 +121,8 @@ def _watch(ctx: dict) -> None:
     try:
         records = _wait_records(ctx)
         strm_res = _wait_strm(ctx)  # 自动转存：等后台线程触发完 STRM，信息条才能如实显示
-        header = _header(ctx, records, strm_res)
+        emby = (strm_res or {}).get("emby") or None  # Bark/Server酱 统计行展示「触发 Emby 库刷新」
+        header = _header(ctx, records, strm_res, emby)
         renamed = [r for r in records if r.get("status") == "renamed" and r.get("tmdb_id")]
         if renamed:
             body, title = _build(renamed)
@@ -130,9 +131,9 @@ def _watch(ctx: dict) -> None:
                 # markdown=统计行+富文本去图（App 内渲染格式，横幅降级纯文本）
                 notify.push(title, f"{header}\n\n{body}", kind=f"{ctx.get('source', 'search')}_done",
                             title_bark=_bark_title(ctx, records, strm_res),
-                            markdown=_bark_markdown(ctx, records, strm_res, body))
+                            markdown=_bark_markdown(ctx, records, strm_res, body, emby))
                 return
-        _fallback(ctx, records, strm_res)
+        _fallback(ctx, records, strm_res, emby)
     except Exception:
         # 守护线程死了要留痕——2026-10-04 实锤：推送尾巴曾被错位成死代码，整个链路
         # 无声无息不推送也不报错，靠 push_logs 缺行才定位到
@@ -178,11 +179,11 @@ def _wait_records(ctx: dict) -> list[dict]:
     return recs
 
 
-def _header(ctx: dict, records: list[dict], strm_res: dict | None = None) -> str:
+def _header(ctx: dict, records: list[dict], strm_res: dict | None = None, emby: str | None = None) -> str:
     """信息条：网盘 · 任务名 + 整单状态徽章 / 转存集数 / QMS 结果 / STRM 结果（带图标）。"""
     icon, drive_name = DRIVE_META.get(ctx.get("drive"), ("📁", ctx.get("drive", "")))
     st_icon, st_text = _overall_status(ctx, records, strm_res)
-    lines = [f"{icon} **{drive_name} · {ctx.get('task', '')}** {st_icon} {st_text}", "", " · ".join(_stats_list(ctx, records, strm_res))]
+    lines = [f"{icon} **{drive_name} · {ctx.get('task', '')}** {st_icon} {st_text}", "", " · ".join(_stats_list(ctx, records, strm_res, emby))]
     return "\n".join(lines)
 
 
@@ -209,22 +210,24 @@ def _bark_md(body_md: str) -> str:
     return re.sub(r"(?m)^## ", "# ", md)
 
 
-def _bark_markdown(ctx: dict, records: list[dict], strm_res: dict | None, body_md: str) -> str:
+def _bark_markdown(ctx: dict, records: list[dict], strm_res: dict | None, body_md: str, emby: str | None = None) -> str:
     """Bark markdown 正文（2026-10-13 用户定案）：统计行 + 富文本去图。
 
     App 历史里渲染加粗/标题/列表（横幅降级纯文本）；图片不进 markdown（降级成裸链接），
     走 image 参数展示。"""
-    stats = " · ".join(_stats_list(ctx, records, strm_res))
+    stats = " · ".join(_stats_list(ctx, records, strm_res, emby))
     md = _bark_md(body_md)
     return f"{stats}\n\n{md}" if md else stats
 
 
-def _stats_list(ctx: dict, records: list[dict], strm_res: dict | None = None) -> list[str]:
-    """信息条统计段（转存数 / QMS 结果 / STRM 结果），Server酱 信息条与 Bark 正文共用。
+def _stats_list(ctx: dict, records: list[dict], strm_res: dict | None = None, emby: str | None = None) -> list[str]:
+    """信息条统计段（转存数 / QMS 结果 / STRM 结果 / Emby 刷新），Server酱 信息条与 Bark 正文共用。
 
     口径（2026-10-13 定案）：完整文字不压缩（✅ QMS 刮削成功 / ✅ STRM 已生成）；
     带原因/数量注释的条目（⚠️ 部分失败 / 未见记录 / t-bad 的失败原因）原样保留；
-    没等到 STRM 返回值一律按 ❌ 标（2026-10-12 用户定案）。"""
+    没等到 STRM 返回值一律按 ❌ 标（2026-10-12 用户定案）。
+    emby：PanKeeper 已排定 Emby 按库刷新时填所属库名，追加「✅ 触发 Emby「库」库刷新」；
+    空（回退整路径由 QMS 自刷 / 未配 / 开关没开）就不展示这项。"""
     stats: list[str] = []
     is_tv = any(r.get("type") == "tvshow" for r in records) if records else False
     unit = "集" if is_tv else "个文件"
@@ -263,6 +266,8 @@ def _stats_list(ctx: dict, records: list[dict], strm_res: dict | None = None) ->
         stats.append("✅ STRM 已生成")
     else:
         stats.append("❌ STRM 未返回")
+    if emby:
+        stats.append(f"🎬 触发 Emby「{emby}」库刷新")
     return stats
 
 
@@ -318,6 +323,13 @@ def _build(records: list[dict]) -> tuple[str, str]:
     return "\n\n".join(blocks), title
 
 
+# 电视剧简介两档阈值（2026-10-13 用户定案）：集数超过该值、或逐集简介合计超过字数预算时，
+# 切紧凑模式——只发整体剧简介 + 集行（不逐集简介）。预算按 Bark 载荷反推：markdown 参数
+# 走 APNs 4KB 上限，中文 3 字节/字，标题/统计/URL/参数已占 ~1KB，正文留 ~1000 字。
+TV_COMPACT_MAX_EPS = 5
+TV_COMPACT_OVERVIEW_CHARS = 700
+
+
 def _tv_block(tmdb_id: int, media_name: str, items: list[dict]) -> tuple[str, str]:
     detail = tmdb.tv_detail(tmdb_id)
     if detail is None:
@@ -327,22 +339,30 @@ def _tv_block(tmdb_id: int, media_name: str, items: list[dict]) -> tuple[str, st
     eps = tmdb.tv_season(tmdb_id, season) or []
     eps_map = {int(e.get("episode_number") or 0): e for e in eps}
 
-    lines = [f"## {media_name}", "", f"![{media_name}]({backdrop})", ""]
     ordered = sorted(items, key=lambda r: int(r.get("episode_number") or 0))
+    ep_rows = []
     for r in ordered:
         ep_no = int(r.get("episode_number") or 0)
         ep = eps_map.get(ep_no) or {}
-        ep_name = ep.get("name") or f"第 {ep_no} 集"
-        overview = (ep.get("overview") or "").strip()
-        still = tmdb.img_url(ep.get("still_path"))
+        ep_rows.append((ep_no, ep.get("name") or f"第 {ep_no} 集", (ep.get("overview") or "").strip(), tmdb.img_url(ep.get("still_path"))))
+
+    # 紧凑模式（集数多 / 逐集简介超量）：整体剧简介 + 集行，不逐集简介
+    show_overview = (detail.get("overview") or "").strip()
+    compact = len(ep_rows) > TV_COMPACT_MAX_EPS or sum(len(o) for _, _, o, _ in ep_rows) > TV_COMPACT_OVERVIEW_CHARS
+
+    lines = [f"## {media_name}", "", f"![{media_name}]({backdrop})" if backdrop else "", ""]
+    if compact:
+        lines += [f"**简介：{_clip(show_overview)}**" if show_overview else "", ""]
+    for ep_no, ep_name, overview, still in ep_rows:
         lines += [
             f"### **集：S{season:02d}E{ep_no:02d} - {ep_name}**",
             "",
             f"![S{season:02d}E{ep_no:02d}]({still})" if still else "",
             "",
-            f"**简介：{_clip(overview)}**",
-            "", "", "", "",  # 集间留白 3 空行（规范 §3）
         ]
+        if not compact:
+            lines += [f"**简介：{_clip(overview)}**", ""]
+        lines += ["", "", ""]  # 集间留白 3 空行（规范 §3）
     return "\n".join(lines).rstrip() + "\n", media_name
 
 
@@ -371,7 +391,7 @@ def _clip(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _fallback(ctx: dict, records: list[dict], strm_res: dict | None = None) -> None:
+def _fallback(ctx: dict, records: list[dict], strm_res: dict | None = None, emby: str | None = None) -> None:
     """富文本拿不到时的兜底：信息条 + 文件清单（失败/未见记录的标注原因），通知不丢。"""
     from . import run_watch  # 延迟导入避免循环
 
@@ -387,6 +407,6 @@ def _fallback(ctx: dict, records: list[dict], strm_res: dict | None = None) -> N
         else:
             lines.append(f"- {n}")
     body = "\n".join(lines)
-    notify.push(f"{ctx.get('task', '转存')} · 转存完成", f"{_header(ctx, records, strm_res)}\n\n{body}",
+    notify.push(f"{ctx.get('task', '转存')} · 转存完成", f"{_header(ctx, records, strm_res, emby)}\n\n{body}",
                 kind=f"{ctx.get('source', 'search')}_done", title_bark=_bark_title(ctx, records, strm_res),
-                markdown=_bark_markdown(ctx, records, strm_res, body))
+                markdown=_bark_markdown(ctx, records, strm_res, body, emby))
