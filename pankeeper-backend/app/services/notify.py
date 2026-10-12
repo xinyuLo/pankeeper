@@ -27,7 +27,7 @@ PK_ICON_URL = "https://cdn.jsdelivr.net/gh/xinyuLo/pankeeper@main/pankeeper-vue3
 CHANNELS = ("serverchan", "bark", "webhook")
 
 
-def push(title: str, content: str, kind: str = "info", short: str | None = None, subtitle: str | None = None, plain: str | None = None, markdown: str | None = None, title_bark: str | None = None) -> None:
+def push(title: str, content: str, kind: str = "info", short: str | None = None, subtitle: str | None = None, plain: str | None = None, markdown: str | None = None, title_bark: str | None = None, cover: str | None = None) -> None:
     """按推送时机开关过滤。kind 对应设置页「推送通知 → 推送时机」三个开关：
 
     - search_done / search_fail → on_search（搜索转存）
@@ -41,6 +41,8 @@ def push(title: str, content: str, kind: str = "info", short: str | None = None,
     横幅按纯文本降级展示；plain 为纯文本兜底，两者都没传则把 content 剥 markdown。
     title_bark：Bark 专用标题（2026-10-13 用户定案：「☁️ 夸克 · 影片名 ✅ 成功」信息条首行），
     不传 Bark 沿用 title（片名）。
+    cover：Bark 单图用**横版封面**（2026-10-13 用户定案：backdrop 优先、poster 兜底），
+    不传退回从 content 正文提取首图。
 
     每次真正发出（未被开关拦掉）都落一行 push_logs：标题/时间/成败/失败原因，推送历史页的数据源。"""
     cfg = get_group("settings")["notify"]
@@ -57,25 +59,25 @@ def push(title: str, content: str, kind: str = "info", short: str | None = None,
 
     # 后台线程发送：Server酱抖时单次等 30s + 重试，最坏可占 1 分多钟——
     # 不能堵在转存完成回调/队列线程上（2026-10-10 用户定案：宁可慢，不能一条电影推 3 遍）
-    threading.Thread(target=_deliver, args=(cfg, title, content, kind, short, subtitle, plain, markdown, title_bark), daemon=True).start()
+    threading.Thread(target=_deliver, args=(cfg, title, content, kind, short, subtitle, plain, markdown, title_bark, cover), daemon=True).start()
 
 
-def _deliver(cfg: dict, title: str, content: str, kind: str, short: str | None, subtitle: str | None = None, plain: str | None = None, markdown: str | None = None, title_bark: str | None = None) -> None:
+def _deliver(cfg: dict, title: str, content: str, kind: str, short: str | None, subtitle: str | None = None, plain: str | None = None, markdown: str | None = None, title_bark: str | None = None, cover: str | None = None) -> None:
     """实际投递 + 落库（后台线程里跑）。通道单选：只发 channel 指向的那一路。
 
     bark_id：本次推送的唯一标识，随 Bark payload 的 id 字段发出并存进 push_logs——
     每日清理任务（cleanup_expired）按它给手机端发 delete 指令删掉过期历史（2026-10-12 用户定案）。"""
     bark_id = uuid.uuid4().hex
-    ok, err = _deliver_channel(cfg.get("channel"), cfg, title, content, kind, short, subtitle, bark_id, plain, markdown, title_bark)
+    ok, err = _deliver_channel(cfg.get("channel"), cfg, title, content, kind, short, subtitle, bark_id, plain, markdown, title_bark, cover)
     _log_push(title, kind, "success" if ok else "fail", err, content, bark_id)
 
 
-def _deliver_channel(channel, cfg: dict, title: str, content: str, kind: str, short: str | None, subtitle: str | None = None, bark_id: str = "", plain: str | None = None, markdown: str | None = None, title_bark: str | None = None) -> tuple[bool, str]:
+def _deliver_channel(channel, cfg: dict, title: str, content: str, kind: str, short: str | None, subtitle: str | None = None, bark_id: str = "", plain: str | None = None, markdown: str | None = None, title_bark: str | None = None, cover: str | None = None) -> tuple[bool, str]:
     """按通道分发，返回 (是否成功, 失败原因)；成功时原因为空串。失败统一带「通道名：」前缀（推送历史/前端展示用）。"""
     if channel not in CHANNELS:
         channel = "serverchan"
     if channel == "bark":
-        return _bark(cfg.get("bark") or {}, title, content, kind, short, subtitle, bark_id, plain, markdown, title_bark)
+        return _bark(cfg.get("bark") or {}, title, content, kind, short, subtitle, bark_id, plain, markdown, title_bark, cover)
     if channel == "webhook":
         url = (cfg.get("webhook") or {}).get("url") or ""
         if not url:
@@ -314,7 +316,7 @@ def _bark_server(cfg: dict) -> str:
     return server
 
 
-def _bark(cfg: dict, title: str, content: str, kind: str, short: str | None = None, subtitle: str | None = None, bark_id: str = "", plain: str | None = None, markdown: str | None = None, title_bark: str | None = None) -> tuple[bool, str]:
+def _bark(cfg: dict, title: str, content: str, kind: str, short: str | None = None, subtitle: str | None = None, bark_id: str = "", plain: str | None = None, markdown: str | None = None, title_bark: str | None = None, cover: str | None = None) -> tuple[bool, str]:
     """Bark 通道：POST {server}/push，判活=HTTP 200 且 body code==200（`{"code":200}` 风格）。
 
     版式（2026-10-13 用户定案）：标题=信息条首行（title_bark：「☁️ 夸克 · 影片名 ✅ 成功」，
@@ -333,6 +335,7 @@ def _bark(cfg: dict, title: str, content: str, kind: str, short: str | None = No
     if not server or not device_key:
         return False, "Bark：服务器地址或 DeviceKey 未配置"
     image, link = _extract_md_assets(content)
+    image = (cover or "").strip() or image  # 显式横版封面优先；没传才用正文首图
     data: dict = {
         "device_key": device_key,
         "title": title_bark or title,
@@ -350,9 +353,9 @@ def _bark(cfg: dict, title: str, content: str, kind: str, short: str | None = No
         data["id"] = bark_id  # Bark 要求 JSON 传参用字符串类型，传数字不生效
     if image:
         data["image"] = image
-        data["icon"] = image  # 海报同时当通知小图标（计划 §3.2：icon/image 都映射海报，iOS 15+）
+        data["icon"] = image  # 封面同时当通知小图标（ios 15+）
     else:
-        # 无海报：设置页配了自定义图标用它，否则兜底 PanKeeper 图标（2026-10-12 用户定案）
+        # 无封面：设置页配了自定义图标用它，否则兜底 PanKeeper 图标（2026-10-12 用户定案）
         data["icon"] = (cfg.get("icon") or "").strip() or PK_ICON_URL
     if link:
         data["url"] = link

@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import random
 import re
 import threading
 import time
@@ -98,7 +99,7 @@ def _watch_own(ctx: dict) -> None:
             "",
             f"![{name_line}]({cover})" if cover else "",
             "",
-            f"　　**简介：{_clip(overview)}**" if overview else "",
+            f"⁠　**简介：{_clip(overview)}**" if overview else "",
             "",
             f"**本次转存 {len(names)} 个文件：**",
             *file_lines,
@@ -106,7 +107,8 @@ def _watch_own(ctx: dict) -> None:
         notify.push(name_line, f"{header}\n\n{body}", kind=f"{ctx.get('source', 'search')}_done",
                     short=_clip(overview) if overview else None,
                     title_bark=f"{icon} {drive_name} · {name_line} ✅ 成功",
-                    markdown=f"📦 {len(names)} 个文件\n\n{_bark_md(body)}")
+                    markdown=f"📦 {len(names)} 个文件\n\n{_bark_md(body)}",
+                    cover=cover)
         return
 
     # 识别不到 → 纯文字（文件清单 + 如实说明），通知不丢
@@ -125,13 +127,15 @@ def _watch(ctx: dict) -> None:
         header = _header(ctx, records, strm_res, emby)
         renamed = [r for r in records if r.get("status") == "renamed" and r.get("tmdb_id")]
         if renamed:
-            body, title = _build(renamed)
+            body, title, cover = _build(renamed)
             if body:
                 # Bark 标题=信息条首行（☁️ 夸克 · 影片名 ✅ 成功），不传副标题；
-                # markdown=统计行+富文本去图（App 内渲染格式，横幅降级纯文本）
+                # markdown=统计行+富文本去图（App 内渲染格式，横幅降级纯文本）；
+                # cover=横版封面（backdrop 优先；Bark 单图走它，显式传防正文顺序变化）
                 notify.push(title, f"{header}\n\n{body}", kind=f"{ctx.get('source', 'search')}_done",
                             title_bark=_bark_title(ctx, records, strm_res),
-                            markdown=_bark_markdown(ctx, records, strm_res, body, emby))
+                            markdown=_bark_markdown(ctx, records, strm_res, body, emby),
+                            cover=cover)
                 return
         _fallback(ctx, records, strm_res, emby)
     except Exception:
@@ -296,16 +300,20 @@ def _overall_status(ctx: dict, records: list[dict], strm_res: dict | None = None
     return ("🟡", "部分成功") if ok > fail else ("🟠", "部分失败")
 
 
-def _build(records: list[dict]) -> tuple[str, str]:
-    """renamed 记录 → (正文, title)。按剧/电影分组，每组一块；多组拼进同一条消息。"""
+def _build(records: list[dict]) -> tuple[str, str, str]:
+    """renamed 记录 → (正文, title, cover)。按剧/电影分组，每组一块；多组拼进同一条消息。
+
+    cover = 第一组的**横版封面**（backdrop 优先，poster 兜底，与正文首图同款但显式传递，
+    不再依赖正文顺序抓取）；拿不到返回空串（Bark 侧退回正文首图提取）。"""
     groups: dict[int, list[dict]] = {}
     for r in records:
         groups.setdefault(int(r.get("tmdb_id") or 0), []).append(r)
     if not groups or 0 in groups:
-        return "", ""
+        return "", "", ""
 
     blocks: list[str] = []
     main_title = ""
+    cover = ""
     is_tv = False
     total_eps = 0
     for tmdb_id, items in groups.items():
@@ -314,17 +322,19 @@ def _build(records: list[dict]) -> tuple[str, str]:
         if first.get("type") == "tvshow":
             is_tv = True
             total_eps += len(items)
-            block, name = _tv_block(tmdb_id, media_name, items)
+            block, name, poster = _tv_block(tmdb_id, media_name, items)
         else:
-            block, name = _movie_block(tmdb_id, media_name, items)
+            block, name, poster = _movie_block(tmdb_id, media_name, items)
         if not block:
-            return "", ""
+            return "", "", ""
         if not main_title:
             main_title = name
+        if not cover:
+            cover = poster
         blocks.append(block)
 
     title = f"{main_title} · 更新 {total_eps} 集" if is_tv else main_title
-    return "\n\n".join(blocks), title
+    return "\n\n".join(blocks), title, cover
 
 
 # 电视剧简介两档阈值（2026-10-13 用户定案）：集数超过该值、或逐集简介合计超过字数预算时，
@@ -334,10 +344,10 @@ TV_COMPACT_MAX_EPS = 5
 TV_COMPACT_OVERVIEW_CHARS = 700
 
 
-def _tv_block(tmdb_id: int, media_name: str, items: list[dict]) -> tuple[str, str]:
+def _tv_block(tmdb_id: int, media_name: str, items: list[dict]) -> tuple[str, str, str]:
     detail = tmdb.tv_detail(tmdb_id)
     if detail is None:
-        return "", ""
+        return "", "", ""
     backdrop = tmdb.img_url(detail.get("backdrop_path")) or tmdb.img_url(detail.get("poster_path"))
     season = int(items[0].get("season_number") or 1)
     eps = tmdb.tv_season(tmdb_id, season) or []
@@ -354,9 +364,14 @@ def _tv_block(tmdb_id: int, media_name: str, items: list[dict]) -> tuple[str, st
     show_overview = (detail.get("overview") or "").strip()
     compact = len(ep_rows) > TV_COMPACT_MAX_EPS or sum(len(o) for _, _, o, _ in ep_rows) > TV_COMPACT_OVERVIEW_CHARS
 
+    # Bark 横版封面：backdrop 优先；短剧常没配 backdrop → **随机挑一张剧照**（也是横版）；
+    # 再没有退回竖版 poster（2026-10-13 用户定案）
+    stills = [s for _, _, _, s in ep_rows if s]
+    cover = backdrop or (random.choice(stills) if stills else "") or tmdb.img_url(detail.get("poster_path")) or ""
+
     lines = [f"## {media_name}", "", f"![{media_name}]({backdrop})" if backdrop else "", ""]
     if compact:
-        lines += [f"　　**简介：{_clip(show_overview)}**" if show_overview else "", ""]
+        lines += [f"⁠　**简介：{_clip(show_overview)}**" if show_overview else "", ""]
     for ep_no, ep_name, overview, still in ep_rows:
         lines += [
             f"### **集：S{season:02d}E{ep_no:02d} - {ep_name}**",
@@ -365,15 +380,15 @@ def _tv_block(tmdb_id: int, media_name: str, items: list[dict]) -> tuple[str, st
             "",
         ]
         if not compact:
-            lines += [f"　　**简介：{_clip(overview)}**", ""]
+            lines += [f"⁠　**简介：{_clip(overview)}**", ""]
         lines += ["", "", ""]  # 集间留白 3 空行（规范 §3）
-    return "\n".join(lines).rstrip() + "\n", media_name
+    return "\n".join(lines).rstrip() + "\n", media_name, cover
 
 
-def _movie_block(tmdb_id: int, media_name: str, items: list[dict]) -> tuple[str, str]:
+def _movie_block(tmdb_id: int, media_name: str, items: list[dict]) -> tuple[str, str, str]:
     detail = tmdb.movie_detail(tmdb_id)
     if detail is None:
-        return "", ""
+        return "", "", ""
     backdrop = tmdb.img_url(detail.get("backdrop_path")) or tmdb.img_url(detail.get("poster_path"))
     overview = (detail.get("overview") or "").strip()
     year = str(detail.get("release_date") or "")[:4]
@@ -383,9 +398,9 @@ def _movie_block(tmdb_id: int, media_name: str, items: list[dict]) -> tuple[str,
         "",
         f"![{media_name}]({backdrop})" if backdrop else "",
         "",
-        f"　　**简介：{head}{_clip(overview)}**",
+        f"⁠　**简介：{head}{_clip(overview)}**",
     ]
-    return "\n".join(lines), media_name
+    return "\n".join(lines), media_name, backdrop or ""
 
 
 def _clip(text: str) -> str:
