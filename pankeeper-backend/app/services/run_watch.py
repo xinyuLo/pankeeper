@@ -18,6 +18,7 @@ QMS 晚成功后不再自动翻正——要翻正就点任务行的「重新触�
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 
@@ -149,9 +150,21 @@ def _fire_strm(strm_id: int, names: set[str]) -> dict:
             print(f"[run-watch] STRM 定向同步：{d}（只扫本次目录）", flush=True)
 
         def _emby_later() -> None:
-            time.sleep(90)  # 等 QMS 临时任务跑完（单目录同步通常几十秒内）
-            ok2, msg2 = qms.refresh_emby_library()
-            print(f"[run-watch] Emby 媒体库刷新（定向同步补）：{'成功' if ok2 else msg2}", flush=True)
+            # 等 STRM 真落盘（2026-10-13 用户定稿）：轮询本次目录里的 .strm 文件，
+            # 落盘即刻按「所属媒体库」刷 Emby，不全库扫；容器看不到 STRM 本地挂载
+            # （os.path.isdir(local) 为假）时退回 90s 定时；轮询 5 分钟没见到也照刷兜底
+            hint = local.rstrip("/") + dests[0][len(remote):]
+            watchable = os.path.isdir(local)
+            if watchable:
+                deadline = time.time() + 300
+                while time.time() < deadline:
+                    if os.path.isdir(hint) and any(f.endswith(".strm") for f in os.listdir(hint)):
+                        break
+                    time.sleep(5)
+            else:
+                time.sleep(90)
+            ok2, msg2 = qms.refresh_emby_library(path_hint=hint)
+            print(f"[run-watch] Emby 媒体库刷新（定向同步补，{'落盘触发' if watchable else '90s 定时'}）：{'成功' if ok2 else msg2}", flush=True)
 
         threading.Thread(target=_emby_later, daemon=True).start()
         # 定向同步是"直接生成"（QMS 日志里就是 [生成 STRM]），不是触发同步目录任务——
