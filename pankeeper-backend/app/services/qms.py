@@ -254,8 +254,13 @@ def get_emby_config() -> dict | None:
         client.close()
 
 
-def refresh_emby_library() -> tuple[bool, str]:
-    """触发 Emby 刷新媒体库（POST {emby_url}/Library/Refresh）。
+def refresh_emby_library(path_hint: str | None = None) -> tuple[bool, str]:
+    """触发 Emby 刷新媒体库。
+
+    path_hint 给了就先试**按库刷新**：拿 STRM 落盘路径在 Emby 虚拟库列表
+    （GET /Library/VirtualFolders）里找所属库，只刷它（POST /Items/{库ID}/Refresh，
+    Recursive 扫描）——比全库 /Library/Refresh 轻得多；拿不到所属库或 Emby 不支持
+    （旧版无 ItemId / 404）再退回全库刷新。
 
     借 QMS 里配置的 Emby 地址/ApiKey（PanKeeper 不重复存一份），且尊重 QMS 的
     「STRM 同步完成后刷新媒体库」开关——定向同步的临时任务跳过了这步，由 PanKeeper 补。"""
@@ -269,12 +274,45 @@ def refresh_emby_library() -> tuple[bool, str]:
     if int(cfg.get("enable_refresh_library") or 0) != 1:
         return False, "QMS 未开启「同步完成后刷新媒体库」"
     try:
+        if path_hint:
+            scoped = _refresh_emby_scoped(url, key, path_hint)
+            if scoped:
+                return True, scoped
         resp = httpx.post(f"{url}/Library/Refresh", params={"api_key": key}, timeout=15)
         if resp.status_code in (200, 204):
             return True, ""
         return False, f"Emby 返回 HTTP {resp.status_code}"
     except httpx.HTTPError as e:
         return False, f"Emby 连接失败：{e}"
+
+
+def _refresh_emby_scoped(url: str, key: str, path_hint: str) -> str:
+    """按库刷新：找到包含 path_hint 的虚拟库只刷它，成功返回「已按库刷新：<库名>」；
+    找不到所属库 / 接口不支持 / Emby 拒绝，返回空串（调用方退回全库刷新）。"""
+    hint = path_hint.strip().strip("/")
+    vf = httpx.get(f"{url}/Library/VirtualFolders", params={"api_key": key}, timeout=15)
+    if vf.status_code != 200:
+        return ""
+    target = None
+    for folder in vf.json() or []:
+        for loc in folder.get("Locations") or []:
+            loc_n = str(loc).strip().strip("/")
+            if hint and loc_n and (hint.startswith(loc_n + "/") or hint == loc_n or loc_n.startswith(hint + "/")):
+                target = folder
+                break
+        if target:
+            break
+    item_id = (target or {}).get("ItemId")
+    if not target or not item_id:
+        return ""
+    resp = httpx.post(
+        f"{url}/Items/{item_id}/Refresh",
+        params={"api_key": key, "Recursive": "true", "MetadataRefreshMode": "Default", "ImageRefreshMode": "Default"},
+        timeout=15,
+    )
+    if resp.status_code in (200, 204):
+        return f"已按库刷新「{target.get('Name') or item_id}」"
+    return ""
 
 
 _STRM_PAIR_CACHE: dict[int, tuple[float, int | None]] = {}
