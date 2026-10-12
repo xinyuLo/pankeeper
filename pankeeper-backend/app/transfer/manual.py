@@ -209,6 +209,11 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
     # 弹窗显式选了 STRM 优先（2026-10-09 恢复弹窗下拉）；没填维持上面的目录值/自动配对
     if t.get("strmId") is not None:
         strm_id = t.get("strmId")
+    # 自动配对兜底（2026-10-13 修复）：目录匹配分支的 dd.strm_id 为空时，也按「QMS 整理目标 =
+    # 同步路径」自动配对——此前只有弹窗显式选了 QMS 的分支才配对，转存配置页「不选=自动配对」
+    # 的承诺在这条路上是空的，普通转存 STRM 静默不触发（NAS 爱乐之城实录）
+    if qms_id is not None and strm_id is None:
+        strm_id = _strm_for_qms(qms_id)
     t["_media"] = {"qms_id": qms_id, "strm_id": strm_id}
     # 反转开关（队列配置全局）：先生成 STRM 再触发 QMS。挂到 t 上，_finish 落库后的
     # STRM 挂后台线程据此跳过（反转时 STRM 已经触发过，不能再等刮削）
