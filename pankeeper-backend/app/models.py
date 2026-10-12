@@ -285,6 +285,9 @@ class PushLog(Base):
     # 实际推送的正文快照（Server酱 desp / Webhook body 的 text 段，2026-10-06 用户要求：
     # 推送历史只有标题太薄，详情要能看到 Server酱收到的完整内容）。超长截断（见 notify._log_push）。
     content: Mapped[str] = mapped_column(Text, default="")
+    # Bark 推送的唯一 id（Bark JSON 参数，字符串）：每日清理定时任务按它给手机端发 delete
+    # 指令，把过期的 App 历史/通知中心条目一并删掉（仅 Bark 通道的行非空，见 notify.cleanup_expired）
+    bark_id: Mapped[str] = mapped_column(Text, default="")
 
 
 class ApiKey(Base):

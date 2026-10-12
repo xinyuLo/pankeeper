@@ -19,8 +19,6 @@ from ..adapters.base import is_video_file
 from .settings_svc import get_group
 
 # 轮询节奏/超时统一由 run_watch._wait 管（媒体推送与结果回填共用一套口径，别再各写一份）
-OVERVIEW_MAX = 200        # 简介截断长度（规范 §6.3）
-
 # qMediaSync 记录的终态：renamed = 整理完成；两种 failed 也算"到了"（失败信息进信息条）
 TERMINAL_STATUS = {"renamed", "scrape_failed", "rename_failed"}
 IGNORE_STATUS = {"ignore"}   # 不会到任何终态，等待时剔除
@@ -46,7 +44,7 @@ def watch_and_spawn(ctx: dict) -> None:
     - source：search / auto，决定走「搜索转存」还是「自动转存」推送开关
     """
     cfg = get_group("settings")["notify"]
-    if not cfg.get("enabled") or not cfg.get("sendkey"):
+    if not cfg.get("enabled") or not notify.channel_ready(cfg):
         return
     flag = "on_auto" if ctx.get("source") == "auto" else "on_search"
     if not cfg.get(flag, True):
@@ -105,12 +103,18 @@ def _watch_own(ctx: dict) -> None:
             f"**本次转存 {len(names)} 个文件：**",
             *file_lines,
         ])
-        notify.push(name_line, f"{header}\n\n{body}", kind=f"{ctx.get('source', 'search')}_done", short="简介")
+        notify.push(name_line, f"{header}\n\n{body}", kind=f"{ctx.get('source', 'search')}_done",
+                    short=_clip(overview) if overview else None,
+                    title_bark=f"{icon} {drive_name} · {name_line} ✅ 成功",
+                    markdown=f"📦 {len(names)} 个文件\n\n{_bark_md(body)}")
         return
 
     # 识别不到 → 纯文字（文件清单 + 如实说明），通知不丢
-    body = "\n".join([header, "", "**未识别到影片条目，转存文件清单：**", *file_lines])
-    notify.push(f"{task or '转存'} · 转存完成", body, kind=f"{ctx.get('source', 'search')}_done")
+    list_text = "\n".join(["**未识别到影片条目，转存文件清单：**", *file_lines])
+    body = "\n".join([header, "", list_text])
+    notify.push(f"{task or '转存'} · 转存完成", body, kind=f"{ctx.get('source', 'search')}_done",
+                title_bark=f"{icon} {drive_name} · {task or '转存'} ✅ 成功",
+                markdown=f"📦 {len(names)} 个文件\n\n{list_text}")
 
 
 def _watch(ctx: dict) -> None:
@@ -122,7 +126,11 @@ def _watch(ctx: dict) -> None:
         if renamed:
             body, title = _build(renamed)
             if body:
-                notify.push(title, f"{header}\n\n{body}", kind=f"{ctx.get('source', 'search')}_done", short="简介")
+                # Bark 标题=信息条首行（☁️ 夸克 · 影片名 ✅ 成功），不传副标题；
+                # markdown=统计行+富文本去图（App 内渲染格式，横幅降级纯文本）
+                notify.push(title, f"{header}\n\n{body}", kind=f"{ctx.get('source', 'search')}_done",
+                            title_bark=_bark_title(ctx, records, strm_res),
+                            markdown=_bark_markdown(ctx, records, strm_res, body))
                 return
         _fallback(ctx, records, strm_res)
     except Exception:
@@ -174,7 +182,49 @@ def _header(ctx: dict, records: list[dict], strm_res: dict | None = None) -> str
     """信息条：网盘 · 任务名 + 整单状态徽章 / 转存集数 / QMS 结果 / STRM 结果（带图标）。"""
     icon, drive_name = DRIVE_META.get(ctx.get("drive"), ("📁", ctx.get("drive", "")))
     st_icon, st_text = _overall_status(ctx, records, strm_res)
-    lines = [f"{icon} **{drive_name} · {ctx.get('task', '')}** {st_icon} {st_text}"]
+    lines = [f"{icon} **{drive_name} · {ctx.get('task', '')}** {st_icon} {st_text}", "", " · ".join(_stats_list(ctx, records, strm_res))]
+    return "\n".join(lines)
+
+
+def _bark_title(ctx: dict, records: list[dict], strm_res: dict | None = None) -> str:
+    """Bark 标题：信息条首行拍平——「☁️ 夸克 · 冰川时代 (2002) ✅ 成功」（2026-10-13 用户定案）。
+
+    与 Server酱 信息条首行同款（网盘 · 影片名 ✅ 整单状态）；副标题不传；
+    统计段（转存数/QMS/STRM）放正文开头（_bark_markdown）。"""
+    icon, drive_name = DRIVE_META.get(ctx.get("drive"), ("📁", ctx.get("drive", "")))
+    st_icon, st_text = _overall_status(ctx, records, strm_res)
+    task = (ctx.get("task") or "").strip()
+    return f"{icon} {drive_name} · {task} {st_icon} {st_text}"
+
+
+# markdown 参数里的图片会降级成裸链接文本（海报已走 image 参数），整段剥掉
+_MD_IMG_LINE = re.compile(r"!\[[^\]]*\]\([^)]+\)\s*")
+
+
+def _bark_md(body_md: str) -> str:
+    """富文本 → Bark markdown 正文：去图（图走 image 参数）+ 片名标题升一级（## → #，App 里更大）。
+
+    Server酱 desp 保持 ## 不动，只在 Bark 这条路上升级。"""
+    md = _MD_IMG_LINE.sub("", body_md).strip()
+    return re.sub(r"(?m)^## ", "# ", md)
+
+
+def _bark_markdown(ctx: dict, records: list[dict], strm_res: dict | None, body_md: str) -> str:
+    """Bark markdown 正文（2026-10-13 用户定案）：统计行 + 富文本去图。
+
+    App 历史里渲染加粗/标题/列表（横幅降级纯文本）；图片不进 markdown（降级成裸链接），
+    走 image 参数展示。"""
+    stats = " · ".join(_stats_list(ctx, records, strm_res))
+    md = _bark_md(body_md)
+    return f"{stats}\n\n{md}" if md else stats
+
+
+def _stats_list(ctx: dict, records: list[dict], strm_res: dict | None = None) -> list[str]:
+    """信息条统计段（转存数 / QMS 结果 / STRM 结果），Server酱 信息条与 Bark 正文共用。
+
+    口径（2026-10-13 定案）：完整文字不压缩（✅ QMS 刮削成功 / ✅ STRM 已生成）；
+    带原因/数量注释的条目（⚠️ 部分失败 / 未见记录 / t-bad 的失败原因）原样保留；
+    没等到 STRM 返回值一律按 ❌ 标（2026-10-12 用户定案）。"""
     stats: list[str] = []
     is_tv = any(r.get("type") == "tvshow" for r in records) if records else False
     unit = "集" if is_tv else "个文件"
@@ -200,23 +250,20 @@ def _header(ctx: dict, records: list[dict], strm_res: dict | None = None) -> str
             stats.append(f"⚠️ QMS {missing} 项未见记录")
         else:
             stats.append("⚠️ QMS 无记录")
-    # STRM：自动转存走 strm_res（run_watch 后台线程的真实触发结果）；manual 同步触发走 strm_ok 旧通道
+    # STRM：自动转存走 strm_res（run_watch 后台线程的真实触发结果）；manual 同步触发走 strm_ok 旧通道。
+    # t-bad/t-off 的 st 带具体原因，属注释保留
     if strm_res is not None:
-        if strm_res.get("cls") == "t-bad":
-            stats.append(f"❌ STRM {strm_res.get('st', '触发失败')}")
-        elif strm_res.get("cls") == "t-ok":
+        if strm_res.get("cls") == "t-ok":
             stats.append("✅ STRM 已生成")
+        elif strm_res.get("cls") == "t-bad":
+            stats.append(f"❌ STRM {strm_res.get('st', '触发失败')}")
         else:
-            stats.append(f"⏳ STRM {strm_res.get('st', '状态未知')}")
+            stats.append(f"❌ STRM {strm_res.get('st', '状态未知')}")
     elif ctx.get("strm_ok") is True:
-        stats.append("✅ STRM 生成")
-    elif ctx.get("strm_ok") is False:
-        stats.append("❌ STRM 触发失败")
-    elif ctx.get("strm_plan"):
-        stats.append("⏳ STRM 状态未知")
-    lines.append("")
-    lines.append(" · ".join(stats))
-    return "\n".join(lines)
+        stats.append("✅ STRM 已生成")
+    else:
+        stats.append("❌ STRM 未返回")
+    return stats
 
 
 def _overall_status(ctx: dict, records: list[dict], strm_res: dict | None = None) -> tuple[str, str]:
@@ -318,8 +365,10 @@ def _movie_block(tmdb_id: int, media_name: str, items: list[dict]) -> tuple[str,
 
 
 def _clip(text: str) -> str:
-    text = re.sub(r"\s+", " ", text)
-    return text[:OVERVIEW_MAX] + "…" if len(text) > OVERVIEW_MAX else text
+    """简介清洗：压平空白，全量发送不截断（2026-10-13 用户定案：直接发全）。
+
+    原 200 字截断随 Bark 通道一起废除——Server酱 desp 与 Bark markdown 都装得下整段简介。"""
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _fallback(ctx: dict, records: list[dict], strm_res: dict | None = None) -> None:
@@ -338,4 +387,6 @@ def _fallback(ctx: dict, records: list[dict], strm_res: dict | None = None) -> N
         else:
             lines.append(f"- {n}")
     body = "\n".join(lines)
-    notify.push(f"{ctx.get('task', '转存')} · 转存完成", f"{_header(ctx, records, strm_res)}\n\n{body}", kind=f"{ctx.get('source', 'search')}_done")
+    notify.push(f"{ctx.get('task', '转存')} · 转存完成", f"{_header(ctx, records, strm_res)}\n\n{body}",
+                kind=f"{ctx.get('source', 'search')}_done", title_bark=_bark_title(ctx, records, strm_res),
+                markdown=_bark_markdown(ctx, records, strm_res, body))

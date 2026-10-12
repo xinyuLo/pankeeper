@@ -3,7 +3,7 @@
  * 注意：SendKey/API Key 加密存储、接口只回掩码；前端回传 `****` 开头的值时后端保留旧值。
  */
 import { del, get, mockDelay, post, put, USE_MOCK } from '../http'
-import { settingsStore, type SettingsData, type SessionDays } from '../mock/settings'
+import { settingsStore, type BarkCfg, type SettingsData, type SessionDays } from '../mock/settings'
 
 /** 读取全部设置（四个 tab 一把抓，表单值少没必要拆接口） */
 export function getSettings(): Promise<SettingsData> {
@@ -84,13 +84,20 @@ export async function testPansou(url: string): Promise<{ ok: boolean; ms: number
   return post<{ ok: boolean; ms: number }>('/settings/search/test', { url })
 }
 
-/** 发送 Server 酱测试消息。后端发送失败也是 200 + {ok:false,message}，调用方必须看 ok */
-export async function testSendkey(sendkey: string): Promise<{ ok: boolean; message?: string }> {
+/** 发送通道测试消息（channel=serverchan/bark/webhook）。
+ *  参数传「输入框正在编辑的值」——掩码（****开头）或空值时后端回落已保存配置。
+ *  后端发送失败也是 200 + {ok:false,message}，调用方必须看 ok */
+export async function testNotify(payload: {
+  channel: 'serverchan' | 'bark' | 'webhook'
+  sendkey?: string
+  bark?: Partial<BarkCfg>
+  url?: string
+}): Promise<{ ok: boolean; message?: string }> {
   if (USE_MOCK) {
-    void sendkey
+    void payload
     return mockDelay({ ok: true, message: '（mock）测试消息已发送' }, 400)
   }
-  return post<{ ok: boolean; message?: string }>('/settings/notify/test', { sendkey })
+  return post<{ ok: boolean; message?: string }>('/settings/notify/test', payload)
 }
 
 /** 测试 QMS 连接，返回连通结果（ok/message 直接来自后端，供调用方判断）。
@@ -153,6 +160,8 @@ export interface PushLogRow {
   error: string
   content: string
   has_more: boolean
+  /** 行里存有 Bark 推送 id：删除时可联动下发指令删手机端通知/历史（确认弹窗文案用） */
+  has_bark: boolean
 }
 
 /** 推送历史（推送历史页数据源）：items 按时间倒序 + 窗口内成败计数 */
@@ -162,13 +171,20 @@ export function getPushLogs(limit = 100): Promise<{ items: PushLogRow[]; deliver
 }
 
 /** 单条推送完整详情（正文快照，即 Server酱实际收到的内容；详情接口不区分预览/全量） */
-export interface PushLogDetail extends Omit<PushLogRow, 'has_more'> {
+export interface PushLogDetail extends Omit<PushLogRow, 'has_more' | 'has_bark'> {
   content: string
 }
 
 export function getPushLogDetail(id: number): Promise<PushLogDetail> {
   if (USE_MOCK) return mockDelay({ id, ts: '', title: '（mock）', kind: 'info', status: 'success', error: '', content: 'mock 正文' })
   return get<PushLogDetail>(`/notify/history/${id}`)
+}
+
+/** 删除单条推送历史；行里带 Bark id 时后端联动下发删除指令（bark.sent=指令受理成功）。
+ *  Bark 删除走静默推送，HTTP 200 只是受理，手机端实际删除取决于「后台 App 刷新」开关。 */
+export async function deletePushLog(id: number): Promise<{ ok: boolean; bark?: { sent: boolean; message?: string } }> {
+  if (USE_MOCK) return mockDelay({ ok: true, bark: { sent: true } })
+  return del<{ ok: boolean; bark?: { sent: boolean; message?: string } }>(`/notify/history/${id}`)
 }
 
 /** 修改用户名 + 密码 + 会话有效期。后端同一端点：new_password 为空则只更新用户名/会话 */

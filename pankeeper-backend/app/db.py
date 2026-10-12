@@ -125,6 +125,7 @@ def _migrate_columns() -> None:
         ],
         "push_logs": [
             ("content", "TEXT DEFAULT ''"),
+            ("bark_id", "TEXT DEFAULT ''"),
         ],
         "dd_items": [
             ("lp_on", "INTEGER DEFAULT 0"),

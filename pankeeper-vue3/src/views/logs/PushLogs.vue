@@ -8,10 +8,10 @@ import { computed, onMounted, ref } from 'vue'
 import ClearHistoryButton, { type ClearRange } from '@/components/ClearHistoryButton.vue'
 import { useBackGuard } from '@/composables/useBackGuard'
 import { message } from 'ant-design-vue'
-import { ReloadOutlined, EyeOutlined } from '@ant-design/icons-vue'
-import { getPushLogs, getPushLogDetail, clearPushLogs, type PushLogRow, type PushLogDetail } from '@/api/modules/settings'
+import { getPushLogs, getPushLogDetail, clearPushLogs, deletePushLog, type PushLogRow, type PushLogDetail } from '@/api/modules/settings'
 import { useIsMobile } from '@/composables/useIsMobile'
 import MarkdownIt from 'markdown-it'
+import { DeleteOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 
 const isMobile = useIsMobile()
 
@@ -93,6 +93,19 @@ async function onClear(range: ClearRange) {
   message.success(n > 0 ? `已清空 ${n} 条推送记录` : '没有符合条件的记录')
   await load()
 }
+
+/** 删除单条推送记录；带 Bark id 的行联动下发删除指令，手机端通知/历史一并删 */
+async function onDeleteRow(r: PushLogRow) {
+  try {
+    const res = await deletePushLog(r.id)
+    if (res.bark?.sent) message.success('记录已删除，手机端删除指令已下发')
+    else if (res.bark?.message) message.warning(`记录已删除；手机端删除未成功：${res.bark.message}`, 5)
+    else message.success('已删除')
+    await load()
+  } catch {
+    message.error('删除失败')
+  }
+}
 </script>
 
 <template>
@@ -116,7 +129,7 @@ async function onClear(range: ClearRange) {
             <th style="width: 84px">状态</th>
             <th>推送内容</th>
             <th style="width: 26%">失败原因</th>
-            <th style="width: 64px; text-align: left">操作</th>
+            <th style="width: 118px; text-align: left">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -134,7 +147,18 @@ async function onClear(range: ClearRange) {
             <td class="small">
               <span class="pl-err" :class="r.error ? 'bad-text' : 'muted'">{{ r.error || '—' }}</span>
             </td>
-            <td><a class="pl-detail" @click="openDetail(r)"><EyeOutlined /> 详情</a></td>
+            <td>
+              <span class="pl-acts">
+                <a class="pl-detail" @click="openDetail(r)"><EyeOutlined /> 详情</a>
+                <a-popconfirm
+                  :title="r.has_bark ? '确认删除这条推送？手机端 Bark 的对应通知与历史会一并删除' : '确认删除这条推送记录？'"
+                  ok-text="删除" cancel-text="取消" :ok-button-props="{ danger: true }"
+                  @confirm="onDeleteRow(r)"
+                >
+                  <a class="pl-del"><DeleteOutlined /> 删除</a>
+                </a-popconfirm>
+              </span>
+            </td>
           </tr>
           <tr v-if="!rows.length">
             <td colspan="5" class="pq-empty">{{ loading ? '加载中…' : '还没有推送记录 · 转存完成或发生告警时这里就有记录' }}</td>
@@ -152,6 +176,13 @@ async function onClear(range: ClearRange) {
             <div class="pl-card-top">
               <span class="pl-title">{{ r.title }}</span>
               <span class="tag" :class="r.status === 'success' ? 't-ok' : 't-bad'">{{ r.status === 'success' ? '成功' : '失败' }}</span>
+              <a-popconfirm
+                :title="r.has_bark ? '确认删除这条推送？手机端 Bark 的对应通知与历史会一并删除' : '确认删除这条推送记录？'"
+                ok-text="删除" cancel-text="取消" :ok-button-props="{ danger: true }"
+                @confirm="onDeleteRow(r)"
+              >
+                <a class="pl-card-del" @click.stop><DeleteOutlined /></a>
+              </a-popconfirm>
             </div>
             <div class="pl-card-meta small muted">{{ r.ts }} · {{ kindTxt(r.kind) }}</div>
             <div v-if="r.error" class="pl-err bad-text small">{{ r.error }}</div>
@@ -212,18 +243,31 @@ async function onClear(range: ClearRange) {
 .pl-card-meta { margin-top: 3px; }
 .pl-card .pl-err { margin-top: 5px; }
 
-/* 详情「详情」链接 + 抽屉排版 */
+/* 操作列：详情 / 删除并排（删除红色，confirm 走 a-popconfirm） */
+.pl-acts { display: inline-flex; align-items: center; gap: 14px; white-space: nowrap; }
 .pl-detail {
   font-size: 12.5px;
   color: var(--primary);
   white-space: nowrap;
   cursor: pointer;
-  margin-right: 18px; /* 别贴着表格右边缘 */
   text-decoration: underline;
   text-underline-offset: 3px;
   text-decoration-color: rgba(22, 119, 255, 0.35);
 }
 .pl-detail:hover { text-decoration-color: var(--primary); }
+.pl-del {
+  font-size: 12.5px;
+  color: var(--error);
+  white-space: nowrap;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: rgba(255, 77, 79, 0.35);
+}
+.pl-del:hover { text-decoration-color: var(--error); }
+/* 手机卡片右上角删除图标（@click.stop 防止触发卡片整行的详情） */
+.pl-card-del { color: var(--text3); cursor: pointer; font-size: 13px; padding: 2px; }
+.pl-card-del:hover { color: var(--error); }
 .pd-meta { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
 .pd-block { margin-bottom: 16px; }
 .pd-label { font-size: 12px; color: var(--text3); margin-bottom: 6px; }

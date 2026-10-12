@@ -150,13 +150,13 @@ def test_settings_masked_secret_kept():
     from app.services.settings_svc import get_group, save_group
 
     cur = get_group("settings")
-    cur["notify"]["sendkey"] = "SCT123456"
+    cur["notify"]["serverchan"]["sendkey"] = "SCT123456"
     save_group("settings", cur)
     # 前端回传掩码（**** 开头）→ 保留库里的真实值
     cur2 = get_group("settings")
-    cur2["notify"]["sendkey"] = "****3456"
+    cur2["notify"]["serverchan"]["sendkey"] = "****3456"
     save_group("settings", cur2)
-    assert get_group("settings")["notify"]["sendkey"] == "SCT123456"
+    assert get_group("settings")["notify"]["serverchan"]["sendkey"] == "SCT123456"
 
 
 def test_credential_roundtrip():
@@ -165,6 +165,47 @@ def test_credential_roundtrip():
     cipher = encrypt_credential("quark_cookie=abc; __uid=1")
     assert cipher != "quark_cookie=abc; __uid=1"
     assert decrypt_credential(cipher) == "quark_cookie=abc; __uid=1"
+
+
+def test_notify_cleanup_expired_prunes_local_and_deletes_bark(monkeypatch):
+    """推送历史每日清理：电脑端删过期行；对存有 bark_id 的行按当前 Bark 配置发 delete 指令删手机端。"""
+    import time as _t
+
+    from app.db import SessionLocal
+    from app.models import PushLog
+    from app.services import notify
+    from app.services.settings_svc import get_group, save_group
+
+    # 测试库先配好 Bark（server 指向不可达地址也行——请求被 monkeypatch 掉，发不出去）
+    save_group("settings", {
+        **get_group("settings"),
+        "notify": {**get_group("settings")["notify"], "bark": {"server": "http://127.0.0.1:5546", "device_key": "devkey"}},
+    })
+    old = _t.strftime("%Y-%m-%d %H:%M:%S", _t.localtime(_t.time() - 40 * 86400))
+    with SessionLocal() as db:
+        db.add(PushLog(ts=old, title="旧-有barkid", bark_id="abc123"))
+        db.add(PushLog(ts=old, title="旧-无barkid", bark_id=""))
+        db.add(PushLog(ts=_t.strftime("%Y-%m-%d %H:%M:%S"), title="新-保留", bark_id="new456"))
+        db.commit()
+
+    sent = []
+
+    class _R:
+        status_code = 200
+
+    def fake_post(url, json=None, timeout=None, **kw):
+        sent.append((url, json))
+        return _R()
+
+    monkeypatch.setattr(notify.requests, "post", fake_post)
+    r = notify.cleanup_expired()
+    assert r["deleted_local"] == 2 and r["bark_ids"] == 1 and r["deleted_remote"] == 1
+    # delete 指令语义：id + delete=1，走 /push；id 必须是字符串（Bark 要求，传数字不生效）
+    assert sent[0][0].endswith("/push")
+    assert sent[0][1] == {"device_key": "devkey", "id": "abc123", "delete": "1"}
+    with SessionLocal() as db:
+        left = [p.title for p in db.query(PushLog).all()]
+    assert left == ["新-保留"]
 
 
 # ---------- 自动转存过滤纯函数（正则命中 / 排除清单：文件名+MD5） ----------

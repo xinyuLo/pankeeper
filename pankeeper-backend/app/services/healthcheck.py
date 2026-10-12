@@ -26,6 +26,7 @@ _scheduler = None
 _lock = threading.Lock()
 JOB_ID = "pankeeper_daily_health"
 PRUNE_JOB_ID = "pankeeper_stats_prune"
+PUSH_PRUNE_JOB_ID = "pankeeper_push_prune"
 
 
 def get_cfg() -> dict:
@@ -187,7 +188,7 @@ def _apply_schedule() -> None:
 
     from apscheduler.triggers.cron import CronTrigger
 
-    for jid in (JOB_ID, PRUNE_JOB_ID):
+    for jid in (JOB_ID, PRUNE_JOB_ID, PUSH_PRUNE_JOB_ID):
         try:
             _scheduler.remove_job(jid)
         except Exception:  # noqa: BLE001 —— 任务不存在时忽略
@@ -196,6 +197,9 @@ def _apply_schedule() -> None:
     # 统计清理是独立的数据保留策略，不受「探活开关」影响
     _scheduler.add_job(_prune_stats, CronTrigger(hour=10, minute=30), id=PRUNE_JOB_ID, replace_existing=True)
     print(f"[stats] 请求统计清理已排期：10:30（保留 {reqstat.retain_days()} 天）")
+    # 推送历史清理同上：电脑端 push_logs + Bark 手机端按 id 发 delete 指令（notify.cleanup_expired）
+    _scheduler.add_job(notify.cleanup_expired, CronTrigger(hour=10, minute=35), id=PUSH_PRUNE_JOB_ID, replace_existing=True)
+    print(f"[notify] 推送历史清理已排期：10:35（保留 {get_group('settings')['notify'].get('retain_days', 30)} 天）")
 
     if not cfg.get("enabled", True):
         print("[health] 每日探活已关闭（请求统计清理照常）")

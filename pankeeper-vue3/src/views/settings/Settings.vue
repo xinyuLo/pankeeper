@@ -26,9 +26,9 @@ import {
   saveSearchSrc,
   saveSecurity,
   testLitePan,
+  testNotify,
   testPansou,
   testQms,
-  testSendkey,
   testTmdb,
 } from '@/api/modules/settings'
 import { getEngineHealth } from '@/api/modules/search'
@@ -58,8 +58,11 @@ const search = reactive<SearchSrcCfg>({
 })
 const notify = reactive<NotifyCfg>({
   enabled: false,
-  sendkey: '',
-  webhook: '',
+  channel: 'serverchan',
+  serverchan: { sendkey: '' },
+  bark: { server: '', device_key: '', group: 'PanKeeper', level: 'active', sound: '', icon: '', is_archive: true },
+  webhook: { url: '' },
+  retain_days: 30,
   on_auto: true,
   on_search: true,
   on_cred: true,
@@ -177,19 +180,49 @@ async function onTestPansou() {
 function onNotifySw(v: boolean | string | number) {
   message.success(v ? '推送已开启' : '推送已关闭')
 }
-async function onTestSendkey() {
-  if (!notify.sendkey) {
+
+/** 通知通道下拉（单选，2026-10-12 定案）：只发选中的一路；切换后下方参数表单跟着换，各通道参数分开保存 */
+const CHANNEL_OPTS = [
+  { value: 'serverchan', label: 'Server 酱' },
+  { value: 'bark', label: 'Bark（iOS）' },
+  { value: 'webhook', label: '自定义 Webhook' },
+]
+const BARK_LEVEL_OPTS = [
+  { value: 'active', label: 'active · 立即亮屏横幅（默认）' },
+  { value: 'timeSensitive', label: 'timeSensitive · 时效性通知' },
+  { value: 'passive', label: 'passive · 静默，只进通知中心' },
+]
+const notifyTesting = ref(false)
+async function onTestNotify() {
+  const ch = notify.channel
+  if (ch === 'serverchan' && !notify.serverchan.sendkey) {
     message.warning('请先填写 SendKey')
     return
   }
+  if (ch === 'bark' && (!notify.bark.server.trim() || !notify.bark.device_key)) {
+    message.warning('请先填写 Bark 服务器地址和 DeviceKey')
+    return
+  }
+  if (ch === 'webhook' && !notify.webhook.url.trim()) {
+    message.warning('请先填写 Webhook 地址')
+    return
+  }
+  notifyTesting.value = true
   try {
-    // 后端发送失败也是 200 + {ok:false,message}，不抛异常，必须看 ok
-    const r = await testSendkey(notify.sendkey)
+    // 传「输入框正在编辑的值」——不等自动保存；掩码 device_key 后端自己回落已保存配置
+    const r = await testNotify({
+      channel: ch,
+      sendkey: ch === 'serverchan' ? notify.serverchan.sendkey : undefined,
+      bark: ch === 'bark' ? { ...notify.bark } : undefined,
+      url: ch === 'webhook' ? notify.webhook.url : undefined,
+    })
     if (r.ok) message.success(r.message || '测试消息已发送')
-    else message.error(r.message || '发送失败，请检查 SendKey', 5)
+    else message.error(r.message || '发送失败，请检查通道参数', 5)
   } catch (e: unknown) {
     const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-    message.error(detail || '发送失败，请检查 SendKey', 5)
+    message.error(detail || '发送失败，请检查通道参数', 5)
+  } finally {
+    notifyTesting.value = false
   }
 }
 
@@ -549,7 +582,7 @@ async function onRemoveAvatar() {
         </template>
       </div>
 
-      <!-- ===== tab3 推送通知（只服务自动转存） ===== -->
+      <!-- ===== tab3 推送通知（通道下拉单选，只服务自动转存） ===== -->
       <div v-show="tab === 'tb3'">
         <div class="formrow">
           <label>启用推送</label>
@@ -559,31 +592,95 @@ async function onRemoveAvatar() {
           </div>
         </div>
         <div class="formrow">
-          <label>Server 酱 SendKey</label>
-          <div>
-            <div class="ctl">
-              <a-input-password v-model:value="notify.sendkey" style="width: 320px" placeholder="SCT…" @blur="flushSave('notify')" />
-              <a-button @click="onTestSendkey">发送测试</a-button>
-              <span class="muted small">按下方「推送时机」开关通知自动/搜索转存与凭据告警</span>
-            </div>
-            <div class="sc-help">
-              <a href="https://sc3.ft07.com/" target="_blank" rel="noopener noreferrer">配置说明</a>
-              <span class="muted small">还没配过？先从官网拿到 SendKey 再填这里</span>
-            </div>
-          </div>
-        </div>
-        <div class="formrow">
-          <label>自定义 Webhook</label>
+          <label>通知通道</label>
           <div class="ctl">
-            <a-input v-model:value="notify.webhook" style="width: 360px" placeholder="https://你的机器人地址" @blur="flushSave('notify')" />
+            <a-select v-model:value="notify.channel" :options="CHANNEL_OPTS" style="width: 200px" @change="flushSave('notify')" />
+            <a-button :loading="notifyTesting" @click="onTestNotify">发送测试</a-button>
           </div>
         </div>
+
+        <template v-if="notify.channel === 'serverchan'">
+          <div class="formrow">
+            <label>SendKey</label>
+            <div>
+              <div class="ctl">
+                <a-input-password v-model:value="notify.serverchan.sendkey" style="width: 320px" placeholder="SCT…" @blur="flushSave('notify')" />
+                <span class="muted small">按下方「推送时机」开关通知自动/搜索转存与凭据告警</span>
+              </div>
+              <div class="sc-help">
+                <a href="https://sc3.ft07.com/" target="_blank" rel="noopener noreferrer">配置说明</a>
+                <span class="muted small">还没配过？先从官网拿到 SendKey 再填这里</span>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <template v-else-if="notify.channel === 'bark'">
+          <div class="formrow">
+            <label>服务器地址</label>
+            <div class="ctl">
+              <a-input v-model:value="notify.bark.server" style="width: 320px" placeholder="http://192.168.1.100:5546" @blur="flushSave('notify')" />
+            </div>
+          </div>
+          <div class="formrow">
+            <label>DeviceKey</label>
+            <div class="ctl">
+              <a-input-password v-model:value="notify.bark.device_key" style="width: 320px" placeholder="Bark App 首页复制" @blur="flushSave('notify')" />
+            </div>
+          </div>
+          <div class="formrow">
+            <label>分组前缀</label>
+            <div class="ctl">
+              <a-input v-model:value="notify.bark.group" style="width: 220px" placeholder="PanKeeper" @blur="flushSave('notify')" />
+              <span class="muted small">实际分组为「前缀 · 自动转存/搜索转存/凭据告警」</span>
+            </div>
+          </div>
+          <div class="formrow">
+            <label>提醒级别</label>
+            <div class="ctl">
+              <a-select v-model:value="notify.bark.level" :options="BARK_LEVEL_OPTS" style="width: 260px" @change="flushSave('notify')" />
+            </div>
+          </div>
+          <div class="formrow">
+            <label>铃声 / 图标</label>
+            <div class="ctl">
+              <a-input v-model:value="notify.bark.sound" style="width: 150px" placeholder="铃声名，选填" @blur="flushSave('notify')" />
+              <a-input v-model:value="notify.bark.icon" style="width: 250px" placeholder="图标 URL，选填" @blur="flushSave('notify')" />
+              <span class="muted small">无海报用 PanKeeper 图标，此处自定义可覆盖</span>
+            </div>
+          </div>
+          <div class="formrow">
+            <label>保存历史</label>
+            <div class="ctl">
+              <a-switch v-model:checked="notify.bark.is_archive" @change="flushSave('notify')" />
+              <span class="muted small">关掉后通知横幅消失即无痕</span>
+            </div>
+          </div>
+        </template>
+
+        <template v-else>
+          <div class="formrow">
+            <label>Webhook 地址</label>
+            <div class="ctl">
+              <a-input v-model:value="notify.webhook.url" style="width: 360px" placeholder="https://你的机器人地址" @blur="flushSave('notify')" />
+              <span class="muted small">转存完成时 POST JSON {title, content}</span>
+            </div>
+          </div>
+        </template>
+
         <div class="formrow">
           <label>推送时机</label>
           <div class="ctl st-gap18">
             <a-checkbox v-model:checked="notify.on_auto">自动转存</a-checkbox>
             <a-checkbox v-model:checked="notify.on_search">搜索转存</a-checkbox>
             <a-checkbox v-model:checked="notify.on_cred">凭据过期告警</a-checkbox>
+          </div>
+        </div>
+        <div class="formrow">
+          <label>历史保留</label>
+          <div class="ctl">
+            <a-input-number v-model:value="notify.retain_days" :min="1" :max="3650" style="width: 110px" @blur="flushSave('notify')" />
+            <span class="muted small">天 · 更多参数见 <a href="https://bark.day.app/#/params" target="_blank" rel="noopener noreferrer">bark params 文档</a></span>
           </div>
         </div>
       </div>

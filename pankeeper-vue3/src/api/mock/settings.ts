@@ -23,11 +23,42 @@ export interface SearchSrcCfg {
 }
 
 /** ===== tab2 推送通知 ===== */
+/** 通知通道（下拉单选，只发选中的一路） */
+export type NotifyChannel = 'serverchan' | 'bark' | 'webhook'
+
+/** Bark 通道参数（server/device_key 必填；group 为分组前缀，实际分组=「前缀·自动转存」等） */
+export interface BarkCfg {
+  /** bark-server 根地址（内网地址或外网隧道地址，后端自动补 /push） */
+  server: string
+  /** 设备 key（Bark App 首页复制；真实系统加密存储、接口只回掩码） */
+  device_key: string
+  /** 分组前缀，留空则只按时机分组 */
+  group: string
+  /** 提醒级别：active（默认横幅）/ timeSensitive（时效性）/ passive（静默）；critical 不提供 */
+  level: 'active' | 'timeSensitive' | 'passive'
+  /** 铃声名，选填，留空用 App 默认 */
+  sound: string
+  /** 通知图标 URL，选填（iOS 15+） */
+  icon: string
+  /** 保存到 App 通知历史 */
+  is_archive: boolean
+}
+
 export interface NotifyCfg {
   enabled: boolean
-  /** Server 酱 SendKey（mock 明文存内存；真实系统加密存储、接口不回填明文） */
-  sendkey: string
-  webhook: string
+  /** 当前选中通道：切换后前端参数表单跟着换，各通道参数分开保存互不丢失 */
+  channel: NotifyChannel
+  serverchan: {
+    /** Server 酱 SendKey（mock 明文存内存；真实系统加密存储、接口只回掩码） */
+    sendkey: string
+  }
+  bark: BarkCfg
+  webhook: {
+    /** 自定义 Webhook 地址（POST JSON {title, subtitle?, content}） */
+    url: string
+  }
+  /** 推送历史保留天数（两端共用）：电脑端每日定时清 push_logs，Bark 历史由同一任务按推送 id 发 delete 指令删手机端 */
+  retain_days: number
   /** 推送时机三项：自动转存 / 搜索转存 / 凭据过期告警 */
   on_auto: boolean
   on_search: boolean
@@ -98,8 +129,19 @@ export const settingsStore = reactive<SettingsData>({
   },
   notify: {
     enabled: true,
-    sendkey: 'SCT123456abcdefg',
-    webhook: '',
+    channel: 'serverchan' as 'serverchan' | 'bark' | 'webhook',
+    serverchan: { sendkey: 'SCT123456abcdefg' },
+    bark: {
+      server: 'http://192.168.2.77:5546',
+      device_key: 'mock-device-key',
+      group: 'PanKeeper',
+      level: 'active' as 'active' | 'timeSensitive' | 'passive',
+      sound: '',
+      icon: '',
+      is_archive: true,
+    },
+    webhook: { url: '' },
+    retain_days: 30,
     on_auto: true,
     on_search: true,
     on_cred: true,

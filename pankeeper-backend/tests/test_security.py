@@ -62,7 +62,7 @@ def test_lock_clears_on_success():
 def test_sensitive_fields_encrypted_at_rest():
     save_group("settings", {
         **get_group("settings"),
-        "notify": {**get_group("settings")["notify"], "sendkey": "SCT_secret_123"},
+        "notify": {**get_group("settings")["notify"], "serverchan": {"sendkey": "SCT_secret_123"}},
         "qms": {**get_group("settings")["qms"], "apikey": "qms-key-abc"},
     })
     with SessionLocal() as s:
@@ -73,7 +73,7 @@ def test_sensitive_fields_encrypted_at_rest():
     assert raw.count("fernet:") >= 2
     # 读回来自动解密，业务拿到的还是明文
     group = get_group("settings")
-    assert group["notify"]["sendkey"] == "SCT_secret_123"
+    assert group["notify"]["serverchan"]["sendkey"] == "SCT_secret_123"
     assert group["qms"]["apikey"] == "qms-key-abc"
 
 
@@ -81,12 +81,29 @@ def test_masked_roundtrip_keeps_old_secret():
     """前端回传 **** 掩码：库里旧明文密文都应保留。"""
     save_group("settings", {
         **get_group("settings"),
-        "notify": {**get_group("settings")["notify"], "sendkey": "SCT_keep_me"},
+        "notify": {**get_group("settings")["notify"], "serverchan": {"sendkey": "SCT_keep_me"}},
     })
     cur = get_group("settings")
-    cur["notify"]["sendkey"] = "****me"  # 前端掩码
+    cur["notify"]["serverchan"]["sendkey"] = "****me"  # 前端掩码
     save_group("settings", cur)
-    assert get_group("settings")["notify"]["sendkey"] == "SCT_keep_me"
+    assert get_group("settings")["notify"]["serverchan"]["sendkey"] == "SCT_keep_me"
+
+
+def test_notify_flat_config_migrates():
+    """旧扁平 notify（sendkey/webhook 挂组根）读取时自动迁移成通道嵌套结构，通道按「配了就发」优先级选。"""
+    save_group("settings", {
+        **get_group("settings"),
+        "notify": {"enabled": True, "sendkey": "SCT_old", "webhook": "http://old/hook", "on_auto": True},
+    })
+    n = get_group("settings")["notify"]
+    assert n["serverchan"]["sendkey"] == "SCT_old"
+    assert n["webhook"]["url"] == "http://old/hook"
+    assert n["channel"] == "serverchan"  # 有 sendkey 优先 serverchan
+    # 迁移后再保存读取：结构稳定，扁平键不再回填（webhook 键存在但应是通道嵌套 dict）
+    save_group("settings", {**get_group("settings"), "notify": {**get_group("settings")["notify"], "enabled": True}})
+    n2 = get_group("settings")["notify"]
+    assert n2["serverchan"]["sendkey"] == "SCT_old" and n2["channel"] == "serverchan"
+    assert "sendkey" not in n2 and isinstance(n2.get("webhook"), dict) and n2["webhook"]["url"] == "http://old/hook"
 
 
 # ---------- 管理员哈希落库形态 ----------
