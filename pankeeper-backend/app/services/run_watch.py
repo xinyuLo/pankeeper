@@ -52,6 +52,55 @@ def video_names(names) -> list[str]:
 # 信息条才能如实显示「STRM 已生成」（进程重启即空——推送顶多按"状态未知"显示）。
 _STRM_RESULTS: dict[int, dict] = {}
 
+# 记录快照变更版本号：_write/_write_strm 每次落库自增，SSE（/api/queue/events）据此
+# 向前端推具名事件 records，搜索历史页订阅它实时自刷（替代轮询）
+_records_lock = threading.Lock()
+_records_version = 0
+
+
+def touch_records() -> None:
+    global _records_version
+    with _records_lock:
+        _records_version += 1
+
+
+def records_version() -> int:
+    with _records_lock:
+        return _records_version
+
+
+def write_qms_interim(run_id: int, st: str, table=RunHistory) -> None:
+    """整理徽标的**中间态**（已触发/正在刮削/整理中）：回填终态前跟随 QMS 真实进度。
+    终态已落、或内容没变，就不写（省得 SSE 空推）。"""
+    with SessionLocal() as s:
+        r = s.get(table, run_id)
+        if r is None:
+            return
+        cur = _load_snap(r.qms_json) or {}
+        if cur.get("cls") in ("t-ok", "t-bad") or cur.get("st") == st:
+            return
+        r.qms_json = json.dumps({"st": st, "cls": "t-run"}, ensure_ascii=False)
+        s.commit()
+    touch_records()
+
+
+def _qms_interim_text(st_path: dict | None, rows: list[dict]) -> str:
+    """从 QMS 信号推导整理中间态文案：文件级（记录行的 path_is_scraping/path_is_renaming）
+    优先，路径级（scrape pathes 的 is_running/is_scraping）兜底。"""
+    if rows:
+        if any(r.get("path_is_renaming") for r in rows):
+            return "整理中"
+        if any(r.get("path_is_scraping") for r in rows):
+            return "正在刮削"
+        return "已触发"
+    if st_path:
+        running = int(st_path.get("is_running") or 0)
+        if running == 1:
+            return "已触发（QMS 队列中）"
+        if running == 2 or st_path.get("is_scraping"):
+            return "正在刮削"
+    return "已触发"
+
 
 def get_strm_result(run_id: int | None, table=RunHistory) -> dict | None:
     """取该次运行的 STRM 触发结果（后台线程完成时登记；没配/没跑完 → None）。"""
@@ -129,7 +178,7 @@ def claim_records(names: set[str], since_id: int = 0) -> dict[str, dict]:
     return out
 
 
-def watch_qms(run_id: int, task_name: str, names: list[str], baseline: dict[str, list] | None = None, table=RunHistory) -> None:
+def watch_qms(run_id: int, task_name: str, names: list[str], baseline: dict[str, list] | None = None, table=RunHistory, on_state=None) -> None:
     """spawn 后台线程回填 QMS 真实结果（无文件/无任务名直接返回）。
 
     baseline：**触发前**的记录指纹（`record_fingerprint`，在 `qms.trigger_scrape` 之前取）。
@@ -137,11 +186,12 @@ def watch_qms(run_id: int, task_name: str, names: list[str], baseline: dict[str,
     （没重刮）时不能把旧结果当新结果，二是同名裸名文件跨剧碰撞（狂飙 17.mp4 撞兰香如故
     旧批次同名记录）时不能把别人的结果记到自己头上。
     table：快照写回哪张表 —— RunHistory（自动转存）/ Record（搜索转存，2026-10-04 起同款回填）。
+    on_state：中间态回调（st 文案，30s 一次）——整理徽标跟 QMS 真实进度走（write_qms_interim）。
     """
     names = [n for n in (names or []) if n]
     if not run_id or not names:
         return
-    threading.Thread(target=_watch, args=(run_id, task_name or "", names, baseline or {}, table), daemon=True).start()
+    threading.Thread(target=_watch, args=(run_id, task_name or "", names, baseline or {}, table, on_state), daemon=True).start()
 
 
 def _scrape_dest_dirs(names: set[str], since_id: int = 0) -> list[str]:
@@ -288,8 +338,8 @@ def _fire_strm(strm_id: int, names: set[str], since_id: int = 0) -> dict:
             st = f"同步失败：{reason}" + (f"（其余目录已生成 {new_strm} 个 STRM）" if new_strm else "")
             return {"st": st, "cls": "t-bad", "emby": emby_join}
         if new_strm:
-            return {"st": f"已生成（新增 {new_strm} 个 STRM）", "cls": "t-ok", "emby": emby_join}
-        return {"st": "同步完成，无新增 STRM（目录里没有新文件）", "cls": "t-ok", "emby": emby_join}
+            return {"st": f"新增 {new_strm} 个", "cls": "t-ok", "emby": emby_join}
+        return {"st": "无新增", "cls": "t-ok", "emby": emby_join}
     except Exception as e:  # noqa: BLE001 —— 回退口：定向失败绝不把 STRM 弄丢
         print(f"[run-watch] STRM 定向同步失败（{e}），回退整路径同步", flush=True)
         ok, msg = qms.trigger_strm(strm_id)
@@ -303,6 +353,7 @@ def trigger_strm_after_scrape(
     delay: int = 10,
     timeout: int = SCRAPE_WAIT_TIMEOUT,
     table=RunHistory,
+    log_fn=None,
 ) -> None:
     """等 QMS 刮削**真的跑完**，再等 delay 秒，才触发 STRM 同步（对齐参照项目 bdsavepro 语义）。
 
@@ -344,28 +395,34 @@ def trigger_strm_after_scrape(
             updated = int(st.get("updated_at") or 0)
             if busy:
                 seen_busy = True
-            elif seen_busy or updated >= trigger_ts - CLOCK_TOLERANCE:
+            claimed = claim_records(want, since_id) if want else {}
+            all_terminal = bool(claimed) and want <= claimed.keys() and all(
+                r.get("status") in TERMINAL_STATUS or r.get("status") in IGNORE_STATUS
+                for r in claimed.values()
+            )
+            # 整理徽标跟 QMS 真实进度走（反正都在轮询）：已触发 → 正在刮削 → 整理中；
+            # 全部终态就不写中间态，交给回填写终态
+            if run_id and want and not all_terminal:
+                write_qms_interim(run_id, _qms_interim_text(st, list(claimed.values())), table)
+            if not busy and (seen_busy or updated >= trigger_ts - CLOCK_TOLERANCE):
                 reached = True
                 break
-            if not reached and want:
-                claimed = claim_records(want, since_id)
-                if want <= claimed.keys() and all(
-                    r.get("status") in TERMINAL_STATUS or r.get("status") in IGNORE_STATUS
-                    for r in claimed.values()
-                ):
-                    reached = True
-                    print(f"[run-watch] QMS 刮削 #{qms_id} 完成（记录池判据：本次 {len(claimed)} 个文件全部终态）", flush=True)
-                    break
+            if all_terminal:
+                reached = True
+                print(f"[run-watch] QMS 刮削 #{qms_id} 完成（记录池判据：本次 {len(claimed)} 个文件全部终态）", flush=True)
+                break
             if time.time() > deadline:
                 break
             time.sleep(SCRAPE_POLL_INTERVAL)
 
         if not reached and not degraded:
-            snap = {"st": "未确认（刮削超时，未触发 STRM）", "cls": "t-off"}
+            snap = {"st": "未确认（刮削超时，未触发 STRM）", "cls": "t-bad"}
             if run_id:
                 _write_strm(run_id, snap, table)
                 _STRM_RESULTS[f"{table.__name__}:{run_id}"] = snap
             print(f"[run-watch] QMS 刮削 #{qms_id} 等待超时（{timeout}s），不触发 STRM", flush=True)
+            if log_fn:
+                log_fn("STRM 未生成：刮削超时未确认")
             return
         if degraded:
             print(f"[run-watch] 取不到 QMS 刮削状态，退化为等 {delay}s 后直接触发 STRM", flush=True)
@@ -375,25 +432,35 @@ def trigger_strm_after_scrape(
             # 文件算「未见」不算失败（与 _wait 口径一致）。想补救走「重新触发 QMS」
             failed = [fn for fn, r in claim_records(want, since_id).items() if r.get("status") in FAILED_STATUS]
             if failed:
-                snap = {"st": f"QMS 刮削失败 {len(failed)} 项，未生成 STRM", "cls": "t-off"}
+                snap = {"st": f"QMS 刮削失败 {len(failed)} 项，未生成 STRM", "cls": "t-bad"}
                 if run_id:
                     _write_strm(run_id, snap, table)
                     _STRM_RESULTS[f"{table.__name__}:{run_id}"] = snap
                 print(f"[run-watch] QMS 刮削有失败（{failed}），不触发 STRM #{strm_id}", flush=True)
+                if log_fn:
+                    log_fn(f"STRM 未生成：QMS 刮削失败 {len(failed)} 项")
                 return
 
+        # 中间态先落库：记录页 STRM 徽标转蓝「正在生成 STRM」（推送仍等终态登记）
+        if run_id:
+            _write_strm(run_id, {"st": "正在生成 STRM", "cls": "t-run"}, table)
+        if log_fn:
+            log_fn("正在生成 STRM…")
         time.sleep(max(0, int(delay)))
         # 定向同步（只扫本次文件整理后的目录）需要本次文件名集合；拿不到就整路径
         names_set = set(names) if names else set(_record_names(run_id, table))
         if names_set:            snap = _fire_strm(strm_id, names_set, since_id)
         else:
             ok, msg = qms.trigger_strm(strm_id)
-            # 「已触发」用绿色（t-ok）：STRM 没有结果查询接口，触发成功就是这条链路的最好结局
+            # 「已触发」用绿色（t-ok）：触发成功就是这条链路的最好结局
             # （2026-10-04 用户要求改绿；QMS 的"已触发"保持灰——它随后会被真实结果回填替换）
             snap = {"st": "已触发" if ok else f"失败 · {msg}", "cls": "t-ok" if ok else "t-bad"}
         if run_id:
             _write_strm(run_id, snap, table)
             _STRM_RESULTS[f"{table.__name__}:{run_id}"] = snap  # 推送线程（media_push._wait_strm）来取
+        if log_fn:
+            log_fn(("STRM 生成成功" if snap.get("cls") == "t-ok" else "STRM 未生成")
+                   + (f"：{snap['st']}" if snap.get("st") and snap.get("st") != "已触发" else ""))
         print(f"[run-watch] STRM 联动（同步目录 #{strm_id}）：{snap['st']}", flush=True)
 
     threading.Thread(target=_job, daemon=True).start()
@@ -414,13 +481,25 @@ def _record_names(run_id: int, table=RunHistory) -> list[str]:
 
 
 def _write_strm(run_id: int, snap: dict, table=RunHistory) -> None:
-    """只更新该次运行的 STRM 快照（任务行的整单判定只看 QMS，别混进来）。"""
+    """只更新该次运行的 STRM 快照（任务行的整单判定只看 QMS，别混进来）；
+    终态顺带在执行日志补一行（STRM 结果由后台线程产生，晚于收尾落库）。"""
     with SessionLocal() as s:
         r = s.get(table, run_id)
         if r is None:
             return
         r.strm_json = json.dumps(snap, ensure_ascii=False)
+        if snap.get("cls") in ("t-ok", "t-bad"):
+            txt = ("STRM 生成成功" if snap.get("cls") == "t-ok" else "STRM 未生成") + \
+                  ("" if snap.get("st") in (None, "", "已触发") else f"：{snap['st']}")
+            try:
+                logs = json.loads(r.logs_json or "[]")
+            except ValueError:
+                logs = []
+            if not logs or logs[-1].get("txt") != txt:
+                logs.append({"lv": "STEP", "txt": txt})
+            r.logs_json = json.dumps(logs, ensure_ascii=False)
         s.commit()
+    touch_records()
 
 
 def _load_snap(raw: str) -> dict | None:
@@ -432,9 +511,9 @@ def _load_snap(raw: str) -> dict | None:
         return None
 
 
-def _watch(run_id: int, task_name: str, names: list[str], baseline: dict[str, list], table=RunHistory) -> None:
+def _watch(run_id: int, task_name: str, names: list[str], baseline: dict[str, list], table=RunHistory, on_state=None) -> None:
     try:
-        recs, verdict = _wait(names, baseline)
+        recs, verdict = _wait(names, baseline, on_state=on_state)
         if verdict == "dedup":
             # QMS 没产生新记录 = 按文件去重、根本没重刮：保留原判定，不拿旧结果冒充新结果
             print(f"[run-watch] record {run_id} QMS 未产生新记录（按文件去重，未重刮）→ 保持原判定", flush=True)
@@ -463,7 +542,7 @@ def _fresh_map(latest: dict[str, dict], baseline: dict[str, list]) -> dict[str, 
     return out
 
 
-def _wait(names: list[str], baseline: dict[str, list] | None = None) -> tuple[list[dict], str]:
+def _wait(names: list[str], baseline: dict[str, list] | None = None, on_state=None) -> tuple[list[dict], str]:
     """轮询到「本次转存的文件**全部**出现本次触发产生的终态记录」，或停滞/总超时。
 
     返回 (记录, verdict)。verdict：
@@ -511,6 +590,13 @@ def _wait(names: list[str], baseline: dict[str, list] | None = None) -> tuple[li
         alive = [r for r in fresh.values() if r.get("status") not in IGNORE_STATUS]
         missing = want - set(fresh)
         now = time.time()
+        if on_state:
+            # 整理徽标跟 QMS 真实进度走：文件级标志优先（刮削/整理中），没记录就是已触发待受理
+            matched = [r for r in rows if r.get("file_name") in want]
+            try:
+                on_state(_qms_interim_text(None, matched))
+            except Exception:  # noqa: BLE001 —— 中间态写失败不影响等待主流程
+                pass
         if not missing and (not alive or all(r.get("status") in TERMINAL_STATUS for r in alive)):
             return list(fresh.values()), "done"
         if (
@@ -572,6 +658,7 @@ def _write(run_id: int, snap: dict, table=RunHistory) -> None:
         r.qms_json = json.dumps(snap, ensure_ascii=False)
         if table is not RunHistory:
             s.commit()
+            touch_records()
             print(f"[run-watch] record {run_id} QMS 结果回填：{snap.get('st')}", flush=True)
             return
         latest = (
@@ -586,4 +673,5 @@ def _write(run_id: int, snap: dict, table=RunHistory) -> None:
                 ov = overall_of(r.status, snap)
                 pa.last_status = {"成功": "success", "部分失败": "partial"}.get(ov["st"], "fail")
         s.commit()
+    touch_records()
     print(f"[run-watch] run {run_id} QMS 结果回填：{snap.get('st')}", flush=True)

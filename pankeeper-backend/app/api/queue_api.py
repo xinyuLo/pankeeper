@@ -63,15 +63,28 @@ async def queue_events(token: str = ""):
         raise HTTPException(status_code=401, detail="登录凭证不存在或已过期")
 
     async def gen():
+        from ..services import run_watch
+
         last = None
+        last_records = run_watch.records_version()
         heartbeat = 0
         while True:
             await asyncio.to_thread(get_engine().wait_change, 0.6)
             snap = json.dumps(get_engine().state_public(), ensure_ascii=False)
+            fired = False
+            # 记录快照变更（回填/STRM 写库，run_watch 计版本）→ 具名事件推给订阅方
+            # （搜索历史页订阅 records 实时自刷，不用轮询）
+            rec_ver = run_watch.records_version()
+            if rec_ver != last_records:
+                last_records = rec_ver
+                fired = True
+                yield "event: records\ndata: {}\n\n"
             if snap != last:
                 last = snap
-                heartbeat = 0
+                fired = True
                 yield f"data: {snap}\n\n"
+            if fired:
+                heartbeat = 0
             else:
                 heartbeat += 1
                 if heartbeat >= 50:  # ~30s 一次心跳：保活防代理断连，前端也据此重置兜底轮询

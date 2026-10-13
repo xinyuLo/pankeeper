@@ -236,7 +236,7 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
         t["phase"] = "strm"
         t["phaseStart"] = int(time.time() * 1000)
         ok_s, msg_s = qms.trigger_strm(int(strm_id))
-        strm_snap = {"st": "已触发（反转·先行）" if ok_s else f"失败 · {msg_s}", "cls": "t-ok" if ok_s else "t-bad"}
+        strm_snap = {"st": "正在生成 STRM（先行）" if ok_s else f"失败 · {msg_s}", "cls": "t-run" if ok_s else "t-bad"}
         _push_log(t, "INFO" if ok_s else "ERROR", f"（反转）STRM 同步 #{strm_id} 先行触发{'成功' if ok_s else '失败'}" + (f"：{msg_s}" if msg_s else ""))
         _sleep_phase(eng, t, "waitstrm", int(cfg.get("strm", 10)), f"等待 {cfg.get('strm', 10)} 秒后触发 QMS 刮削（反转模式）")
     else:
@@ -254,16 +254,16 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
     # ⚠️ 这里只能证明"QMS 受理了触发请求"，不是刮削结果——快照如实写「已触发」，
     # 真实结果由 run_watch 后台轮询回填（2026-10-04 用户实锤：QMS 侧 scrape_failed
     # 而这边显示"成功"）。别改回"成功"，那是骗人。
-    qms_snap = {"st": "已触发" if ok else f"失败 · {msg}", "cls": "t-off" if ok else "t-bad"}
-    _push_log(t, "INFO" if ok else "ERROR", f"QMS 刮削任务 #{link['qms_id']} 触发{'成功' if ok else '失败'}" + (f"：{msg}" if msg else ""))
+    qms_snap = {"st": "已触发" if ok else f"失败 · {msg}", "cls": "t-run" if ok else "t-bad"}
+    _push_log(t, "INFO" if ok else "ERROR", f"QMS 刮削任务 #{link['qms_id']} 触发{'成功' if ok else '失败'}"
+              + (f"：{msg}" if msg else "") + ("，等待 STRM 生成" if ok and link.get("strm_id") else ""))
 
     # STRM 不在这里等、也不在这里触发：正确做法是「等 QMS 刮削真跑完再触发」
     # （run_watch.trigger_strm_after_scrape：轮询 /api/scrape/pathes/{id} 到 is_running=0
     #  && is_scraping=false && updated_at>=触发时刻）。放这里会**堵住队列 worker 好几分钟**，
     # 所以改为收尾落库后由 _sync_pa_task 挂后台线程（2026-10-04 用户要求对齐 bdsavepro 语义）。
     if link.get("strm_id") and not reverse:
-        strm_snap = {"st": "等待刮削完成…", "cls": "t-off"}
-        _push_log(t, "STEP", f"STRM（同步目录 #{link['strm_id']}）：QMS 刮削成功后自动触发")
+        strm_snap = {"st": "等待中", "cls": "t-wait"}
 
     # 推送（watch_and_spawn）挪到 _sync_pa_task 落库后：那里才有 run_id，推送线程才能
     # 等 STRM 触发结果、信息条如实显示「STRM 已生成」（2026-10-04 用户要求）
@@ -532,6 +532,8 @@ def _sync_pa_task(t: dict, status: str, result, qms_snap: dict | None = None, st
         s.add(hist)
         s.commit()
         run_id_new = hist.id
+    from ..services import run_watch
+    run_watch.touch_records()  # 记录已落库 → SSE 推给搜索历史页，行带着「正在整理」立即出现
     # 触发后的两件后台事（都不阻塞队列，见 services/run_watch.py）：
     # ① QMS 真实结果回填（"触发受理"≠"刮削成功"）；② 等刮削真跑完再触发 STRM。
     # 触发过但被拒（快照「失败 ·」开头）也推——转存成功联动挂了，手机必须知道（2026-10-13 清单四）
@@ -549,13 +551,15 @@ def _sync_pa_task(t: dict, status: str, result, qms_snap: dict | None = None, st
                 t["name"].split(".")[0],
                 names,
                 baseline=baseline,
+                on_state=lambda st: run_watch.write_qms_interim(run_id_new, st),
             )
             link = resolve_media_link(t["path"], t.get("paTaskId"))
             if link and link.get("strm_id") and not t.get("_media_reverse"):
                 # 反转模式 STRM 已先行触发过，不再挂「等刮削→触发 STRM」的后台线程
                 delay = int(get_group("queue_cfg").get("strm", 10))
                 strm_plan = {"strm_id": int(link["strm_id"]), "delay": delay}
-            run_watch.trigger_strm_after_scrape(run_id_new, int(link["qms_id"]), int(link["strm_id"]), delay)
+            run_watch.trigger_strm_after_scrape(run_id_new, int(link["qms_id"]), int(link["strm_id"]), delay,
+                                                log_fn=lambda txt: _push_log(t, "STEP", txt))
         # ③ 推送：ctx 带 run_id + STRM 计划 + 触发前指纹（推送只认本次的新记录），
         #    推送线程会等 STRM 触发结果再发，信息条才能如实显示「STRM 已生成」；
         #    QMS 触发失败时立即如实推失败（_watch 的 qms_ok=False 分支）

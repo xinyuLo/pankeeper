@@ -198,7 +198,7 @@ def test_fire_strm_verifies_via_sync_records(monkeypatch):
     refresh_calls = {"n": 0}
     _mock_fire_env(monkeypatch, [rec], refresh_calls)
     snap = rw._fire_strm(8, {"这个杀手不太冷静 (2022).mkv"}, 0)
-    assert snap == {"st": "已生成（新增 1 个 STRM）", "cls": "t-ok", "emby": "华语电影"}
+    assert snap == {"st": "新增 1 个", "cls": "t-ok", "emby": "华语电影"}
     assert refresh_calls["n"] == 1
 
 
