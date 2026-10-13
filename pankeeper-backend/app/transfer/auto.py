@@ -555,9 +555,7 @@ def _sync_pa_task(t: dict, status: str, result, qms_snap: dict | None = None, st
                 # 反转模式 STRM 已先行触发过，不再挂「等刮削→触发 STRM」的后台线程
                 delay = int(get_group("queue_cfg").get("strm", 10))
                 strm_plan = {"strm_id": int(link["strm_id"]), "delay": delay}
-                # 自动任务不带壳，落点就是转存目录本身（刮削记录认领的路径边界）
-                run_watch.trigger_strm_after_scrape(run_id_new, int(link["qms_id"]), int(link["strm_id"]), delay,
-                                                    claim_dir="/" + t["path"].strip("/"))
+            run_watch.trigger_strm_after_scrape(run_id_new, int(link["qms_id"]), int(link["strm_id"]), delay)
         # ③ 推送：ctx 带 run_id + STRM 计划 + 触发前指纹（推送只认本次的新记录），
         #    推送线程会等 STRM 触发结果再发，信息条才能如实显示「STRM 已生成」；
         #    QMS 触发失败时立即如实推失败（_watch 的 qms_ok=False 分支）

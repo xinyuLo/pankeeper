@@ -350,8 +350,7 @@ def retrigger_task_qms(task_id: int, _user=CurrentUser):
     # ④ STRM：配了才做——**等 QMS 刮削真跑完**（轮询 pathes/{id}）再等队列配置的间隔秒数触发
     delay = int(get_group("queue_cfg").get("strm", 10))
     if strm_id:
-        run_watch.trigger_strm_after_scrape(latest_id, int(qms_id), int(strm_id), delay,
-                                            claim_dir="/" + save_dir.strip("/"))
+        run_watch.trigger_strm_after_scrape(latest_id, int(qms_id), int(strm_id), delay)
 
     parts = [f"已清除 {len(failed_ids)} 条失败记录，重新触发 QMS 刮削（目录 #{qms_id}）"]
     parts.append(f"；STRM 同步（#{strm_id}）将在刮削完成后 +{delay}s 触发" if strm_id else "；该目录未配 STRM，跳过")

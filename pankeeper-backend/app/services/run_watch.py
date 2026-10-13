@@ -110,26 +110,21 @@ def _records_window(since_id: int = 0) -> list[dict]:
     return out
 
 
-def claim_records(claim_dir: str, names: set[str], since_id: int = 0) -> dict[str, dict]:
-    """按**原始路径**认领本次转存的刮削记录：source_full_path（QMS UI 的「整理前」路径，
-    = 转存落点目录/原始文件名，2026-10-13 真实记录字段实锤）落在 claim_dir 下、file_name
-    在清单内、id > since_id；同名取最新一条（记录按新→旧返回）。
+def claim_records(names: set[str], since_id: int = 0) -> dict[str, dict]:
+    """认领本次转存的刮削记录：file_name 在清单内、id > since_id；同名取最新一条
+    （记录按新→旧返回）。
 
-    为什么按路径不按名：同名裸名文件跨剧碰撞（狂飙 17.mp4 撞兰香如故旧批次）按名认领
-    会张冠李戴，路径精确到单文件天然无歧义；id 分界再把「同路径旧记录」（失败重转场景）
-    挡在外面——QMS 对旧记录不重刮，光匹配路径会把旧 scrape_failed 冒充成本次结果。
-    claim_dir 为空（调用方拿不到落点）退回按名认领，精度回到旧口径。"""
-    base = "/" + (claim_dir or "").strip("/")
+    曾经还按「原始路径落在转存落点下」过滤（source_full_path 前缀），2026-10-13 晚
+    NAS 实录翻车：DD 配置路径是用户手填的（/1.影视/待整理-电影），与 openlist 命名空间
+    （/kuake/1.影视/待整理-电影，带账号根）对不上，前缀永不命中 → 认领为空 → 定向同步
+    静默回退全库（v1.0.11 独行月球场）。谓词废弃——旧记录冒充由 since_id 分界挡住，
+    同窗同名并发是良性过度同步（dest 归属照旧由记录自己的刮削路径决定）。"""
     want = {n for n in (names or set()) if n}
     out: dict[str, dict] = {}
     for r in _records_window(since_id) or []:
         fn = r.get("file_name")
         if fn not in want or fn in out or int(r.get("id") or 0) <= since_id:
             continue
-        if base != "/":
-            sfp = str(r.get("source_full_path") or "").strip()
-            if not sfp.startswith(base + "/"):
-                continue
         out[fn] = r
     return out
 
@@ -149,16 +144,16 @@ def watch_qms(run_id: int, task_name: str, names: list[str], baseline: dict[str,
     threading.Thread(target=_watch, args=(run_id, task_name or "", names, baseline or {}, table), daemon=True).start()
 
 
-def _scrape_dest_dirs(names: set[str], claim_dir: str = "", since_id: int = 0) -> list[str]:
+def _scrape_dest_dirs(names: set[str], since_id: int = 0) -> list[str]:
     """从 QMS 刮削记录推本次文件**整理后的目录**（openlist 命名空间，strm 定向同步的目标）。
 
-    记录只认 claim_records 认领到的（原始路径在转存落点下 + id > 触发前分界）——旧版按
-    文件名全池匹配，同名裸名旧记录会把别的剧的整理目录混进 dests（2026-10-13 清单五销项）。
+    记录只认 claim_records 认领到的（file_name 在清单内 + id > 触发前分界）——最早的
+    按原始路径前缀认领因 DD 配置与 openlist 命名空间不一致废弃（2026-10-13 晚 NAS 实录）。
     QMS 刮削会把文件从待整理目录搬进正式目录：record.new_path 是相对整理目标根的
     新路径，目标根 = 该记录所属刮削路径的 dest_path（按 record.path 前缀匹配
     source_path 找归属）。"""
     sps = qms.scrape_pathes() or []
-    claimed = claim_records(claim_dir, names, since_id)
+    claimed = claim_records(names, since_id)
     dests: dict[str, None] = {}
     for rec in claimed.values():
         src = (rec.get("path") or "").strip()
@@ -203,7 +198,7 @@ def _await_sync_done(dests: list[str], local: str, fired_ts: int) -> dict[str, d
         time.sleep(SYNC_POLL_INTERVAL)
 
 
-def _fire_strm(strm_id: int, names: set[str], claim_dir: str = "", since_id: int = 0) -> dict:
+def _fire_strm(strm_id: int, names: set[str], since_id: int = 0) -> dict:
     """STRM 触发的统一入口：**定向优先，失败回退**。
 
     - 定向（QMS /api/sync/manual 临时任务）：只扫本次文件整理后的目录（dest_path），
@@ -226,7 +221,7 @@ def _fire_strm(strm_id: int, names: set[str], claim_dir: str = "", since_id: int
         account_id = int(sp.get("account_id") or 0)
         if not local or not account_id or not remote:
             raise AdapterError("同步路径缺 local_path/remote_path/account_id")
-        dests = [d for d in _scrape_dest_dirs(names, claim_dir, since_id) if (d.strip("/") + "/").startswith(remote + "/")]
+        dests = [d for d in _scrape_dest_dirs(names, since_id) if (d.strip("/") + "/").startswith(remote + "/")]
         if not dests:
             raise AdapterError("刮削记录里没有落在该同步路径下的目录")
         for d in dests:
@@ -308,7 +303,6 @@ def trigger_strm_after_scrape(
     delay: int = 10,
     timeout: int = SCRAPE_WAIT_TIMEOUT,
     table=RunHistory,
-    claim_dir: str = "",
 ) -> None:
     """等 QMS 刮削**真的跑完**，再等 delay 秒，才触发 STRM 同步（对齐参照项目 bdsavepro 语义）。
 
@@ -320,12 +314,11 @@ def trigger_strm_after_scrape(
         （is_running≠0 或 is_scraping）→ 现在不忙了 = 跑完**。updated_at 只作辅助
         （触发后被更新过也算证据）——实测它是路径行的更新时间，不一定随每次刮削前进
         （2026-10-04：刚触发时它还是 12 分钟前的值）。
-    (b) 记录池认领：本次转存的全部视频文件都有「id > 触发前分界、原始路径（source_full_path）
-        落在转存落点 claim_dir 下」的终态记录。为什么需要：快刮（首个轮询间隔内跑完）+
+    (b) 记录池认领：本次转存的全部视频文件都有「id > 触发前分界」的终态记录
+        （认领规则见 claim_records）。为什么需要：快刮（首个轮询间隔内跑完）+
         updated_at 不前进时 (a) 的两条证据都会缺席，旧实现只能干等超时、STRM 永不触发
-        （2026-10-13 定稿，认领规则见 claim_records）。
+        （2026-10-13 定稿）。
 
-    claim_dir 拿不到（空串）→ (b) 自动禁用，退回 (a)+超时的旧口径。
     取不到路径状态（QMS 未启用/接口异常）→ 退化成"等 delay 秒直接触发"，不把能力弄丢。
     超时（默认 5 分钟）→ 记「未确认（刮削超时，未触发 STRM）」，**不触发 STRM**（宁缺勿错）。
 
@@ -335,10 +328,9 @@ def trigger_strm_after_scrape(
         trigger_ts = int(time.time())
         deadline = time.time() + max(1, int(timeout))
         # 本次要等的视频文件 + 记录池 id 分界：完成判据 (b)、失败判定、定向目录推导
-        # 三处共用同一份认领（claim_records，按原始路径认领、同名跨剧出局）
+        # 三处共用同一份认领（claim_records）
         names = video_names(_record_names(run_id, table))
-        base = (claim_dir or "").strip()
-        since_id = _records_max_id() if base and names else 0
+        since_id = _records_max_id() if names else 0
         reached = False
         degraded = False
         seen_busy = False  # 是否亲眼见过这条刮削路径在忙（本次触发真的跑起来了的硬证据）
@@ -355,8 +347,8 @@ def trigger_strm_after_scrape(
             elif seen_busy or updated >= trigger_ts - CLOCK_TOLERANCE:
                 reached = True
                 break
-            if not reached and base and want:
-                claimed = claim_records(base, want, since_id)
+            if not reached and want:
+                claimed = claim_records(want, since_id)
                 if want <= claimed.keys() and all(
                     r.get("status") in TERMINAL_STATUS or r.get("status") in IGNORE_STATUS
                     for r in claimed.values()
@@ -381,7 +373,7 @@ def trigger_strm_after_scrape(
             # QMS 刮削有失败 → 不生成 STRM（2026-10-04 用户："刮削失败了就不用生成 strm 了没意义"）。
             # 失败判定同样走认领——旧按名全池匹配会把同名旧失败记录算到本次头上；认领不到的
             # 文件算「未见」不算失败（与 _wait 口径一致）。想补救走「重新触发 QMS」
-            failed = [fn for fn, r in claim_records(base, want, since_id).items() if r.get("status") in FAILED_STATUS]
+            failed = [fn for fn, r in claim_records(want, since_id).items() if r.get("status") in FAILED_STATUS]
             if failed:
                 snap = {"st": f"QMS 刮削失败 {len(failed)} 项，未生成 STRM", "cls": "t-off"}
                 if run_id:
@@ -393,7 +385,7 @@ def trigger_strm_after_scrape(
         time.sleep(max(0, int(delay)))
         # 定向同步（只扫本次文件整理后的目录）需要本次文件名集合；拿不到就整路径
         names_set = set(names) if names else set(_record_names(run_id, table))
-        if names_set:            snap = _fire_strm(strm_id, names_set, base, since_id)
+        if names_set:            snap = _fire_strm(strm_id, names_set, since_id)
         else:
             ok, msg = qms.trigger_strm(strm_id)
             # 「已触发」用绿色（t-ok）：STRM 没有结果查询接口，触发成功就是这条链路的最好结局
