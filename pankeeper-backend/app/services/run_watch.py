@@ -9,7 +9,8 @@
 `run_history.qms_json`。轮询间隔与终态口径复用 media_push，但**不依赖推送开关**——
 结果展示是独立诉求，推送关着也得回填。
 
-STRM 暂不轮询（QMS 侧没有对应查询接口，只能证明「已触发」），快照如实写「已触发」。
+STRM 2026-10-13 起轮询 /api/sync/records 到终态，快照如实写「已生成（新增 N 个 STRM）/ 同步失败：
+原因」；等不到记录才回落「已触发」（QMS 定向临时任务此前无痕是误判，其实全程留痕、只留 7 天）。
 
 ⚠️ 曾有一段常驻「自愈复查」（每 3 分钟扫 24h 内未成功的运行自动翻正），2026-10-04 用户要求
 **关闭**（不想让后端全天候轮询）：已删除，只保留「转存收尾 / 手动重刷」两条触发时轮询。
@@ -35,7 +36,10 @@ SCRAPE_POLL_INTERVAL = 10    # 等刮削完成的轮询间隔（秒）
 SCRAPE_WAIT_TIMEOUT = 5 * 60  # 等刮削完成的上限（超时就不触发 STRM）
 CLOCK_TOLERANCE = 60      # updated_at 判据的时钟容差（秒）：QMS 在 NAS、PanKeeper 在另一台机器，
                           # 两边时钟差几秒就会让 `updated_at >= 触发时刻` 误判为假（桩测试实测踩到）
-PAGE_SIZE = 500           # 记录拉取条数：不按任务名筛（实测会漏，见下）
+PAGE_SIZE = 1000          # 每页条数（2026-10-13 实测 pageSize=1000 照单全收，响应带 total）
+RECORD_MAX_PAGES = 5      # 记录窗口读取页数上限：5 页 = 5000 条，覆盖当前全池（2509）仍有余量
+SYNC_POLL_INTERVAL = 5    # STRM 同步任务记录轮询间隔（秒）
+SYNC_WAIT_TIMEOUT = 120   # 等同步任务终态上限（实测定向任务 1~5s 完成；超时回落「已触发」）
 
 
 def video_names(names) -> list[str]:
@@ -72,10 +76,61 @@ def record_fingerprint(names: list[str]) -> dict[str, list]:
     if not want:
         return {}
     out: dict[str, list] = {}
-    for r in qms.scrape_records(page_size=PAGE_SIZE) or []:
+    for r in _records_window() or []:
         fn = r.get("file_name")
         if fn in want and fn not in out:
             out[fn] = [r.get("id"), r.get("status")]
+    return out
+
+
+def _records_max_id() -> int:
+    """记录池当前最大 id（认领分界线：只认比它新的记录 = 本次触发产生的）。
+
+    取不到（QMS 未启用/接口抖动）返回 0——认领退化为「不限 id」，靠原始路径兜精度。"""
+    rows = qms.scrape_records(page_size=PAGE_SIZE) or []
+    return max((int(r.get("id") or 0) for r in rows), default=0)
+
+
+def _records_window(since_id: int = 0) -> list[dict]:
+    """按页走读记录池：从最新一页往回翻，直到某页最小 id 已小于分界线 since_id
+    （更旧的与本次无关，不再读）、不足一页（到底了）或达到页数上限。
+    since_id=0 = 不设界，读到上限（覆盖当前全池）。
+
+    2026-10-13 清单一：此前所有读取只拉全局最新一页，并发大批量转存时本场的记录
+    会在等待窗内被挤出窗口，回填/推送/认领全线失明。分页 + 边界后悬崖消失。"""
+    out: list[dict] = []
+    for page in range(1, RECORD_MAX_PAGES + 1):
+        rows = qms.scrape_records(page_size=PAGE_SIZE, page=page) or []
+        if not rows:
+            break
+        out.extend(rows)
+        page_min = min(int(r.get("id") or 0) for r in rows)
+        if (since_id and page_min < since_id) or len(rows) < PAGE_SIZE:
+            break
+    return out
+
+
+def claim_records(claim_dir: str, names: set[str], since_id: int = 0) -> dict[str, dict]:
+    """按**原始路径**认领本次转存的刮削记录：source_full_path（QMS UI 的「整理前」路径，
+    = 转存落点目录/原始文件名，2026-10-13 真实记录字段实锤）落在 claim_dir 下、file_name
+    在清单内、id > since_id；同名取最新一条（记录按新→旧返回）。
+
+    为什么按路径不按名：同名裸名文件跨剧碰撞（狂飙 17.mp4 撞兰香如故旧批次）按名认领
+    会张冠李戴，路径精确到单文件天然无歧义；id 分界再把「同路径旧记录」（失败重转场景）
+    挡在外面——QMS 对旧记录不重刮，光匹配路径会把旧 scrape_failed 冒充成本次结果。
+    claim_dir 为空（调用方拿不到落点）退回按名认领，精度回到旧口径。"""
+    base = "/" + (claim_dir or "").strip("/")
+    want = {n for n in (names or set()) if n}
+    out: dict[str, dict] = {}
+    for r in _records_window(since_id) or []:
+        fn = r.get("file_name")
+        if fn not in want or fn in out or int(r.get("id") or 0) <= since_id:
+            continue
+        if base != "/":
+            sfp = str(r.get("source_full_path") or "").strip()
+            if not sfp.startswith(base + "/"):
+                continue
+        out[fn] = r
     return out
 
 
@@ -94,17 +149,18 @@ def watch_qms(run_id: int, task_name: str, names: list[str], baseline: dict[str,
     threading.Thread(target=_watch, args=(run_id, task_name or "", names, baseline or {}, table), daemon=True).start()
 
 
-def _scrape_dest_dirs(names: set[str]) -> list[str]:
+def _scrape_dest_dirs(names: set[str], claim_dir: str = "", since_id: int = 0) -> list[str]:
     """从 QMS 刮削记录推本次文件**整理后的目录**（openlist 命名空间，strm 定向同步的目标）。
 
+    记录只认 claim_records 认领到的（原始路径在转存落点下 + id > 触发前分界）——旧版按
+    文件名全池匹配，同名裸名旧记录会把别的剧的整理目录混进 dests（2026-10-13 清单五销项）。
     QMS 刮削会把文件从待整理目录搬进正式目录：record.new_path 是相对整理目标根的
     新路径，目标根 = 该记录所属刮削路径的 dest_path（按 record.path 前缀匹配
-    source_path 找归属）。按文件名精确匹配（同 run_watch 匹配纪律：不按 name= 筛）。"""
+    source_path 找归属）。"""
     sps = qms.scrape_pathes() or []
+    claimed = claim_records(claim_dir, names, since_id)
     dests: dict[str, None] = {}
-    for rec in qms.scrape_records(page_size=500) or []:
-        if rec.get("file_name") not in names:
-            continue
+    for rec in claimed.values():
         src = (rec.get("path") or "").strip()
         new_path = (rec.get("new_path") or "").strip("/")
         if not new_path:
@@ -119,7 +175,35 @@ def _scrape_dest_dirs(names: set[str]) -> list[str]:
     return list(dests)
 
 
-def _fire_strm(strm_id: int, names: set[str]) -> dict:
+def _await_sync_done(dests: list[str], local: str, fired_ts: int) -> dict[str, dict] | None:
+    """轮询 QMS 同步任务记录，等本次**定向同步**到终态（2026-10-13 用户定稿：要确定性结果，
+    不要「已触发」假终态——出问题如实标失败，用户自己去 QMS 调整）。
+
+    认领规则：remote_path 归一化 == dest、local_path == 同步落点、created_at ≥ 触发时刻-5s
+    （防串台：同目录的旧任务不算）。全部 dest 都有终态（status 2=完成 / 3=失败）才收工；
+    超时（SYNC_WAIT_TIMEOUT）把已认领的一并返回——调用方对「一条没有 / 没凑齐 / 没到终态」
+    一律回落「已触发」+ Emby 90s 定时旧口径。"""
+    deadline = time.time() + SYNC_WAIT_TIMEOUT
+    want = {d.strip("/") for d in dests}
+    found: dict[str, dict] = {}
+    while True:
+        for r in qms.sync_records() or []:
+            key = str(r.get("remote_path") or "").strip("/")
+            if (
+                key in want
+                and key not in found
+                and str(r.get("local_path") or "").strip("/") == local.strip("/")
+                and int(r.get("created_at") or 0) >= fired_ts - 5
+            ):
+                found[key] = r
+        if found and len(found) == len(want) and all(r.get("status") in (2, 3) for r in found.values()):
+            return found
+        if time.time() > deadline:
+            return found or None
+        time.sleep(SYNC_POLL_INTERVAL)
+
+
+def _fire_strm(strm_id: int, names: set[str], claim_dir: str = "", since_id: int = 0) -> dict:
     """STRM 触发的统一入口：**定向优先，失败回退**。
 
     - 定向（QMS /api/sync/manual 临时任务）：只扫本次文件整理后的目录（dest_path），
@@ -127,8 +211,10 @@ def _fire_strm(strm_id: int, names: set[str]) -> dict:
       仅 openlist 类型的同步路径可用（用户现配就是；网盘直连类型需要真 path_id，
       PanKeeper 拿不到，直接回退）；
     - 定向落盘 = 同步路径 local_path + openlist 完整路径，与常规同步布局一致；
-    - 任何失败 → 回退整路径同步（QMS 自己刷新 Emby）；定向是临时任务（跳过刷新），
-      由 PanKeeper 延迟 90s 补一次 Emby 刷新（借 QMS 配的 Emby 地址/ApiKey，尊重其开关）。"""
+    - 任何失败 → 回退整路径同步（QMS 自己刷新 Emby）；定向是临时任务（跳过刷新），由
+      PanKeeper 等同步记录到终态后逐目录刷 Emby（借 QMS 配的 Emby 地址/ApiKey，尊重其开关；
+      2026-10-13 起快照按 /api/sync/records 如实升级：已生成 N 个 STRM / 同步失败：原因，
+      等不到记录才回落「已触发」+ 90s 定时）。"""
     try:
         sp = qms.get_sync_path(strm_id)
         if not sp:
@@ -140,7 +226,7 @@ def _fire_strm(strm_id: int, names: set[str]) -> dict:
         account_id = int(sp.get("account_id") or 0)
         if not local or not account_id or not remote:
             raise AdapterError("同步路径缺 local_path/remote_path/account_id")
-        dests = [d for d in _scrape_dest_dirs(names) if (d.strip("/") + "/").startswith(remote + "/")]
+        dests = [d for d in _scrape_dest_dirs(names, claim_dir, since_id) if (d.strip("/") + "/").startswith(remote + "/")]
         if not dests:
             raise AdapterError("刮削记录里没有落在该同步路径下的目录")
         for d in dests:
@@ -149,31 +235,66 @@ def _fire_strm(strm_id: int, names: set[str]) -> dict:
                 raise AdapterError(f"QMS 拒绝定向同步 {d}：{msg}")
             print(f"[run-watch] STRM 定向同步：{d}（只扫本次目录）", flush=True)
 
-        # STRM 落盘目录 = 同步 local_path + 本次刮削目录相对 remote 的部分
-        hint = local.rstrip("/") + dests[0][len(remote):]
-        # 推送文案用：Emby 刷新是否已排定 + 所属库名（开关没开/匹配不到就空，推送不展示）
-        emby_name = qms.emby_library_name(hint)
-        watchable = os.path.isdir(local)
+        # 等 QMS 同步任务真终态（2026-10-13 用户定稿：要确定性结果，不要「已触发」假终态
+        # ——出问题如实标失败，用户自己去 QMS 调整；实测定向任务 1~5s 完成）
+        fired_ts = int(time.time())
+        verified = _await_sync_done(dests, local, fired_ts)
+        if verified is None or len(verified) < len(dests) or any(r.get("status") not in (2, 3) for r in verified.values()):
+            # 等不到/没凑齐同步记录（超时/QMS 异常）：回落旧口径——「已触发」+ Emby 90s 定时补刷
+            print(f"[run-watch] STRM 同步记录没等到终态（超时 {SYNC_WAIT_TIMEOUT}s 或 QMS 异常），快照回落「已触发」、Emby 走 90s 定时", flush=True)
+            hint = local.rstrip("/") + "/" + dests[0].strip("/")
+            emby_name = qms.emby_library_name(hint)
+            watchable = os.path.isdir(local)
 
-        def _emby_later() -> None:
-            # 等 STRM 真落盘（2026-10-13 用户定稿）：轮询本次目录里的 .strm 文件，
-            # 落盘即刻按「所属媒体库」刷 Emby，不全库扫；容器看不到 STRM 本地挂载
-            # （watchable 为假）时退回 90s 定时；轮询 5 分钟没见到也照刷兜底
-            if watchable:
-                deadline = time.time() + 300
-                while time.time() < deadline:
-                    if os.path.isdir(hint) and any(f.endswith(".strm") for f in os.listdir(hint)):
-                        break
-                    time.sleep(5)
-            else:
-                time.sleep(90)
-            ok2, msg2 = qms.refresh_emby_library(path_hint=hint)
-            print(f"[run-watch] Emby 媒体库刷新（定向同步补，{'落盘触发' if watchable else '90s 定时'}）：{'成功' if ok2 else msg2}", flush=True)
+            def _emby_later() -> None:
+                # 容器看得到 STRM 本地挂载时轮询 .strm 落盘即刻刷；看不到退 90s 定时；
+                # 轮询 5 分钟没见到也照刷兜底
+                if watchable:
+                    deadline = time.time() + 300
+                    while time.time() < deadline:
+                        if os.path.isdir(hint) and any(f.endswith(".strm") for f in os.listdir(hint)):
+                            break
+                        time.sleep(5)
+                else:
+                    time.sleep(90)
+                ok2, msg2 = qms.refresh_emby_library(path_hint=hint)
+                # msg2 必须透出：按库成功=「已按库刷新「xx」」；空串=没匹配到库退的全库。
+                # 只打「成功」两种结局长得一样（2026-10-13 路径拼接 bug 借这个盲区藏了一整晚）
+                print(
+                    f"[run-watch] Emby 媒体库刷新（定向同步补，{'落盘触发' if watchable else '90s 定时'}）："
+                    + (f"成功 · {msg2 or '按库未命中，退全库刷新'}" if ok2 else msg2),
+                    flush=True,
+                )
 
-        threading.Thread(target=_emby_later, daemon=True).start()
-        # 定向同步是"直接生成"（QMS 日志里就是 [生成 STRM]），不是触发同步目录任务——
-        # 口径如实：QMS 任务列表里看到的是 ID=0 的临时任务（2026-10-04 用户纠正日志口径）
-        return {"st": "已触发（定向临时任务）", "cls": "t-ok", "emby": emby_name}
+            threading.Thread(target=_emby_later, daemon=True).start()
+            return {"st": "已触发", "cls": "t-ok", "emby": emby_name}
+
+        # 同步记录到终态：逐目录刷 Emby（同步完成即刷，替代 90s 盲等），所属库名进推送
+        time.sleep(2)  # 缓 2s 等落盘句柄收尾
+        ok_recs = [(d, r) for d, r in verified.items() if r.get("status") == 2]
+        bad_recs = [(d, r) for d, r in verified.items() if r.get("status") == 3]
+        new_strm = sum(int(r.get("new_strm") or 0) for _, r in ok_recs)
+        lib_names: list[str] = []
+        for d, _r in ok_recs:
+            hint_d = local.rstrip("/") + "/" + d.strip("/")
+            ok2, msg2 = qms.refresh_emby_library(path_hint=hint_d)
+            name = qms.emby_library_name(hint_d)
+            if name:
+                lib_names.append(name)
+            print(
+                f"[run-watch] Emby 媒体库刷新（同步完成触发，{d.strip('/')}）："
+                + (f"成功 · {msg2 or '按库未命中，退全库刷新'}" if ok2 else msg2),
+                flush=True,
+            )
+        emby_join = "／".join(lib_names)
+        # 快照按同步记录如实升级；临时任务 ID=0 的口径不变（2026-10-04 用户纠正日志口径）
+        if bad_recs:
+            reason = "；".join(f"{d.strip('/')}：{r.get('fail_reason') or '未知原因'}" for d, r in bad_recs)
+            st = f"同步失败：{reason}" + (f"（其余目录已生成 {new_strm} 个 STRM）" if new_strm else "")
+            return {"st": st, "cls": "t-bad", "emby": emby_join}
+        if new_strm:
+            return {"st": f"已生成（新增 {new_strm} 个 STRM）", "cls": "t-ok", "emby": emby_join}
+        return {"st": "同步完成，无新增 STRM（目录里没有新文件）", "cls": "t-ok", "emby": emby_join}
     except Exception as e:  # noqa: BLE001 —— 回退口：定向失败绝不把 STRM 弄丢
         print(f"[run-watch] STRM 定向同步失败（{e}），回退整路径同步", flush=True)
         ok, msg = qms.trigger_strm(strm_id)
@@ -187,18 +308,25 @@ def trigger_strm_after_scrape(
     delay: int = 10,
     timeout: int = SCRAPE_WAIT_TIMEOUT,
     table=RunHistory,
+    claim_dir: str = "",
 ) -> None:
     """等 QMS 刮削**真的跑完**，再等 delay 秒，才触发 STRM 同步（对齐参照项目 bdsavepro 语义）。
 
     为什么不能只等固定秒数（原实现）：刮削比间隔慢时，STRM 会在刮完前触发 → 生成的 strm
     可能基于不完整的元数据（用户 2026-10-04 追问过这个差异，当场改成真等）。
 
-    完成判据（QMS `GET /api/scrape/pathes/{id}` 实测字段 `is_running`/`is_scraping`/`updated_at`）：
-    **曾亲眼看到它忙（is_running≠0 或 is_scraping）→ 现在不忙了 = 跑完**。
-    为什么不能只认 `updated_at >= 触发时刻`（bdsavepro 的判据）：实测该字段是**路径行的更新时间**，
-    不一定随每次刮削前进（2026-10-04 实测：刚触发时它还是 12 分钟前的值）——只认它会永远等不到、
-    白白超时导致 STRM 再也不触发。所以 updated_at 只作为**辅助信号**（触发后被更新过也算证据）。
-    取不到状态（QMS 未启用/接口异常）→ 退化成"等 delay 秒直接触发"，不把能力弄丢。
+    完成判据 2026-10-13 起两条取或：
+    (a) 路径状态（QMS `GET /api/scrape/pathes/{id}` 实测字段）：**曾亲眼看到它忙
+        （is_running≠0 或 is_scraping）→ 现在不忙了 = 跑完**。updated_at 只作辅助
+        （触发后被更新过也算证据）——实测它是路径行的更新时间，不一定随每次刮削前进
+        （2026-10-04：刚触发时它还是 12 分钟前的值）。
+    (b) 记录池认领：本次转存的全部视频文件都有「id > 触发前分界、原始路径（source_full_path）
+        落在转存落点 claim_dir 下」的终态记录。为什么需要：快刮（首个轮询间隔内跑完）+
+        updated_at 不前进时 (a) 的两条证据都会缺席，旧实现只能干等超时、STRM 永不触发
+        （2026-10-13 定稿，认领规则见 claim_records）。
+
+    claim_dir 拿不到（空串）→ (b) 自动禁用，退回 (a)+超时的旧口径。
+    取不到路径状态（QMS 未启用/接口异常）→ 退化成"等 delay 秒直接触发"，不把能力弄丢。
     超时（默认 5 分钟）→ 记「未确认（刮削超时，未触发 STRM）」，**不触发 STRM**（宁缺勿错）。
 
     全程走后台守护线程：自动流程的队列 worker 不能被这几分钟堵住。
@@ -206,9 +334,15 @@ def trigger_strm_after_scrape(
     def _job() -> None:
         trigger_ts = int(time.time())
         deadline = time.time() + max(1, int(timeout))
+        # 本次要等的视频文件 + 记录池 id 分界：完成判据 (b)、失败判定、定向目录推导
+        # 三处共用同一份认领（claim_records，按原始路径认领、同名跨剧出局）
+        names = video_names(_record_names(run_id, table))
+        base = (claim_dir or "").strip()
+        since_id = _records_max_id() if base and names else 0
         reached = False
         degraded = False
         seen_busy = False  # 是否亲眼见过这条刮削路径在忙（本次触发真的跑起来了的硬证据）
+        want = set(names)
         while True:
             st = qms.scrape_path_status(qms_id)
             if st is None:
@@ -221,6 +355,15 @@ def trigger_strm_after_scrape(
             elif seen_busy or updated >= trigger_ts - CLOCK_TOLERANCE:
                 reached = True
                 break
+            if not reached and base and want:
+                claimed = claim_records(base, want, since_id)
+                if want <= claimed.keys() and all(
+                    r.get("status") in TERMINAL_STATUS or r.get("status") in IGNORE_STATUS
+                    for r in claimed.values()
+                ):
+                    reached = True
+                    print(f"[run-watch] QMS 刮削 #{qms_id} 完成（记录池判据：本次 {len(claimed)} 个文件全部终态）", flush=True)
+                    break
             if time.time() > deadline:
                 break
             time.sleep(SCRAPE_POLL_INTERVAL)
@@ -232,38 +375,30 @@ def trigger_strm_after_scrape(
                 _STRM_RESULTS[f"{table.__name__}:{run_id}"] = snap
             print(f"[run-watch] QMS 刮削 #{qms_id} 等待超时（{timeout}s），不触发 STRM", flush=True)
             return
-        names: list[str] = []
         if degraded:
             print(f"[run-watch] 取不到 QMS 刮削状态，退化为等 {delay}s 后直接触发 STRM", flush=True)
-        else:
-            # QMS 刮削有失败 → 不生成 STRM（2026-10-04 用户："刮削失败了就不用生成 strm 了没意义"）
-            # STRM 同步是目录级的，刮失败的文件生成了也是垃圾；想补救走「重新触发 QMS」（重刷成功会照常续上 STRM）
-            names = _record_names(run_id, table)
-            if names:
-                want = set(names)
-                statuses: dict[str, str] = {}
-                for r in qms.scrape_records(page_size=PAGE_SIZE) or []:
-                    fn = r.get("file_name")
-                    if fn in want and fn not in statuses and r.get("status") not in IGNORE_STATUS:
-                        statuses[fn] = r.get("status")
-                failed = [n for n, s_ in statuses.items() if s_ in FAILED_STATUS]
-                if failed:
-                    snap = {"st": f"QMS 刮削失败 {len(failed)} 项，未生成 STRM", "cls": "t-off"}
-                    if run_id:
-                        _write_strm(run_id, snap, table)
-                        _STRM_RESULTS[f"{table.__name__}:{run_id}"] = snap
-                    print(f"[run-watch] QMS 刮削有失败（{len(failed)}/{len(statuses)}），不触发 STRM #{strm_id}", flush=True)
-                    return
+        elif want:
+            # QMS 刮削有失败 → 不生成 STRM（2026-10-04 用户："刮削失败了就不用生成 strm 了没意义"）。
+            # 失败判定同样走认领——旧按名全池匹配会把同名旧失败记录算到本次头上；认领不到的
+            # 文件算「未见」不算失败（与 _wait 口径一致）。想补救走「重新触发 QMS」
+            failed = [fn for fn, r in claim_records(base, want, since_id).items() if r.get("status") in FAILED_STATUS]
+            if failed:
+                snap = {"st": f"QMS 刮削失败 {len(failed)} 项，未生成 STRM", "cls": "t-off"}
+                if run_id:
+                    _write_strm(run_id, snap, table)
+                    _STRM_RESULTS[f"{table.__name__}:{run_id}"] = snap
+                print(f"[run-watch] QMS 刮削有失败（{failed}），不触发 STRM #{strm_id}", flush=True)
+                return
 
         time.sleep(max(0, int(delay)))
         # 定向同步（只扫本次文件整理后的目录）需要本次文件名集合；拿不到就整路径
         names_set = set(names) if names else set(_record_names(run_id, table))
-        if names_set:            snap = _fire_strm(strm_id, names_set)
+        if names_set:            snap = _fire_strm(strm_id, names_set, base, since_id)
         else:
             ok, msg = qms.trigger_strm(strm_id)
             # 「已触发」用绿色（t-ok）：STRM 没有结果查询接口，触发成功就是这条链路的最好结局
             # （2026-10-04 用户要求改绿；QMS 的"已触发"保持灰——它随后会被真实结果回填替换）
-            snap = {"st": "已触发（整路径同步）" if ok else f"失败 · {msg}", "cls": "t-ok" if ok else "t-bad"}
+            snap = {"st": "已触发" if ok else f"失败 · {msg}", "cls": "t-ok" if ok else "t-bad"}
         if run_id:
             _write_strm(run_id, snap, table)
             _STRM_RESULTS[f"{table.__name__}:{run_id}"] = snap  # 推送线程（media_push._wait_strm）来取
@@ -358,13 +493,16 @@ def _wait(names: list[str], baseline: dict[str, list] | None = None) -> tuple[li
     want = set(video_names(names))
     if not want:  # 清单里没有视频（纯杂件）→ QMS 本就无可等记录，立即放行
         return [], "done"
+    # 记录窗口分界：基线里最旧的记录 id——再往前都是与本次无关的历史，不必读
+    base_ids = [v[0] for v in baseline.values() if v and v[0]]
+    base_watermark = min(base_ids) if base_ids else 0
     deadline = time.time() + POLL_TIMEOUT
     stale_deadline = time.time() + NO_RECORD_TIMEOUT
     dedup_deadline = time.time() + DEDUP_WAIT
     seen_max_id = 0
     initial_max_id: int | None = None
     while True:
-        rows = qms.scrape_records(page_size=PAGE_SIZE) or []
+        rows = _records_window(base_watermark)
         max_id = max((int(r.get("id") or 0) for r in rows), default=0)
         if initial_max_id is None:
             initial_max_id = max_id
@@ -407,7 +545,7 @@ def _summary(recs: list[dict], names: list[str]) -> dict:
     if not recs:
         return {"st": "未见刮削记录", "cls": "t-off"}
     if fail:
-        st = f"成功 {ok} / 失败 {fail}" if ok else f"失败 {fail} 项（详见 QMS）"
+        st = f"成功 {ok} / 失败 {fail}" if ok else f"失败 {fail} 项"
         return {"st": st, "cls": "t-bad"}
     if missing:
         return {"st": f"成功 {ok} / 未见记录 {missing}", "cls": "t-off"}

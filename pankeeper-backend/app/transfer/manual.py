@@ -90,6 +90,13 @@ def run_manual(eng, t: dict, cfg: dict) -> None:
         # 资源名/任务名（队列任务名 = 更名值或资源名）：建壳时没填更名就用它当壳名
         share_name=_clean_folder_name(t["name"]),
     )
+    # STRM 等刮削的记录认领目录（openlist 命名空间，建壳含壳名）：本次文件的刮削记录
+    # source_full_path 都在它下面，按它认领（2026-10-13 定稿，见 run_watch.claim_records）
+    t["_claim_dir"] = "/" + t["path"].strip("/")
+    if spec.with_shell:
+        shell = spec.folder_rename or spec.share_name
+        if shell:
+            t["_claim_dir"] = t["_claim_dir"].rstrip("/") + "/" + shell
     if not spec.share_url:
         _push_log(t, "ERROR", "任务缺少分享链接（shareUrl），无法转存")
         _finish(eng, t, "fail")
@@ -236,7 +243,7 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
         t["phaseStart"] = int(time.time() * 1000)
         ok_s, msg_s = qms.trigger_strm(int(strm_id))
         strm_snap = {"st": "已触发（反转·先行）" if ok_s else f"失败 · {msg_s}", "cls": "t-ok" if ok_s else "t-bad"}
-        _push_log(t, "INFO" if ok_s else "ERROR", f"（反转）STRM 同步 #{strm_id} 先行触发{'成功' if ok_s else '失败'}：{msg_s or '详见 QMS 侧日志'}")
+        _push_log(t, "INFO" if ok_s else "ERROR", f"（反转）STRM 同步 #{strm_id} 先行触发{'成功' if ok_s else '失败'}" + (f"：{msg_s}" if msg_s else ""))
         _sleep_phase(eng, t, "waitstrm", int(cfg.get("strm", 10)), f"等待 {cfg.get('strm', 10)} 秒后触发 QMS 刮削（反转模式）")
     elif reverse:
         # 校验在前端拦了，这里是执行侧兜底：没 STRM 就按默认顺序走，不把联动弄丢
@@ -251,11 +258,11 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
     # 与自动转存同款口径（2026-10-04 用户要求："qms那已经是刮削失败了，pankeeper还显示qms触发成功"）：
     # 触发受理 ≠ 刮削成功，快照先如实写「已触发」，真实结果由 run_watch 后台轮询回填
     qms_snap = {"st": "已触发" if ok else f"失败 · {msg}", "cls": "t-off" if ok else "t-bad"}
-    _push_log(t, "INFO" if ok else "ERROR", f"QMS 刮削任务 #{qms_id} 触发{'成功' if ok else '失败'}：{msg or '详见 QMS 侧日志'}")
+    _push_log(t, "INFO" if ok else "ERROR", f"QMS 刮削任务 #{qms_id} 触发{'成功' if ok else '失败'}" + (f"：{msg}" if msg else ""))
     if strm_id is not None and ok and not t.get("_media_reverse"):
         # 默认顺序：STRM 挂后台等刮削完成再触发。反转模式已在上面先触发过，不再挂
         strm_snap = {"st": "等待刮削完成…", "cls": "t-off"}
-        _push_log(t, "STEP", f"STRM 联动已挂后台（同步目录 #{strm_id}）：QMS 刮削成功后自动触发定向同步临时任务（成功才生成）")
+        _push_log(t, "STEP", f"STRM（同步目录 #{strm_id}）：QMS 刮削成功后自动触发")
 
     # 推送（watch_and_spawn）挪到 _finish 落库后：那里才有 record id，推送线程才能等 STRM 结果
     return qms_snap, strm_snap
@@ -274,8 +281,12 @@ def _strm_for_qms(qms_id: int) -> int | None:
 
 
 def _match_dd_link(path: str) -> dict | None:
+    """转存目录 → 配置的 QMS/STRM 关联：前缀命中里取**最长**（最具体的配置赢），
+    与添加顺序无关（2026-10-13 清单七：嵌套目录时旧实现按库序首个命中，会命中宽的那条；
+    auto 侧 _hit_dd_dir 一直是正确写法，这边看齐）。"""
     with SessionLocal() as s:
-        for d in s.query(DdItem).filter(DdItem.qms_on.is_(True), DdItem.qms_id.isnot(None)).all():
+        rows = s.query(DdItem).filter(DdItem.qms_on.is_(True), DdItem.qms_id.isnot(None)).all()
+        for d in sorted(rows, key=lambda x: len(x.path or ""), reverse=True):
             if path == d.path or path.startswith(d.path.rstrip("/") + "/"):
                 return {"qms_id": d.qms_id, "strm_id": d.strm_id}
     return None
@@ -348,23 +359,27 @@ def _finish(eng, t: dict, status: str, message: str = "", qms_snap: dict | None 
     qms_id = media.get("qms_id")
     strm_id = media.get("strm_id")
     qms_fired = bool(qms_snap and qms_snap.get("st") == "已触发")
-    if result and result.transferred and qms_fired:
+    # 触发过但被拒（快照「失败 ·」开头）也推——转存成功联动挂了，手机必须知道（2026-10-13 清单四）
+    qms_attempted = bool(qms_snap and str(qms_snap.get("st", "")).startswith("失败"))
+    if result and result.transferred and (qms_fired or qms_attempted):
         from ..services import media_push, run_watch
     
         names = [e.get("name") for e in result.transferred]
         baseline = t.get("_qms_baseline") or {}
         strm_plan = None
-        run_watch.watch_qms(rid, t["name"].split(".")[0], names, baseline=baseline, table=Record)
-        if strm_id and not t.get("_media_reverse"):
-            # 反转模式 STRM 已先行触发过（run_watch 会回填 QMS 真实结果，但不再挂 STRM 线程）
-            delay = int(get_group("queue_cfg").get("strm", 10))
-            strm_plan = {"strm_id": int(strm_id), "delay": delay}
-            run_watch.trigger_strm_after_scrape(rid, int(qms_id), int(strm_id), delay, table=Record)
+        if qms_fired:
+            run_watch.watch_qms(rid, t["name"].split(".")[0], names, baseline=baseline, table=Record)
+            if strm_id and not t.get("_media_reverse"):
+                # 反转模式 STRM 已先行触发过（run_watch 会回填 QMS 真实结果，但不再挂 STRM 线程）
+                delay = int(get_group("queue_cfg").get("strm", 10))
+                strm_plan = {"strm_id": int(strm_id), "delay": delay}
+                run_watch.trigger_strm_after_scrape(rid, int(qms_id), int(strm_id), delay, table=Record,
+                                                    claim_dir=t.get("_claim_dir") or "")
         media_push.watch_and_spawn({
             "drive": t["type"],
             "task": t["name"].split(".")[0],
             "names": names,
-            "qms_ok": True if qms_fired else None,
+            "qms_ok": qms_fired,
             "strm_plan": strm_plan,
             "run_id": rid,
             "strm_table": "Record",
