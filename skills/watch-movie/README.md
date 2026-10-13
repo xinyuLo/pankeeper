@@ -1,6 +1,6 @@
 # watch-movie — AI 一句话找片转存 Skill
 
-把「我想看《xxx》」变成一句话的事：AI 帮你搜资源、挑 4K 正片、确认后调 PanKeeper 转存入队，后续队列、过滤、QMS 整理、Server酱 推送全部由 PanKeeper 自己完成。
+把「我想看《xxx》」变成一句话的事：AI 帮你搜资源、挑 4K 正片、确认后调 PanKeeper 转存入队，后续队列、过滤、QMS 整理、完成通知推送（Server酱/Bark/Webhook，按你的配置）全部由 PanKeeper 自己完成。
 
 也可以直接把网盘分享链接（百度 / 夸克 / 115）甩给 AI，验证后一键转存。
 
