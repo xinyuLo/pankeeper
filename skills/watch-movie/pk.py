@@ -326,6 +326,24 @@ def cmd_config(args) -> None:
     print(json.dumps({"ok": True, args.key: shown}, ensure_ascii=False))
 
 
+CHANNEL_LABELS = {"serverchan": "Server酱", "bark": "Bark", "webhook": "Webhook"}
+CHANNEL_KEY_FIELDS = {"serverchan": "sendkey", "bark": "device_key", "webhook": "url"}
+
+
+def cmd_notify_channel(_args) -> None:
+    """查用户配置的通知通道（汇报「结果看 xx 推送」用）——通道在设置页单选，汇报里别写死。"""
+    data = call("/api/settings")
+    n = data.get("notify") or {}
+    if not n.get("enabled"):
+        print(json.dumps({"ok": False, "channel": None, "label": None,
+                          "reason": "通知总开关未开启"}, ensure_ascii=False))
+        return
+    ch = (n.get("channel") or "").strip()
+    label = CHANNEL_LABELS.get(ch, ch or "未知")
+    configured = bool((n.get(ch) or {}).get(CHANNEL_KEY_FIELDS.get(ch, "")))
+    print(json.dumps({"ok": True, "channel": ch, "label": label, "configured": configured}, ensure_ascii=False))
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="pankeeper API client (watch-movie skill)")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -364,6 +382,9 @@ def main() -> None:
     e.set_defaults(fn=cmd_enqueue)
 
     sub.add_parser("state").set_defaults(fn=cmd_state)
+
+    nc = sub.add_parser("notify-channel", help="查询设置页配置的通知通道（Server酱/Bark/Webhook）")
+    nc.set_defaults(fn=cmd_notify_channel)
 
     c = sub.add_parser("config", help="查看/设置配置（问用户要一次就存起来）")
     c.add_argument("key", nargs="?", default=None)

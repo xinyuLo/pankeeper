@@ -3,12 +3,12 @@ name: watch-movie
 metadata:
   author: xinyuLo
   version: "1.0"
-description: "帮用户搜索影视资源并转存到网盘（百度/夸克/115，走 NAS 上的 pankeeper），也支持用户直接甩分享链接转存。当用户说「我想看/我要看 xxx 电影/电视剧/综艺/动漫」「帮我找/存 xxx 资源」「把 xxx 转存到网盘」，或直接发来 pan.baidu.com / pan.quark.cn / 115 分享链接让转存时触发。流程：核实片名（结合 pankeeper 历史与 TMDB 识别）→ 确认电影还是电视节目 → 搜索资源（或用用户给的链接）→ 4K 优先挑正片 → 用户确认 → 调 pankeeper 转存接口入队。转存后由 pankeeper 自行完成队列、过滤、QMS 整理和 Server酱 推送。"
+description: "帮用户搜索影视资源并转存到网盘（百度/夸克/115，走 NAS 上的 pankeeper），也支持用户直接甩分享链接转存。当用户说「我想看/我要看 xxx 电影/电视剧/综艺/动漫」「帮我找/存 xxx 资源」「把 xxx 转存到网盘」，或直接发来 pan.baidu.com / pan.quark.cn / 115 分享链接让转存时触发。流程：核实片名（结合 pankeeper 历史与 TMDB 识别）→ 确认电影还是电视节目 → 搜索资源（或用用户给的链接）→ 4K 优先挑正片 → 用户确认 → 调 pankeeper 转存接口入队。转存后由 pankeeper 自行完成队列、过滤、QMS 整理和完成通知推送（通道按用户设置：Server酱/Bark/Webhook）。"
 ---
 
 # watch-movie — 找片转存 SOP
 
-替用户跑通「搜资源 → 转存入队」的前置流程。转存入队成功即交接完成，**后续（队列/过滤/QMS/Server酱推送）pankeeper 自己跑，skill 不跟踪不轮询**。结束时只汇报：存了什么、存哪个盘。
+替用户跑通「搜资源 → 转存入队」的前置流程。转存入队成功即交接完成，**后续（队列/过滤/QMS/通知推送）pankeeper 自己跑，skill 不跟踪不轮询**。结束时汇报：存了什么、存哪个盘、结果看哪个通道的推送（通道用 `notify-channel` 查询，别写死）。
 
 **先判入口**：用户消息里带分享链接（pan.baidu.com / pan.quark.cn / 115 等网盘域名）→ 走 **入口 B：链接直转**（第 10 节）；只有片名 → 走默认的搜索流程（第 1-7 节）。
 
@@ -112,7 +112,12 @@ echo '{...payload...}' | python3 $PK enqueue                    # 入队（限�
 
 ## 第 7 步：结束汇报（唯一输出格式）
 
-「✅ 已提交转存：《冰川时代》(2002) 4K → 夸克网盘，rename=冰川时代 (2002)，队列位置 2。结果看 Server酱 推送。」
+「✅ 已提交转存：《冰川时代》(2002) 4K → 夸克网盘，rename=冰川时代 (2002)，队列位置 2。结果看 Bark 推送。」
+
+**末句的推送通道不写死**：先跑 `python pk.py notify-channel`（返回 `{"ok":true,"channel":"bark","label":"Bark","configured":true}` 这类），按 `label` 说「结果看 {label} 推送」；
+- `configured:false` → 加一句「{label} 通道还没配 Key，收不到的话去 PanKeeper 设置页补上」；
+- `ok:false`（通知总开关没开）→ 不提推送，改说「结果可在 PanKeeper 记录页查看」。
+
 多部影片逐行列出；有被跳过的候选（死链等）附一句原因。
 
 ## 首次配置（问一次就记住，以后不再问）
