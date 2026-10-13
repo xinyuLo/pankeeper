@@ -316,6 +316,31 @@ def _bark_server(cfg: dict) -> str:
     return server
 
 
+BARK_PAYLOAD_BUDGET = 3600  # APNs 单条推送硬上限 4KB（4096B）：title/markdown 之外，URL/参数/键名约占数百字节，留余量
+
+
+def _fit_payload_markdown(md: str, title: str) -> str:
+    """把 Bark markdown 压进单条载荷预算（2026-10-13 清单六 B 案：发送前算总长，超限自动降级）。
+
+    APNs 单条 4KB 硬上限，超了 Bark 整条丢失（不是截断是丢）。超预算时从尾部按行丢
+    （尾部是简介/集行，头部统计行/标题保住），整段单行巨文本硬截断兜底。
+    只动 Bark 的 markdown——Server酱 desp 不走 APNs、照发全量（2026-10-13 全量定案不变）。
+    电影长简介/电视剧逐集简介一个逻辑，调用方无需自己掐尺寸。"""
+    budget = BARK_PAYLOAD_BUDGET - len((title or "").encode("utf-8")) - 40  # 40B 留给截断标记
+    if len(md.encode("utf-8")) <= budget:
+        return md
+    lines = md.splitlines(keepends=True)
+    while lines and len("".join(lines).encode("utf-8")) > budget:
+        lines.pop()
+    out = "".join(lines).rstrip()
+    if not out:
+        # 整段就是一行巨文本：丢行无法降级，硬截断
+        out = md.encode("utf-8")[:budget].decode("utf-8", "ignore").rstrip()
+    elif len(out.encode("utf-8")) > budget:  # 兜底（正常到不了）
+        out = out.encode("utf-8")[:budget].decode("utf-8", "ignore").rstrip()
+    return out + "\n…（超长已截断）"
+
+
 def _bark(cfg: dict, title: str, content: str, kind: str, short: str | None = None, subtitle: str | None = None, bark_id: str = "", plain: str | None = None, markdown: str | None = None, title_bark: str | None = None, cover: str | None = None) -> tuple[bool, str]:
     """Bark 通道：POST {server}/push，判活=HTTP 200 且 body code==200（`{"code":200}` 风格）。
 
@@ -344,7 +369,10 @@ def _bark(cfg: dict, title: str, content: str, kind: str, short: str | None = No
         "isArchive": 1 if cfg.get("is_archive", True) else 0,
     }
     if markdown:
-        data["markdown"] = markdown  # 传了 markdown 服务端忽略 body；横幅按纯文本降级展示
+        # 传了 markdown 服务端忽略 body；横幅按纯文本降级展示。
+        # 超 APNs 载荷预算自动降级（2026-10-13 清单六 B 案：电影长简介/逐集简介一个逻辑，
+        # 超了整条推送会丢，这里保证一定装得下）
+        data["markdown"] = _fit_payload_markdown(markdown, title_bark or title)
     else:
         data["body"] = short or plain or md_to_text(content)
     if subtitle:

@@ -11,8 +11,15 @@ import httpx
 from ..services.settings_svc import get_group
 
 
+# 客户端按 (base_url, key) 缓存复用：httpx.Client 在 Windows 上构造一次 ~0.5s（SSL 上下文），
+# 此前每个 QMS 操作/轮询都新建一个。QMS/Emby 永远是 NAS 内网/隧道目标，trust_env 必须关死——
+# httpx 会吃 Windows 系统代理且不认本地绕过名单，打内网稳定 502（notify.py 2026-10-12 在
+# bark-server 上实锤过同款，当时 qms 这边漏改）
+_CLIENTS: dict[tuple[str, str], httpx.Client] = {}
+
+
 def _client(require_enabled: bool = True, url: str | None = None, apikey: str | None = None) -> tuple[httpx.Client, str] | None:
-    """构造 QMS 客户端。
+    """构造 QMS 客户端（缓存复用，调用方不要 close）。
     - require_enabled=False 供「测试连接」使用：测的是地址与 API Key 是否可用，
       不该被「启用联动」开关挡住。
     - url / apikey 传入时优先使用（测试正在编辑、尚未保存的值），否则用库里已保存的。
@@ -22,10 +29,23 @@ def _client(require_enabled: bool = True, url: str | None = None, apikey: str | 
     if not target or (require_enabled and not cfg.get("enabled")):
         return None
     key = apikey if apikey is not None else cfg.get("apikey")
-    headers = {}
-    if key:
-        headers["X-API-Key"] = key
-    return httpx.Client(base_url=target.rstrip("/"), headers=headers, timeout=15.0), target
+    ck = (target.rstrip("/"), key or "")
+    cli = _CLIENTS.get(ck)
+    if cli is None:
+        headers = {"X-API-Key": ck[1]} if ck[1] else {}
+        cli = httpx.Client(base_url=ck[0], headers=headers, timeout=15.0, trust_env=False)
+        _CLIENTS[ck] = cli
+    return cli, ck[0]
+
+
+def _emby_client(url: str, key: str) -> httpx.Client:
+    """Emby 调用客户端（与 _CLIENTS 同缓存；trust_env=False 理由同上）。"""
+    ck = (url.rstrip("/"), key or "")
+    cli = _CLIENTS.get(ck)
+    if cli is None:
+        cli = httpx.Client(base_url=ck[0], timeout=15.0, trust_env=False)
+        _CLIENTS[ck] = cli
+    return cli
 
 
 def trigger_scrape(qms_id: int) -> tuple[bool, str]:
@@ -42,8 +62,6 @@ def trigger_scrape(qms_id: int) -> tuple[bool, str]:
         return False, str(data.get("message") or f"HTTP {resp.status_code}")
     except (httpx.HTTPError, ValueError) as e:
         return False, f"QMS 连接失败：{e}"
-    finally:
-        client.close()
 
 
 def scrape_pathes() -> list[dict] | None:
@@ -61,8 +79,6 @@ def scrape_pathes() -> list[dict] | None:
         return None
     except (httpx.HTTPError, ValueError):
         return None
-    finally:
-        client.close()
 
 
 def sync_pathes() -> list[dict] | None:
@@ -80,23 +96,22 @@ def sync_pathes() -> list[dict] | None:
         return None
     except (httpx.HTTPError, ValueError):
         return None
-    finally:
-        client.close()
 
 
-def scrape_records(name: str | None = None, status: str | None = None, page_size: int = 100) -> list[dict] | None:
+def scrape_records(name: str | None = None, status: str | None = None, page_size: int = 100, page: int = 1) -> list[dict] | None:
     """GET /api/scrape/records：查刮削记录（联动推送用——等 QMS 刮完改名再推）。
 
     返回 list（可能为空）；QMS 未启用/连接失败返回 None（调用方据此放弃本次轮询）。
     记录字段见 qMediaSync controllers/scrape.go：file_name/media_name/tmdb_id/status/
     new_file/season_number/episode_number/type 等。
-    """
+    分页实测可用（2026-10-13：page 翻页严格新→旧、pageSize=1000 照单全收、响应带 total）——
+    要读全池/跨页的调用方走 run_watch._records_window，别只拉一页。"""
     c = _client()
     if c is None:
         return None
     client, _ = c
     try:
-        params: dict = {"page": 1, "pageSize": page_size}
+        params: dict = {"page": page, "pageSize": page_size}
         if name:
             params["name"] = name
         if status:
@@ -108,8 +123,6 @@ def scrape_records(name: str | None = None, status: str | None = None, page_size
         return None
     except (httpx.HTTPError, ValueError):
         return None
-    finally:
-        client.close()
 
 
 def clear_scrape_records(ids: list[int]) -> tuple[bool, str]:
@@ -135,8 +148,6 @@ def clear_scrape_records(ids: list[int]) -> tuple[bool, str]:
         return False, str(data.get("message") or f"HTTP {resp.status_code}")
     except (httpx.HTTPError, ValueError) as e:
         return False, f"QMS 连接失败：{e}"
-    finally:
-        client.close()
 
 
 def scrape_path_status(path_id: int) -> dict | None:
@@ -159,8 +170,6 @@ def scrape_path_status(path_id: int) -> dict | None:
         return None
     except (httpx.HTTPError, ValueError):
         return None
-    finally:
-        client.close()
 
 
 def trigger_strm(strm_id: int) -> tuple[bool, str]:
@@ -177,8 +186,6 @@ def trigger_strm(strm_id: int) -> tuple[bool, str]:
         return False, str(data.get("message") or f"HTTP {resp.status_code}")
     except (httpx.HTTPError, ValueError) as e:
         return False, f"QMS 连接失败：{e}"
-    finally:
-        client.close()
 
 
 def get_sync_path(strm_id: int) -> dict | None:
@@ -200,8 +207,6 @@ def get_sync_path(strm_id: int) -> dict | None:
         return None
     except (httpx.HTTPError, ValueError):
         return None
-    finally:
-        client.close()
 
 
 def manual_sync(path_id: str, path: str, target_path: str, account_id: int, is_file: bool = False) -> tuple[bool, str]:
@@ -227,8 +232,27 @@ def manual_sync(path_id: str, path: str, target_path: str, account_id: int, is_f
         return False, str(data.get("message") or f"HTTP {resp.status_code}")
     except (httpx.HTTPError, ValueError) as e:
         return False, f"QMS 连接失败：{e}"
-    finally:
-        client.close()
+
+
+def sync_records(page_size: int = 200) -> list[dict] | None:
+    """GET /api/sync/records —— STRM 同步任务记录（新→旧，UI「同步任务」列表，只留 7 天）。
+
+    2026-10-13 实测字段：status（2=已完成 / 3=失败）、remote_path（定向临时任务=目标目录
+    全路径；常规同步=remote 原样无前导斜杠）、local_path、new_strm（本次真实新增的 strm
+    文件数）、total（扫描文件数）、fail_reason、finish_at、is_full_sync（定向临时任务=False）。
+    失败/未启用返回 None（调用方回落「已触发」口径）。"""
+    c = _client()
+    if c is None:
+        return None
+    client, _ = c
+    try:
+        resp = client.get("/api/sync/records", params={"page": 1, "pageSize": page_size})
+        data = resp.json()
+        if resp.status_code == 200 and data.get("code") in (0, 200):
+            return (data.get("data") or {}).get("records") or []
+        return None
+    except (httpx.HTTPError, ValueError):
+        return None
 
 
 def get_emby_config() -> dict | None:
@@ -250,8 +274,6 @@ def get_emby_config() -> dict | None:
         return None
     except (httpx.HTTPError, ValueError):
         return None
-    finally:
-        client.close()
 
 
 def refresh_emby_library(path_hint: str | None = None) -> tuple[bool, str]:
@@ -278,7 +300,7 @@ def refresh_emby_library(path_hint: str | None = None) -> tuple[bool, str]:
             scoped = _refresh_emby_scoped(url, key, path_hint)
             if scoped:
                 return True, scoped
-        resp = httpx.post(f"{url}/Library/Refresh", params={"api_key": key}, timeout=15)
+        resp = _emby_client(url, key).post("/Library/Refresh", params={"api_key": key})
         if resp.status_code in (200, 204):
             return True, ""
         return False, f"Emby 返回 HTTP {resp.status_code}"
@@ -307,7 +329,7 @@ def _match_emby_folder(url: str, key: str, path_hint: str) -> dict | None:
     """在 Emby 虚拟库列表里找包含 path_hint 的库（Locations 前缀互含即命中），
     找不到返回 None。"""
     hint = path_hint.strip().strip("/")
-    vf = httpx.get(f"{url}/Library/VirtualFolders", params={"api_key": key}, timeout=15)
+    vf = _emby_client(url, key).get("/Library/VirtualFolders", params={"api_key": key})
     if vf.status_code != 200:
         return None
     for folder in vf.json() or []:
@@ -325,10 +347,9 @@ def _refresh_emby_scoped(url: str, key: str, path_hint: str) -> str:
     item_id = (target or {}).get("ItemId")
     if not target or not item_id:
         return ""
-    resp = httpx.post(
-        f"{url}/Items/{item_id}/Refresh",
+    resp = _emby_client(url, key).post(
+        f"/Items/{item_id}/Refresh",
         params={"api_key": key, "Recursive": "true", "MetadataRefreshMode": "Default", "ImageRefreshMode": "Default"},
-        timeout=15,
     )
     if resp.status_code in (200, 204):
         return f"已按库刷新「{target.get('Name') or item_id}」"
@@ -390,5 +411,3 @@ def test_connection(url: str | None = None, apikey: str | None = None) -> tuple[
         return False, f"HTTP {resp.status_code}（检查地址或 API Key）"
     except (httpx.HTTPError, ValueError) as e:
         return False, f"连接失败：{e}"
-    finally:
-        client.close()

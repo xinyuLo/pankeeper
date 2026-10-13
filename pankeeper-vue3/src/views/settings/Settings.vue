@@ -184,7 +184,7 @@ function onNotifySw(v: boolean | string | number) {
 /** 通知通道下拉（单选，2026-10-12 定案）：只发选中的一路；切换后下方参数表单跟着换，各通道参数分开保存 */
 const CHANNEL_OPTS = [
   { value: 'serverchan', label: 'Server 酱' },
-  { value: 'bark', label: 'Bark（iOS）' },
+  { value: 'bark', label: 'Bark（iOS推荐）' },
   { value: 'webhook', label: '自定义 Webhook' },
 ]
 const BARK_LEVEL_OPTS = [
@@ -639,6 +639,7 @@ async function onRemoveAvatar() {
             <label>提醒级别</label>
             <div class="ctl">
               <a-select v-model:value="notify.bark.level" :options="BARK_LEVEL_OPTS" style="width: 260px" @change="flushSave('notify')" />
+              <span class="muted small">更多参数见 <a href="https://bark.day.app/#/params" target="_blank" rel="noopener noreferrer">bark 文档</a></span>
             </div>
           </div>
           <div class="formrow">
@@ -680,7 +681,7 @@ async function onRemoveAvatar() {
           <label>历史保留</label>
           <div class="ctl">
             <a-input-number v-model:value="notify.retain_days" :min="1" :max="3650" style="width: 110px" @blur="flushSave('notify')" />
-            <span class="muted small">天 · 更多参数见 <a href="https://bark.day.app/#/params" target="_blank" rel="noopener noreferrer">bark params 文档</a></span>
+            <span class="muted small">天</span>
           </div>
         </div>
       </div>
@@ -710,6 +711,7 @@ async function onRemoveAvatar() {
             <div class="ctl">
               <a-input v-model:value="qms.url" style="width: 300px" placeholder="请输入 QMS 服务地址" @blur="flushSave('qms')" />
               <a-button :loading="qmsTesting" @click="onTestQms">测试</a-button>
+              <span class="desc" style="flex-basis: 100%">为优化体验，缓存五分钟 QMS 信息；如果调整 QMS 目录请稍等五分钟或重启 PanKeeper</span>
             </div>
           </div>
           <div class="formrow">

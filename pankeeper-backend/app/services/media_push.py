@@ -121,6 +121,11 @@ def _watch_own(ctx: dict) -> None:
 
 def _watch(ctx: dict) -> None:
     try:
+        # QMS 触发失败（转存成功但联动没跑起来）：没有刮削可等，立即如实推失败，
+        # 不进 30 分钟记录轮询（2026-10-13 清单四：此前这条路上全程无推送）
+        if ctx.get("qms_ok") is False:
+            _qms_trigger_failed(ctx)
+            return
         records = _wait_records(ctx)
         strm_res = _wait_strm(ctx)  # 自动转存：等后台线程触发完 STRM，信息条才能如实显示
         emby = (strm_res or {}).get("emby") or None  # Bark/Server酱 统计行展示「触发 Emby 库刷新」
@@ -144,6 +149,21 @@ def _watch(ctx: dict) -> None:
         import traceback
 
         print("[push] 推送线程异常：\n" + traceback.format_exc(), flush=True)
+
+def _qms_trigger_failed(ctx: dict) -> None:
+    """QMS 触发失败的即时推送：转存成功但联动没跑起来，信息条 + 文件清单，不等记录（没得等）。"""
+    names = [n for n in ctx.get("names", []) if n]
+    header = _header(ctx, [], None, None)
+    file_lines = [f"- {n}" for n in names[:15]]
+    if len(names) > 15:
+        file_lines.append(f"- …等共 {len(names)} 个")
+    note = "**QMS 触发失败，刮削/STRM 均未执行。转存文件：**"
+    body = f"{header}\n\n{note}\n" + "\n".join(file_lines)
+    notify.push(f"{ctx.get('task', '转存')} · QMS 触发失败", body,
+                kind=f"{ctx.get('source', 'search')}_done",
+                title_bark=_bark_title(ctx, [], None),
+                markdown=_bark_markdown(ctx, [], None, note + "\n" + "\n".join(file_lines)))
+
 
 def _wait_strm(ctx: dict) -> dict | None:
     """等 STRM 触发结果（run_watch 后台线程完成时登记）。没配 STRM（strm_plan=None）→ None。
@@ -244,7 +264,9 @@ def _stats_list(ctx: dict, records: list[dict], strm_res: dict | None = None) ->
     stats.append(f"📦 转存 {len(ctx['names'])} {unit}")
     if ctx.get("qms_ok") is False:
         stats.append("❌ QMS 触发失败")
-    elif ctx.get("qms_ok"):
+        stats.append("❌ STRM 未触发")
+        return stats
+    if ctx.get("qms_ok"):
         # 未见记录的文件如实点名（2026-10-06）；「未见」只数视频文件——nfo/图片等杂件
         # QMS 过滤不刮、永远没有记录，不能算未见（2026-10-07 实锤：电影夹带 nfo/图片
         # 被算成未见 → 卡等待 30 分钟 → Server酱静默）
