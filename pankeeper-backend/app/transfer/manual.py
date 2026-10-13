@@ -235,7 +235,7 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
         t["phase"] = "strm"
         t["phaseStart"] = int(time.time() * 1000)
         ok_s, msg_s = qms.trigger_strm(int(strm_id))
-        strm_snap = {"st": "已触发（反转·先行）" if ok_s else f"失败 · {msg_s}", "cls": "t-ok" if ok_s else "t-bad"}
+        strm_snap = {"st": "正在生成 STRM（先行）" if ok_s else f"失败 · {msg_s}", "cls": "t-run" if ok_s else "t-bad"}
         _push_log(t, "INFO" if ok_s else "ERROR", f"（反转）STRM 同步 #{strm_id} 先行触发{'成功' if ok_s else '失败'}" + (f"：{msg_s}" if msg_s else ""))
         _sleep_phase(eng, t, "waitstrm", int(cfg.get("strm", 10)), f"等待 {cfg.get('strm', 10)} 秒后触发 QMS 刮削（反转模式）")
     elif reverse:
@@ -250,12 +250,12 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
     ok, msg = qms.trigger_scrape(int(qms_id))
     # 与自动转存同款口径（2026-10-04 用户要求："qms那已经是刮削失败了，pankeeper还显示qms触发成功"）：
     # 触发受理 ≠ 刮削成功，快照先如实写「已触发」，真实结果由 run_watch 后台轮询回填
-    qms_snap = {"st": "已触发" if ok else f"失败 · {msg}", "cls": "t-off" if ok else "t-bad"}
-    _push_log(t, "INFO" if ok else "ERROR", f"QMS 刮削任务 #{qms_id} 触发{'成功' if ok else '失败'}" + (f"：{msg}" if msg else ""))
+    qms_snap = {"st": "已触发" if ok else f"失败 · {msg}", "cls": "t-run" if ok else "t-bad"}
+    _push_log(t, "INFO" if ok else "ERROR", f"QMS 刮削任务 #{qms_id} 触发{'成功' if ok else '失败'}"
+              + (f"：{msg}" if msg else "") + ("，等待 STRM 生成" if ok and strm_id is not None else ""))
     if strm_id is not None and ok and not t.get("_media_reverse"):
         # 默认顺序：STRM 挂后台等刮削完成再触发。反转模式已在上面先触发过，不再挂
-        strm_snap = {"st": "等待刮削完成…", "cls": "t-off"}
-        _push_log(t, "STEP", f"STRM（同步目录 #{strm_id}）：QMS 刮削成功后自动触发")
+        strm_snap = {"st": "等待中", "cls": "t-wait"}
 
     # 推送（watch_and_spawn）挪到 _finish 落库后：那里才有 record id，推送线程才能等 STRM 结果
     return qms_snap, strm_snap
@@ -347,6 +347,8 @@ def _finish(eng, t: dict, status: str, message: str = "", qms_snap: dict | None 
         s.add(hist)
         s.commit()
         rid = hist.id
+    from ..services import run_watch
+    run_watch.touch_records()  # 记录已落库 → SSE 推给搜索历史页，行带着「正在整理」立即出现
     # QMS 触发受理 ≠ 刮削成功：挂真实结果回填 + STRM 等刮完再触发（有失败不生成）+ 富文本推送
     media = t.get("_media") or {}
     qms_id = media.get("qms_id")
@@ -361,12 +363,14 @@ def _finish(eng, t: dict, status: str, message: str = "", qms_snap: dict | None 
         baseline = t.get("_qms_baseline") or {}
         strm_plan = None
         if qms_fired:
-            run_watch.watch_qms(rid, t["name"].split(".")[0], names, baseline=baseline, table=Record)
+            run_watch.watch_qms(rid, t["name"].split(".")[0], names, baseline=baseline, table=Record,
+                                on_state=lambda st: run_watch.write_qms_interim(rid, st, table))
             if strm_id and not t.get("_media_reverse"):
                 # 反转模式 STRM 已先行触发过（run_watch 会回填 QMS 真实结果，但不再挂 STRM 线程）
                 delay = int(get_group("queue_cfg").get("strm", 10))
                 strm_plan = {"strm_id": int(strm_id), "delay": delay}
-            run_watch.trigger_strm_after_scrape(rid, int(qms_id), int(strm_id), delay, table=Record)
+            run_watch.trigger_strm_after_scrape(rid, int(qms_id), int(strm_id), delay, table=Record,
+                                                log_fn=lambda txt: _push_log(t, "STEP", txt))
         media_push.watch_and_spawn({
             "drive": t["type"],
             "task": t["name"].split(".")[0],

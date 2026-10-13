@@ -370,6 +370,13 @@ export function onCfgChange(fn: Listener) {
   cfgListeners.push(fn)
 }
 
+// ---- 记录快照变更事件（SSE 具名事件 records，run_watch 写 qms/strm 快照时后端推）----
+const recordsListeners: Array<() => void> = []
+
+export function onRecordsEvent(fn: () => void) {
+  recordsListeners.push(fn)
+}
+
 // ---- 启动 ----
 if (USE_MOCK) {
   syncView(stateMock())
@@ -399,6 +406,16 @@ if (USE_MOCK) {
     }
     // 后端 ~30s 一个具名心跳事件：连接还活着的证据 → 重置兜底定时器（空闲时几乎不再轮询）
     es.addEventListener('ping', () => startPolling(SSE_IDLE_POLL))
+    // 记录快照更新（回填/STRM 写库）→ 通知订阅方（搜索历史页实时自刷）
+    es.addEventListener('records', () => {
+      for (const fn of recordsListeners) {
+        try {
+          fn()
+        } catch {
+          /* ignore */
+        }
+      }
+    })
     es.onerror = () => {
       es.close()
       startPolling(2500) // 断线：退回 2.5s 轮询自愈

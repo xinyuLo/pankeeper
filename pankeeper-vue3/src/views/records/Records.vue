@@ -16,7 +16,7 @@ import { recordsStore } from '@/api/mock/records'
 import type { RecordRow } from '@/api/mock/records'
 import { listQmsPaths, listStrmPaths } from '@/api/modules/dd'
 import { getSettings } from '@/api/modules/settings'
-import { pkQueueCfgFetch } from '@/queue/engine'
+import { onRecordsEvent, pkQueueCfgFetch } from '@/queue/engine'
 import {
   clearRecords,
   deleteRecord,
@@ -36,11 +36,13 @@ import type { DdQmsPath, DdStrmPath, QueueLogLine } from '@/types/model'
 const isMobile = useIsMobile()
 
 const rows = ref<RecordRow[]>([])
+const isPending = (c?: string) => c === 't-run' || c === 't-wait'
 async function reload() {
   rows.value = await listRecords()
 }
 onMounted(async () => {
   await reload()
+  onRecordsEvent(reload) // 后端推记录快照变更（回填/STRM 写库）→ 实时自刷，不用轮询
   getSettings().then((d) => (mediaBackend.value = d.media?.backend || 'qms')).catch(() => {})
 })
 
@@ -366,9 +368,9 @@ async function confirmTrig() {
               <td v-if="rowBackend(r) === 'litepan'">
                 <span class="tag rk-tagclip rk-lp">LitePan 接管</span>
               </td>
-              <td v-else><span class="tag rk-tagclip" :class="r.qms.cls" :title="r.qms.st">{{ r.qms.st }}</span></td>
+              <td v-else><span class="tag rk-tagclip" :class="r.qms.cls" :title="r.qms.st"><i v-if="isPending(r.qms?.cls)" class="pk-spin"></i>{{ r.qms.st }}</span></td>
               <td v-if="rowBackend(r) === 'litepan'" class="small muted">—</td>
-              <td v-else><span class="tag rk-tagclip" :class="r.strm.cls" :title="r.strm.st">{{ r.strm.st }}</span></td>
+              <td v-else><span class="tag rk-tagclip" :class="r.strm.cls" :title="r.strm.st"><i v-if="isPending(r.strm?.cls)" class="pk-spin"></i>{{ r.strm.st }}</span></td>
               <td class="small muted rk-nowrap">{{ r.tm }}</td>
               <td>
                 <a-button type="link" size="small" class="rk-detail" @click="openDrawer(r)">详情</a-button>
@@ -418,8 +420,8 @@ async function confirmTrig() {
                 <span class="tag rk-card-tag rk-lp">整理：LitePan 接管</span>
               </template>
               <template v-else>
-                <span class="tag rk-card-tag" :class="r.qms.cls" :title="r.qms.st">整理：{{ r.qms.st }}</span>
-                <span class="tag rk-card-tag" :class="r.strm.cls" :title="r.strm.st">STRM：{{ r.strm.st }}</span>
+                <span class="tag rk-card-tag" :class="r.qms.cls" :title="r.qms.st"><i v-if="isPending(r.qms?.cls)" class="pk-spin"></i>整理：{{ r.qms.st }}</span>
+                <span class="tag rk-card-tag" :class="r.strm.cls" :title="r.strm.st"><i v-if="isPending(r.strm?.cls)" class="pk-spin"></i>STRM：{{ r.strm.st }}</span>
               </template>
               <span class="small muted rk-card-tm">{{ r.tm }}</span>
             </div>
