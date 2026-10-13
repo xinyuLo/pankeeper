@@ -64,13 +64,13 @@ def test_fast_scrape_race_fires_via_records(monkeypatch):
     fired: dict = {}
     monkeypatch.setattr(
         rw, "_fire_strm",
-        lambda strm_id, names, claim_dir="", since_id=0: fired.update(
-            args=(strm_id, sorted(names), claim_dir, since_id)) or {"st": "已触发（定向临时任务）", "cls": "t-ok"},
+        lambda strm_id, names, since_id=0: fired.update(
+            args=(strm_id, sorted(names), since_id)) or {"st": "已生成", "cls": "t-ok"},
     )
 
-    rw.trigger_strm_after_scrape(None, 8, 8, delay=0, timeout=5, claim_dir=CLAIM_DIR)
+    rw.trigger_strm_after_scrape(None, 8, 8, delay=0, timeout=5)
     _wait_fired(fired)
-    assert fired["args"] == (8, ["a.mkv", "b.mkv"], CLAIM_DIR, 10)
+    assert fired["args"] == (8, ["a.mkv", "b.mkv"], 10)
 
 
 def test_claim_ignores_old_records(monkeypatch, capsys):
@@ -84,10 +84,10 @@ def test_claim_ignores_old_records(monkeypatch, capsys):
     fired: dict = {}
     monkeypatch.setattr(
         rw, "_fire_strm",
-        lambda strm_id, names, claim_dir="", since_id=0: fired.update(args=1) or {"st": "x", "cls": "t-ok"},
+        lambda strm_id, names, since_id=0: fired.update(args=1) or {"st": "x", "cls": "t-ok"},
     )
 
-    rw.trigger_strm_after_scrape(None, 8, 8, delay=0, timeout=1, claim_dir=CLAIM_DIR)
+    rw.trigger_strm_after_scrape(None, 8, 8, delay=0, timeout=1)
     _wait_fired(fired, seconds=4)
     assert "args" not in fired  # 认领不到 → 判据全缺席 → 走超时，宁缺勿错
     assert "不触发 STRM" in capsys.readouterr().out
@@ -111,33 +111,33 @@ def test_claimed_failed_blocks_strm(monkeypatch, capsys):
     fired: dict = {}
     monkeypatch.setattr(
         rw, "_fire_strm",
-        lambda strm_id, names, claim_dir="", since_id=0: fired.update(args=1) or {"st": "x", "cls": "t-ok"},
+        lambda strm_id, names, since_id=0: fired.update(args=1) or {"st": "x", "cls": "t-ok"},
     )
 
-    rw.trigger_strm_after_scrape(None, 8, 8, delay=0, timeout=5, claim_dir=CLAIM_DIR)
+    rw.trigger_strm_after_scrape(None, 8, 8, delay=0, timeout=5)
     _wait_fired(fired, seconds=4)
     assert "args" not in fired
     # run_id=None 时快照不落库，断言只能看线程日志（打的是「不触发」不是快照文案）
     assert "不触发 STRM" in capsys.readouterr().out
 
 
-def test_scrape_dest_dirs_only_from_claimed(monkeypatch):
-    """清单五销项：同名裸名旧记录（别的剧、id 甚至更新）不把它的整理目录混进 dests——
-    按原始路径认领后，dests 只能来自转存落点下的记录。"""
+def test_scrape_dest_dirs_excludes_old_same_name(monkeypatch):
+    """清单五最终口径：同名**旧**记录（id ≤ 触发前分界）不混入 dests——认领的路径谓词
+    因 DD 配置与 openlist 命名空间不一致已废弃（2026-10-13 晚 NAS 实录），id 分界是唯一闸门。"""
     monkeypatch.setattr(
         rw.qms, "scrape_pathes",
         lambda: [{"id": 8, "source_path": WATCH_ROOT, "dest_path": "/kuake/1.影视/电影"}],
     )
-    # 旧记录 id=20 大于分界线 5，但原始路径在别的剧目录下 → 只靠 id 分界挡不住，路径才挡得住
-    same_name_elsewhere = [_rec(20, "17.mp4", "renamed",
-                                src_dir="/kuake/待整理-电视剧/狂飙", new_path="华语剧集/狂飙")]
+    # 旧同名记录：id=4 不大于分界线 5 → 不认领（狂飙的 17.mp4 不该出现在 dests）
+    same_name_old = [_rec(4, "17.mp4", "renamed",
+                          src_dir="/kuake/待整理-电视剧/狂飙", new_path="华语剧集/狂飙")]
     mine = [_rec(25, "17.mp4", "renamed")]
     monkeypatch.setattr(
         rw.qms, "scrape_records",
-        lambda page_size=1000, page=1, name=None, status=None: same_name_elsewhere + mine,
+        lambda page_size=1000, page=1, name=None, status=None: same_name_old + mine,
     )
 
-    dests = rw._scrape_dest_dirs({"17.mp4"}, CLAIM_DIR, 5)
+    dests = rw._scrape_dest_dirs({"17.mp4"}, 5)
     assert dests == ["/kuake/1.影视/电影/华语电影/这个杀手不太冷静 (2022)"]
 
 
@@ -160,7 +160,7 @@ def test_records_window_reads_beyond_first_page(monkeypatch):
         return []
 
     monkeypatch.setattr(rw.qms, "scrape_records", fake_records)
-    claimed = rw.claim_records(CLAIM_DIR, {"a.mkv", "b.mkv"}, 50)
+    claimed = rw.claim_records({"a.mkv", "b.mkv"}, 50)
     assert set(claimed) == {"a.mkv", "b.mkv"}
 
 
@@ -176,7 +176,7 @@ def _mock_fire_env(monkeypatch, records, refresh_calls):
         lambda sid: {"source_type": "openlist", "remote_path": "kuake/1.影视/电影",
                      "local_path": "/media/QMS", "account_id": 1},
     )
-    monkeypatch.setattr(rw, "_scrape_dest_dirs", lambda names, claim_dir="", since_id=0: [SYNC_DEST])
+    monkeypatch.setattr(rw, "_scrape_dest_dirs", lambda names, since_id=0: [SYNC_DEST])
     monkeypatch.setattr(
         rw.qms, "manual_sync",
         lambda path_id, path, target, account_id, is_file=False: (True, ""),
@@ -197,7 +197,7 @@ def test_fire_strm_verifies_via_sync_records(monkeypatch):
            "local_path": "/media/QMS", "created_at": int(time.time()), "fail_reason": ""}
     refresh_calls = {"n": 0}
     _mock_fire_env(monkeypatch, [rec], refresh_calls)
-    snap = rw._fire_strm(8, {"这个杀手不太冷静 (2022).mkv"}, CLAIM_DIR, 0)
+    snap = rw._fire_strm(8, {"这个杀手不太冷静 (2022).mkv"}, 0)
     assert snap == {"st": "已生成（新增 1 个 STRM）", "cls": "t-ok", "emby": "华语电影"}
     assert refresh_calls["n"] == 1
 
@@ -210,7 +210,7 @@ def test_fire_strm_reports_sync_failure(monkeypatch):
            "fail_reason": "路径 115盘/影视/电视剧 不存在：object not found"}
     refresh_calls = {"n": 0}
     _mock_fire_env(monkeypatch, [rec], refresh_calls)
-    snap = rw._fire_strm(8, {"这个杀手不太冷静 (2022).mkv"}, CLAIM_DIR, 0)
+    snap = rw._fire_strm(8, {"这个杀手不太冷静 (2022).mkv"}, 0)
     assert snap["cls"] == "t-bad"
     assert "同步失败" in snap["st"] and "object not found" in snap["st"]
     assert refresh_calls["n"] == 0
@@ -221,5 +221,5 @@ def test_fire_strm_falls_back_when_records_missing(monkeypatch):
     refresh_calls = {"n": 0}
     _mock_fire_env(monkeypatch, [], refresh_calls)
     monkeypatch.setattr(rw, "SYNC_WAIT_TIMEOUT", 0.2)
-    snap = rw._fire_strm(8, {"这个杀手不太冷静 (2022).mkv"}, CLAIM_DIR, 0)
+    snap = rw._fire_strm(8, {"这个杀手不太冷静 (2022).mkv"}, 0)
     assert snap == {"st": "已触发", "cls": "t-ok", "emby": "华语电影"}

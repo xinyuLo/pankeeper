@@ -90,13 +90,6 @@ def run_manual(eng, t: dict, cfg: dict) -> None:
         # 资源名/任务名（队列任务名 = 更名值或资源名）：建壳时没填更名就用它当壳名
         share_name=_clean_folder_name(t["name"]),
     )
-    # STRM 等刮削的记录认领目录（openlist 命名空间，建壳含壳名）：本次文件的刮削记录
-    # source_full_path 都在它下面，按它认领（2026-10-13 定稿，见 run_watch.claim_records）
-    t["_claim_dir"] = "/" + t["path"].strip("/")
-    if spec.with_shell:
-        shell = spec.folder_rename or spec.share_name
-        if shell:
-            t["_claim_dir"] = t["_claim_dir"].rstrip("/") + "/" + shell
     if not spec.share_url:
         _push_log(t, "ERROR", "任务缺少分享链接（shareUrl），无法转存")
         _finish(eng, t, "fail")
@@ -373,8 +366,7 @@ def _finish(eng, t: dict, status: str, message: str = "", qms_snap: dict | None 
                 # 反转模式 STRM 已先行触发过（run_watch 会回填 QMS 真实结果，但不再挂 STRM 线程）
                 delay = int(get_group("queue_cfg").get("strm", 10))
                 strm_plan = {"strm_id": int(strm_id), "delay": delay}
-                run_watch.trigger_strm_after_scrape(rid, int(qms_id), int(strm_id), delay, table=Record,
-                                                    claim_dir=t.get("_claim_dir") or "")
+            run_watch.trigger_strm_after_scrape(rid, int(qms_id), int(strm_id), delay, table=Record)
         media_push.watch_and_spawn({
             "drive": t["type"],
             "task": t["name"].split(".")[0],
