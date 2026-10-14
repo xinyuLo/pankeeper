@@ -141,6 +141,30 @@ def test_scrape_dest_dirs_excludes_old_same_name(monkeypatch):
     assert dests == ["/kuake/1.影视/电影/华语电影/这个杀手不太冷静 (2022)"]
 
 
+def test_scrape_dest_dirs_falls_back_to_source_full_path(monkeypatch):
+    """剧集（tvshow）刮削记录 QMS 不回填 path（2026-10-14 玉子市场 NAS 实锤，电影才有值）
+    → 按 source_full_path（文件全路径）兜底归属；否则 dests 恒空、定向同步必回退整路径，
+    推送从此没有「🎬 触发 Emby「xx」库刷新」。"""
+    monkeypatch.setattr(
+        rw.qms, "scrape_pathes",
+        lambda: [{"id": 10, "source_path": "/baidu/0.影视/待整理-电视剧", "dest_path": "/baidu/0.影视/电视剧"}],
+    )
+    tv = [
+        {"id": 4933 + i, "file_name": f"Tamako Market S01E{i:02d} - 第 {i} 集.mkv",
+         "status": "renamed", "path": "",
+         "source_full_path": f"/baidu/0.影视/待整理-电视剧/玉子市场 (2013)/Tamako Market S01E{i:02d} - 第 {i} 集.mkv",
+         "new_path": "日番/玉子市场 (2013)/Season 1"}
+        for i in (1, 12)
+    ]
+    monkeypatch.setattr(
+        rw.qms, "scrape_records",
+        lambda page_size=1000, page=1, name=None, status=None: tv,
+    )
+
+    dests = rw._scrape_dest_dirs({"Tamako Market S01E01 - 第 1 集.mkv"}, 0)
+    assert dests == ["/baidu/0.影视/电视剧/日番/玉子市场 (2013)/Season 1"]
+
+
 def test_records_window_reads_beyond_first_page(monkeypatch):
     """清单一回归：并发大批量把本场的记录挤出第一页后，窗口读取仍能认领到——
     旧实现只拉最新一页，此处会认领不到、STRM 静默回退全库同步。"""
