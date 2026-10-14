@@ -206,7 +206,9 @@ def _scrape_dest_dirs(names: set[str], since_id: int = 0) -> list[str]:
     claimed = claim_records(names, since_id)
     dests: dict[str, None] = {}
     for rec in claimed.values():
-        src = (rec.get("path") or "").strip()
+        # 剧集（tvshow）记录 QMS 不回填 path（只有电影有，2026-10-14 玉子市场实锤）：
+        # 兜 source_full_path（文件全路径，两型都有），前缀归属语义不变，否则剧集必回退整路径同步
+        src = (rec.get("path") or rec.get("source_full_path") or "").strip()
         new_path = (rec.get("new_path") or "").strip("/")
         if not new_path:
             continue
