@@ -356,6 +356,7 @@ def trigger_strm_after_scrape(
     timeout: int = SCRAPE_WAIT_TIMEOUT,
     table=RunHistory,
     log_fn=None,
+    ride: bool = False,
 ) -> None:
     """等 QMS 刮削**真的跑完**，再等 delay 秒，才触发 STRM 同步（对齐参照项目 bdsavepro 语义）。
 
@@ -372,8 +373,13 @@ def trigger_strm_after_scrape(
         updated_at 不前进时 (a) 的两条证据都会缺席，旧实现只能干等超时、STRM 永不触发
         （2026-10-13 定稿）。
 
+    ride=True（搭车，2026-10-15）：本次 QMS 触发因「任务已存在」被拒、同路径刮削已在跑，
+    等的是**代刮**产生的记录。此时 (a) 的「路径空闲」不可信——那把刮削可能开扫在本次
+    文件落盘之前，扫完时根本没带上我的文件（银河护卫队2 实录：靠 1 分钟后第三部的触发
+    才被代刮）——所以路径空闲但记录池还没认领到本次文件时继续等，只认 (b)。
+
     取不到路径状态（QMS 未启用/接口异常）→ 退化成"等 delay 秒直接触发"，不把能力弄丢。
-    超时（默认 5 分钟）→ 记「未确认（刮削超时，未触发 STRM）」，**不触发 STRM**（宁缺勿错）。
+    超时（默认 5 分钟）→ 记「未确认（…超时，未触发 STRM）」，**不触发 STRM**（宁缺勿错）。
 
     全程走后台守护线程：自动流程的队列 worker 不能被这几分钟堵住。
     """
@@ -407,18 +413,25 @@ def trigger_strm_after_scrape(
             if run_id and want and not all_terminal:
                 write_qms_interim(run_id, _qms_interim_text(st, list(claimed.values())), table)
             if not busy and (seen_busy or updated >= trigger_ts - CLOCK_TOLERANCE):
-                reached = True
-                break
+                # 搭车模式路径空闲 ≠ 我的文件刮完了：那把刮削可能开扫在本次文件落盘之前，
+                # 扫完没带上我（2026-10-15 银河护卫队2 实录）——必须等记录池认领到再定向
+                if ride and want and not claimed:
+                    pass
+                else:
+                    reached = True
+                    break
             if all_terminal:
                 reached = True
-                print(f"[run-watch] QMS 刮削 #{qms_id} 完成（记录池判据：本次 {len(claimed)} 个文件全部终态）", flush=True)
+                print(f"[run-watch] QMS 刮削 #{qms_id} 完成（记录池判据：本次 {len(claimed)} 个文件全部终态"
+                      + ("，搭车）" if ride else "）"), flush=True)
                 break
             if time.time() > deadline:
                 break
             time.sleep(SCRAPE_POLL_INTERVAL)
 
         if not reached and not degraded:
-            snap = {"st": "未确认（刮削超时，未触发 STRM）", "cls": "t-bad"}
+            tip = "搭车等待超时，未见本次文件的刮削记录" if ride else "刮削超时"
+            snap = {"st": f"未确认（{tip}，未触发 STRM）", "cls": "t-bad"}
             if run_id:
                 _write_strm(run_id, snap, table)
                 _STRM_RESULTS[f"{table.__name__}:{run_id}"] = snap

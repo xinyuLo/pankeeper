@@ -247,3 +247,75 @@ def test_fire_strm_falls_back_when_records_missing(monkeypatch):
     monkeypatch.setattr(rw, "SYNC_WAIT_TIMEOUT", 0.2)
     snap = rw._fire_strm(8, {"这个杀手不太冷静 (2022).mkv"}, 0)
     assert snap == {"st": "已触发", "cls": "t-ok", "emby": "华语电影"}
+
+
+# ---------- 搭车模式（2026-10-15 并发转存撞 QMS 同路径互斥）----------
+
+def test_rejected_by_concurrent():
+    """「任务已存在」= 同路径刮削互斥被拒 → 搭车不算失败；其他拒绝照旧算失败。"""
+    from app.services import qms as qms_svc
+
+    assert qms_svc.rejected_by_concurrent("添加刮削任务失败：任务已存在：类型=刮削整理，ID=8")
+    assert not qms_svc.rejected_by_concurrent("QMS 连接失败：超时")
+    assert not qms_svc.rejected_by_concurrent(None)
+
+
+def test_ride_waits_for_records_before_strm(monkeypatch):
+    """搭车模式：同路径刮削先忙后闲，但我的记录晚于「路径空闲」才出现（那把刮削开扫在
+    我文件落盘之前，银河护卫队2 实录）——必须等记录认领到再定向同步，不能按路径空闲
+    抢跑（抢跑 = 定向认领不到 → 回退整路径，Emby 库名丢失）。"""
+    mine = [_rec(30, "a.mkv", "renamed",
+                 src_dir="/kuake/待整理-电影/银河护卫队2 (2017)",
+                 new_path="外语电影/银河护卫队2 (2017)")]
+    reads = {"n": 0}
+
+    def fake_records(page_size=1000, page=1, name=None, status=None):
+        reads["n"] += 1
+        return list(mine) if reads["n"] >= 4 else []  # read1=分界线 read2/3=忙/闲两轮认领，read4 起才有代刮记录
+
+    state = {"i": 0}
+
+    def fake_status(_pid):
+        i = state["i"]
+        state["i"] += 1
+        return ({"is_running": 1, "is_scraping": True, "updated_at": 1} if i == 0
+                else {"is_running": 0, "is_scraping": False, "updated_at": 1})
+
+    monkeypatch.setattr(rw.qms, "scrape_records", fake_records)
+    monkeypatch.setattr(rw.qms, "scrape_path_status", fake_status)
+    monkeypatch.setattr(rw.qms, "scrape_pathes",
+                        lambda: [{"id": 9, "source_path": "/kuake/待整理-电影", "dest_path": "/kuake/1.影视/电影"}])
+    monkeypatch.setattr(rw.time, "sleep", lambda s: None)
+    monkeypatch.setattr(rw, "_record_names", lambda rid, table: ["a.mkv"])
+    monkeypatch.setattr(
+        rw.qms, "get_sync_path",
+        lambda sid: {"source_type": "openlist", "remote_path": "kuake/1.影视/电影",
+                     "local_path": "/media/QMS", "account_id": 1},
+    )
+    called = {}
+
+    def fake_sync(path_id, path, target, account_id, is_file=False):
+        called["dest"] = path
+        return True, ""
+
+    fallback = {}
+
+    def fake_fallback(sid):
+        fallback["used"] = True
+        return True, ""
+
+    monkeypatch.setattr(rw.qms, "manual_sync", fake_sync)
+    monkeypatch.setattr(rw.qms, "trigger_strm", fake_fallback)
+    monkeypatch.setattr(rw.qms, "sync_records", lambda page_size=200: [
+        {"id": 1, "status": 2, "new_strm": 1,
+         "remote_path": "/kuake/1.影视/电影/外语电影/银河护卫队2 (2017)",
+         "local_path": "/media/QMS", "created_at": int(time.time()), "fail_reason": ""}])
+    monkeypatch.setattr(rw.qms, "refresh_emby_library", lambda path_hint=None: (True, "已按库刷新：外语电影"))
+    monkeypatch.setattr(rw.qms, "emby_library_name", lambda hint: "外语电影")
+
+    rw.trigger_strm_after_scrape(None, 8, 5, delay=0, timeout=5, ride=True)
+    deadline = time.time() + 5
+    while "dest" not in called and time.time() < deadline:
+        time.sleep(0.01)
+    assert called["dest"] == "/kuake/1.影视/电影/外语电影/银河护卫队2 (2017)"
+    assert "used" not in fallback  # 没有回退整路径同步
