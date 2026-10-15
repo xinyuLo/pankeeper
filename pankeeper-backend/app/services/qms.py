@@ -64,6 +64,15 @@ def trigger_scrape(qms_id: int) -> tuple[bool, str]:
         return False, f"QMS 连接失败：{e}"
 
 
+def rejected_by_concurrent(msg: str | None) -> bool:
+    """触发被拒是否因「同路径刮削已在跑」。QMS 的刮削任务按路径互斥：任务跑着时再触发
+    同一路径直接拒绝「添加刮削任务失败：任务已存在：类型=刮削整理，ID=n」——并发转存
+    撞车实录见 2026-10-15 银河护卫队三部（队列 worker 不等后台联动，第二部转完触发时
+    第一部的刮削还在跑）。这种情况不是失败：正在跑/下一把刮削扫的是同一目录，会代刮
+    本次文件，调用方应转「搭车等待」而不是报错收工。"""
+    return "任务已存在" in str(msg or "")
+
+
 def scrape_pathes() -> list[dict] | None:
     """GET /api/scrape/pathes：QMS 刮削路径列表（转存配置页下拉）。失败返回 None。"""
     c = _client()

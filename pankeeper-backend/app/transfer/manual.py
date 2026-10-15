@@ -248,13 +248,23 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
     from ..services import run_watch
     t["_qms_baseline"] = run_watch.record_fingerprint([e.get("name") for e in result.transferred])
     ok, msg = qms.trigger_scrape(int(qms_id))
-    # 与自动转存同款口径（2026-10-04 用户要求："qms那已经是刮削失败了，pankeeper还显示qms触发成功"）：
-    # 触发受理 ≠ 刮削成功，快照先如实写「已触发」，真实结果由 run_watch 后台轮询回填
-    qms_snap = {"st": "已触发" if ok else f"失败 · {msg}", "cls": "t-run" if ok else "t-bad"}
-    _push_log(t, "INFO" if ok else "ERROR", f"QMS 刮削任务 #{qms_id} 触发{'成功' if ok else '失败'}"
-              + (f"：{msg}" if msg else "") + ("，等待 STRM 生成" if ok and strm_id is not None else ""))
-    if strm_id is not None and ok and not t.get("_media_reverse"):
-        # 默认顺序：STRM 挂后台等刮削完成再触发。反转模式已在上面先触发过，不再挂
+    ride = not ok and qms.rejected_by_concurrent(msg)
+    if ride:
+        # 同路径刮削互斥被拒（并发转存撞车，2026-10-15 银河护卫队2 实录）：正在跑/下一把
+        # 刮削扫的是同一目录，会代刮本次文件——转搭车等待，不算失败（旧实现就此收工：
+        # 不等刮削、STRM 不挂、推送报 ❌，其实文件后来被并发批次刮成了）
+        qms_snap = {"st": "已触发（搭车：同路径刮削进行中）", "cls": "t-run"}
+        _push_log(t, "INFO", f"QMS 刮削任务 #{qms_id} 触发被拒（{msg}），同路径刮削进行中——搭车等待其结果")
+    else:
+        # 与自动转存同款口径（2026-10-04 用户要求："qms那已经是刮削失败了，pankeeper还显示qms触发成功"）：
+        # 触发受理 ≠ 刮削成功，快照先如实写「已触发」，真实结果由 run_watch 后台轮询回填
+        qms_snap = {"st": "已触发" if ok else f"失败 · {msg}", "cls": "t-run" if ok else "t-bad"}
+        _push_log(t, "INFO" if ok else "ERROR", f"QMS 刮削任务 #{qms_id} 触发{'成功' if ok else '失败'}"
+                  + (f"：{msg}" if msg else "") + ("，等待 STRM 生成" if ok and strm_id is not None else ""))
+    t["_qms_ride"] = ride
+    if strm_id is not None and (ok or ride) and not t.get("_media_reverse"):
+        # 默认顺序：STRM 挂后台等刮削完成再触发（搭车模式同款，等的是代刮的记录）。
+        # 反转模式已在上面先触发过，不再挂
         strm_snap = {"st": "等待中", "cls": "t-wait"}
 
     # 推送（watch_and_spawn）挪到 _finish 落库后：那里才有 record id，推送线程才能等 STRM 结果
@@ -353,12 +363,14 @@ def _finish(eng, t: dict, status: str, message: str = "", qms_snap: dict | None 
     media = t.get("_media") or {}
     qms_id = media.get("qms_id")
     strm_id = media.get("strm_id")
-    qms_fired = bool(qms_snap and qms_snap.get("st") == "已触发")
+    # 「已触发」前缀匹配兼容搭车快照「已触发（搭车：同路径刮削进行中）」——搭车也要挂
+    # 回填/STRM/推送全链路，等的是代刮产生的记录（2026-10-15）
+    qms_fired = bool(qms_snap and str(qms_snap.get("st", "")).startswith("已触发"))
     # 触发过但被拒（快照「失败 ·」开头）也推——转存成功联动挂了，手机必须知道（2026-10-13 清单四）
     qms_attempted = bool(qms_snap and str(qms_snap.get("st", "")).startswith("失败"))
     if result and result.transferred and (qms_fired or qms_attempted):
         from ..services import media_push, run_watch
-    
+
         names = [e.get("name") for e in result.transferred]
         baseline = t.get("_qms_baseline") or {}
         strm_plan = None
@@ -366,11 +378,14 @@ def _finish(eng, t: dict, status: str, message: str = "", qms_snap: dict | None 
             run_watch.watch_qms(rid, t["name"].split(".")[0], names, baseline=baseline, table=Record,
                                 on_state=lambda st: run_watch.write_qms_interim(rid, st, table))
             if strm_id and not t.get("_media_reverse"):
-                # 反转模式 STRM 已先行触发过（run_watch 会回填 QMS 真实结果，但不再挂 STRM 线程）
+                # 反转模式 STRM 已先行触发过（run_watch 会回填 QMS 真实结果，但不再挂 STRM 线程）；
+                # 没配 STRM 时整段不挂（此前调用放在守卫外：反转时 delay 未定义 NameError、
+                # 无 STRM 时 int(None) TypeError）
                 delay = int(get_group("queue_cfg").get("strm", 10))
                 strm_plan = {"strm_id": int(strm_id), "delay": delay}
-            run_watch.trigger_strm_after_scrape(rid, int(qms_id), int(strm_id), delay, table=Record,
-                                                log_fn=lambda txt: _push_log(t, "STEP", txt))
+                run_watch.trigger_strm_after_scrape(rid, int(qms_id), int(strm_id), delay, table=Record,
+                                                    ride=bool(t.get("_qms_ride")),
+                                                    log_fn=lambda txt: _push_log(t, "STEP", txt))
         media_push.watch_and_spawn({
             "drive": t["type"],
             "task": t["name"].split(".")[0],
