@@ -150,6 +150,11 @@ def create_app() -> FastAPI:
         from .services.pa_scheduler import start_pa_scheduler
 
         start_pa_scheduler()
+
+        # 目录缓存到期自动预热（2026-10-15）：TTL 到点自动调全量预热（cache_cfg.auto 开关）
+        from .services.cache_warm import start_cache_warm_scheduler
+
+        start_cache_warm_scheduler()
         print("[init] PanKeeper 后端就绪" + ("（含前端静态托管）" if WEB_DIR.is_dir() else ""))
 
     return app
