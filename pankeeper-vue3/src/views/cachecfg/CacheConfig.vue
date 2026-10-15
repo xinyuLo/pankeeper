@@ -78,7 +78,11 @@ function onPersistSw(v: boolean | string | number) {
   message.success(v ? '缓存持久化已开启：重启不再丢缓存' : '缓存持久化已关闭：重启后缓存清空')
 }
 function onAutoSw(v: boolean | string | number) {
-  message.success(v ? '自动刷新已开启' : '自动刷新已关闭，过期后打开弹窗会稍等一次')
+  message.success(
+    v
+      ? '自动刷新已开启：缓存到期后自动预热全部已连接账号（串行跑，防风控）'
+      : '自动刷新已关闭，过期后打开弹窗会稍等一次',
+  )
 }
 
 /* ===== 内存水位：颜色随实际占用变化（<75 绿 / 75-85 黄 / >85 红） ===== */

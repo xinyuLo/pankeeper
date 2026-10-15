@@ -312,15 +312,22 @@ def warm_status(type: str, acc_id: int | None = None, _user=CurrentUser):
     return {**job} if job else {"type": type, "status": "idle", "done": 0, "total": 0, "message": ""}
 
 
-@router.post("/cache/trees/warm-all")
-def warm_all(_user=CurrentUser):
-    """全部已连接账号入队预热（单工队列串行跑，同网盘多账号绝不并行——防风控）。"""
+def enqueue_warm_all() -> int:
+    """全部已连接账号入队预热（单工队列串行跑，同网盘多账号绝不并行——防风控）。
+
+    缓存配置页「全部预热」按钮与 cache_warm 到期自动预热共用这一个入口。"""
     with SessionLocal() as db:
         rows = db.query(Account).filter(Account.status == "connected").order_by(Account.id).all()
         targets = [(r.type, r.id) for r in rows if r.type in WARM_TYPES]
     for type, acc_id in targets:
         _enqueue_warm(type, acc_id)
-    return {"count": len(targets)}
+    return len(targets)
+
+
+@router.post("/cache/trees/warm-all")
+def warm_all(_user=CurrentUser):
+    """全部已连接账号入队预热（单工队列串行跑，同网盘多账号绝不并行——防风控）。"""
+    return {"count": enqueue_warm_all()}
 
 
 @router.get("/cache/trees/warm-all/status")
