@@ -199,16 +199,17 @@ def _load_dir_payload(type: str, acc_id: int | None, parent: str, path: str):
     raise HTTPException(status_code=400, detail=f"网盘 {type} 适配器尚未实现")
 
 
-# ===== 全树预热：把目录树灌进缓存。**全局单工队列** =====
+# ===== 全树预热：把目录树灌进缓存。**按网盘分道：同盘串行、跨盘并行（2026-10-15 定稿）** =====
 # 上限防失控：目录数/深度到顶就停，剩余的浏览时按需缓存
 WARM_MAX_DIRS = 300
 WARM_MAX_DEPTH = 5
-# 任务键 (type, acc_key)；**只有一个 worker 线程按序消费**——同网盘多账号并行预热
-# 就是拿几个账号同时撞同一家风控（2026-10-07 用户定稿：进队列串行跑）
+# 任务键 (type, acc_key)。2026-10-07 曾是全局单工队列（跨盘也串行）；2026-10-15 用户定稿改为
+# **每个网盘一条消费线程**：同网盘多账号严格串行（并行=拿几个账号同时撞同一家风控），
+# 不同网盘互不共享风控，完全可以并行（百度/夸克/115 各走各的道）
 _WARM_JOBS: dict[tuple, dict] = {}
-_WARM_QUEUE: deque = deque()
+_WARM_QUEUES: dict[str, deque] = {}  # type → 该网盘的任务队列（FIFO）
 _WARM_LOCK = threading.Lock()
-_WARM_WORKER: threading.Thread | None = None
+_WARM_WORKERS: dict[str, threading.Thread] = {}  # type → 消费线程
 WARM_TYPES = ("baidu", "quark", "115")
 
 
@@ -243,16 +244,17 @@ def _warm_walk(type: str, acc_id: int | None, job: dict) -> None:
         job["message"] = str(e)
 
 
-def _warm_worker() -> None:
-    """单工消费线程：一次只跑一个预热任务，跑完才取下一个（跨网盘也串行——
-    不同的盘并行虽不共享风控，但没必要赶时间，慢即是稳）。"""
-    global _WARM_WORKER
+def _warm_worker(type: str) -> None:
+    """某网盘的单工消费线程：同网盘任务一次只跑一个（并行=撞同一家风控），
+    跑完才取下一个；不同网盘各有自己的线程，互不等待。队列空了线程退出，
+    下次入队再拉起。"""
     while True:
         with _WARM_LOCK:
-            if not _WARM_QUEUE:
-                _WARM_WORKER = None
+            q = _WARM_QUEUES.get(type)
+            if not q:
+                _WARM_WORKERS.pop(type, None)
                 return
-            key = _WARM_QUEUE.popleft()
+            key = q.popleft()
             job = _WARM_JOBS.get(key)
             if job is None:
                 continue
@@ -277,7 +279,6 @@ def _enqueue_warm(type: str, acc_id: int | None) -> dict:
     """入队一个预热任务；同 (type, 账号) 已在排队/在跑则直接回现状（不重复排）。"""
     acc_key = str(acc_id) if acc_id else "main"
     key = (type, acc_key)
-    global _WARM_WORKER
     with _WARM_LOCK:
         job = _WARM_JOBS.get(key)
         if job and job["status"] in ("queued", "running"):
@@ -286,10 +287,12 @@ def _enqueue_warm(type: str, acc_id: int | None) -> dict:
             "type": type, "acc_id": acc_id, "acc_key": acc_key, "acc_name": _acc_name(type, acc_id),
             "status": "queued", "done": 0, "total": 1, "message": "",
         }
-        _WARM_QUEUE.append(key)
-        if _WARM_WORKER is None or not _WARM_WORKER.is_alive():
-            _WARM_WORKER = threading.Thread(target=_warm_worker, daemon=True, name="warm-worker")
-            _WARM_WORKER.start()
+        _WARM_QUEUES.setdefault(type, deque()).append(key)
+        w = _WARM_WORKERS.get(type)
+        if w is None or not w.is_alive():
+            t = threading.Thread(target=_warm_worker, args=(type,), daemon=True, name=f"warm-worker-{type}")
+            _WARM_WORKERS[type] = t
+            t.start()
         return _WARM_JOBS[key]
 
 
@@ -313,7 +316,7 @@ def warm_status(type: str, acc_id: int | None = None, _user=CurrentUser):
 
 
 def enqueue_warm_all() -> int:
-    """全部已连接账号入队预热（单工队列串行跑，同网盘多账号绝不并行——防风控）。
+    """全部已连接账号入队预热（按网盘分道：同盘串行防风控，跨盘并行——2026-10-15 定稿）。
 
     缓存配置页「全部预热」按钮与 cache_warm 到期自动预热共用这一个入口。"""
     with SessionLocal() as db:
@@ -326,7 +329,7 @@ def enqueue_warm_all() -> int:
 
 @router.post("/cache/trees/warm-all")
 def warm_all(_user=CurrentUser):
-    """全部已连接账号入队预热（单工队列串行跑，同网盘多账号绝不并行——防风控）。"""
+    """全部已连接账号入队预热（按网盘分道：同盘串行防风控，跨盘并行）。"""
     return {"count": enqueue_warm_all()}
 
 

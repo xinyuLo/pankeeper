@@ -251,7 +251,7 @@ function warmLine(st: WarmAllStatus): string {
 function onWarmAll() {
   Modal.confirm({
     title: '重新缓存全部网盘？',
-    content: '将把所有已连接账号的目录树逐个排队预热（串行跑，同网盘多账号也不会并行，避免触发风控）。大网盘可能需要几分钟到十几分钟。',
+    content: '将把所有已连接账号的目录树排队预热：同网盘串行跑（避免多账号撞同一家风控），不同网盘并行。大网盘可能需要几分钟到十几分钟。',
     okText: '开始预热',
     cancelText: '取消',
     onOk: () => startWarmAll(),
