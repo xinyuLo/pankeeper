@@ -24,7 +24,7 @@ import httpx
 
 from ..security import decrypt_credential
 from ..services import reqstat
-from .base import AdapterError, CloudAdapter, CredentialExpired, RiskControlError, ShareBanned, ShareFile, TaskSpec, TransferResult
+from .base import AdapterError, CloudAdapter, CredentialExpired, RiskControlError, ShareBanned, ShareFile, ShareLocked, TaskSpec, TransferResult
 from .rate_gate import RateGate
 
 UA = (
@@ -131,6 +131,10 @@ class Pan115Adapter(CloudAdapter):
             raise RiskControlError(f"115 已触发验证码（疑似风控），停止操作并告警：{err}")
         if "登录" in err or "身份" in err or "cookie" in err.lower():
             raise CredentialExpired(f"115 Cookie 已失效：{err}")
+        # 「请输入访问码/密码错误」= 链接活着但要接收码（2026-10-15 推送轰炸实锤：
+        # 缺码落这里只会得到「分享清单失败：请输入访问码」，AI 侧没法跟死链区分）
+        if any(k in err for k in ("访问码", "密码", "提取码", "访问码错误")):
+            raise ShareLocked(f"115 分享需要接收码/密码：{err}")
         raise AdapterError(f"{action}失败：{err or data}")
 
     # ---------- 接口实现 ----------
@@ -151,6 +155,10 @@ class Pan115Adapter(CloudAdapter):
 
     def list_share(self, spec: TaskSpec) -> list[ShareFile]:
         share_code, receive_code = parse_share_url(spec.share_url)
+        # 接收码回落：链接没带 ?password= 时用独立 share_code 字段（搜索结果给的码），
+        # 与百度同口径——缺码曾一路走到 receive 报「请输入访问码」（2026-10-15 实锤）
+        if not receive_code and (spec.share_code or "").strip():
+            receive_code = spec.share_code.strip()
         # 单壳判定只看**根层条目**（2026-10-04 套娃案同款教训，baidu/quark 对齐）
         roots_raw = self._snap_page(share_code, receive_code, cid="")
         roots = [self._row_to_file(r, "") for r in roots_raw]
@@ -175,6 +183,8 @@ class Pan115Adapter(CloudAdapter):
     def probe_share(self, spec: TaskSpec) -> list[ShareFile]:
         """死活探针：snap 只拉第一页 20 条（list_share 的 limit=1000 大 JSON 是有效链慢的主因）。"""
         share_code, receive_code = parse_share_url(spec.share_url)
+        if not receive_code and (spec.share_code or "").strip():
+            receive_code = spec.share_code.strip()
         rows = self._snap_page(share_code, receive_code, cid="", limit=20, max_pages=1)
         return [self._row_to_file(r, "") for r in rows]
 

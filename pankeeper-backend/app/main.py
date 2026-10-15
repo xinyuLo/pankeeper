@@ -9,7 +9,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .api import accounts, apikeys, auth, cache_api, dd, drive_logs, pa, qms_api, queue_api, recognize, records, search, settings as settings_api
+from .api import accounts, apikeys, auth, cache_api, dd, drive_logs, pa, pk_ai, qms_api, queue_api, recognize, records, search, settings as settings_api
 from .api.auth import ensure_admin
 from .db import init_db
 from .deps import is_local_request
@@ -59,6 +59,14 @@ def create_app() -> FastAPI:
                 # via_api_key，改密码接口据此拒绝）。key 没带/没命中就回落 token 校验。
                 key_row = apikey_svc.validate(_api_key_of(request)) if _api_key_of(request) else None
                 if key_row is not None:
+                    # ⚠️ API Key 权限收口（2026-10-15 定案）：Key 只能调 AI 专用层
+                    # /api/ai/*，其余口子（记录/设置/账号管理/队列直入队…）一律 403，
+                    # /docs、/openapi.json 也顺带对 Key 关死（不再把接口地图泄露给持钥方）。
+                    if not request.url.path.startswith("/api/ai/"):
+                        return JSONResponse(
+                            status_code=403,
+                            content={"detail": "API Key 仅允许访问 /api/ai/* 接口（其他口子已封闭）"},
+                        )
                     request.state.via_api_key = key_row.id
                     apikey_svc.touch_later(key_row.id)
                 elif not parse_token(_token_of(request)):
@@ -75,6 +83,7 @@ def create_app() -> FastAPI:
     app.add_middleware(GZipMiddleware, minimum_size=1024)  # 前端包 1.5MB，gzip 必要
 
     app.include_router(auth.router)
+    app.include_router(pk_ai.router)
     app.include_router(settings_api.router)
     app.include_router(apikeys.router)
     app.include_router(accounts.router)

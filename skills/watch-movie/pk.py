@@ -1,24 +1,36 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""pk.py — pankeeper API 客户端（watch-movie skill 专用）
+"""pk.py — pankeeper AI 接口客户端（watch-movie skill 专用）
+
+只调 pankeeper 的 AI 专用层 /api/ai/*（2026-10-15 起 API Key 仅允许访问这一层，
+其他 /api/* 口子对 Key 一律 403）。转存走 /api/ai/transfer：服务端判断闸
+（探活/缺码/勾选校验）全过才入队，被拒不会产生失败推送。
 
 铁律（代码层强制，不靠调用方自觉）：
-  1. 所有会触达网盘/外部服务的调用（search/check/files/enqueue）统一走 RateLimiter：
+  1. 所有会触达网盘/外部服务的调用（search/check/files/transfer）统一走 RateLimiter：
      严格串行（进程内全局锁）、两次调用间隔 >= min_interval_sec（默认 3s）。
   2. 撞上 405/429：立即随机退避 30-60s 重试一次，之后间隔翻倍（3→6→12…上限 60s），
      本进程内不恢复原速。
   3. JWT 缓存到 state.json，401 自动重登一次再试。
 
 子命令（输出一律 JSON 到 stdout，供 AI 在 bash 里消费）：
-  preflight                     前置检查：网盘账号 + 转存配置（不打网盘）
+  preflight                     前置检查：网盘账号 + 转存配置（不打网盘，一次拿全）
   history [--limit N]           最近搜索词 + 转存记录（语境判断用，不打网盘）
-  search KW [--refresh]         搜索资源（走 pansou）
+  search KW [--refresh] [--drives baidu,quark,115]
+                                搜索资源（走 pansou）。带 --drives（preflight 里已
+                                配置的盘）→ 服务端过滤分组：storable=能转存的候选、
+                                magnets=磁力链接（留着备用）
   recognize NAME [--hint H]     识别片名 → TMDB 候选（= 前端「识别」按钮）
-  check TYPE URL [CODE]         死活预检（触网盘，限流）
+  check TYPE URL [CODE]         死活预检（触网盘，限流）。state=locked 表示链接活着
+                                但要提取码：has_code=false 缺码（问用户要）、true 码不对
   files TYPE URL [CODE]         分享内文件树（触网盘，限流）[--refresh 强制直连]
-  enqueue                       提交转存（读 stdin 或 --file 的 JSON payload，触网盘，限流）
+  transfer                      提交转存（读 stdin 或 --file 的 JSON payload，限流）。
+                                被闸拒绝时输出 {"ok": false, "reason": ..., "message": ...}
+                                并以退出码 2 结束（reason 分支见 SKILL.md 第 6 步）
   state                         队列当前状态快照（本地读，不限流）
-  tmdb-season TMDB_ID SEASON    某季集数清单（需配置 tmdb_api_key，可选）
+  tmdb-season TMDB_ID SEASON    某季集数清单（走服务端 TMDB 配置，本机无需任何 tmdb 配置）
+  notify-channel                查询通知通道（汇报「结果看 xx 推送」用）
+  config                        查看/设置配置
 """
 from __future__ import annotations
 
@@ -48,9 +60,6 @@ def load_config() -> dict:
     cfg.setdefault("username", "admin")
     cfg.setdefault("password", "")
     cfg.setdefault("min_interval_sec", 3)
-    cfg.setdefault("tmdb_api_key", "")
-    cfg.setdefault("tmdb_proxy", "")   # 可选：http://IP:端口，访问 TMDB 用（二选一）
-    cfg.setdefault("tmdb_ip", "")      # 可选：TMDB 映射 IP（可带端口），二选一
     return cfg
 
 
@@ -124,14 +133,14 @@ def _request(cfg: dict, method: str, path: str, body: dict | None = None,
              token: str | None = None, api_key: str | None = None) -> tuple[int, dict | list | dict]:
     url = cfg["base_url"].rstrip("/") + path
     data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
-    headers = {"Content-Type": "application/json", "User-Agent": "watch-movie-skill/1.0"}
+    headers = {"Content-Type": "application/json", "User-Agent": "watch-movie-skill/2.0"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     if api_key:
         headers["X-API-Key"] = api_key
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=120) as resp:
             raw = resp.read().decode("utf-8", "replace")
             return resp.status, (json.loads(raw) if raw.strip() else {})
     except urllib.error.HTTPError as e:
@@ -170,7 +179,7 @@ def _token(cfg: dict) -> str:
 
 def call(path: str, method: str = "GET", body: dict | None = None,
          limited: bool = False, retried: bool = False) -> dict | list:
-    """统一调用出口。有 api_key 走 X-API-Key 头（等效登录态，不问密码）；
+    """统一调用出口。有 api_key 走 X-API-Key 头（只调 /api/ai/*，不问密码）；
     否则 JWT 登录。limited=True 过限流器；401 重登一次；405/429 退避重试一次。"""
     cfg = load_config()
     if not cfg["base_url"].strip():
@@ -200,37 +209,58 @@ def call(path: str, method: str = "GET", body: dict | None = None,
     return payload
 
 
+def call_transfer(body: dict) -> None:
+    """transfer 专用出口：闸拒绝（422）是业务结论不是异常——结构化 JSON 走 stdout、
+    退出码 2，供 SKILL.md 按 reason 分支（need_code/bad_link/no_dd/bad_path/...）。"""
+    cfg = load_config()
+    if not cfg["base_url"].strip():
+        err(json.dumps({"error": "pankeeper 地址未配置",
+                        "hint": "问用户要 pankeeper 的 IP+端口，然后执行: pk.py config base_url http://IP:端口"},
+                       ensure_ascii=False))
+        raise SystemExit(1)
+    limiter().gate()
+    if cfg.get("api_key"):
+        status, payload = _request(cfg, "POST", "/api/ai/transfer", body, api_key=cfg["api_key"])
+    else:
+        status, payload = _request(cfg, "POST", "/api/ai/transfer", body, token=_token(cfg))
+        if status == 401:
+            status, payload = _request(cfg, "POST", "/api/ai/transfer", body, token=_login(cfg))
+    if status == 0:
+        err(json.dumps({"error": "pankeeper 不可达", "detail": payload}, ensure_ascii=False))
+        raise SystemExit(1)
+    if status == 422:
+        detail = payload.get("detail") if isinstance(payload, dict) else None
+        if isinstance(detail, dict) and detail.get("reason"):
+            print(json.dumps({"ok": False, "reason": detail.get("reason"),
+                              "message": detail.get("message") or ""}, ensure_ascii=False, indent=2))
+            raise SystemExit(2)
+    if status in (405, 429):
+        limiter().penalize()
+        return call_transfer(body)
+    if status >= 400:
+        err(json.dumps({"error": f"HTTP {status}", "detail": payload}, ensure_ascii=False))
+        raise SystemExit(1)
+    print(json.dumps({"ok": True, **(payload if isinstance(payload, dict) else {})},
+                     ensure_ascii=False, indent=2))
+
+
 # ---------------------------------------------------------------- 子命令
 def cmd_preflight(_args) -> None:
-    accounts = call("/api/accounts")
-    dd_items = call("/api/dd/items")
-    items = dd_items if isinstance(dd_items, list) else (dd_items.get("items") or [])
-    drives = []
-    for acc in accounts:
-        t = acc.get("type")
-        has = call(f"/api/dd/has-config?type={urllib.parse.quote(t)}")
-        paths = sorted({it.get("path", "") for it in items if it.get("type") == t and it.get("path")})
-        drives.append({
-            "type": t, "acc_id": acc.get("id"), "alias": acc.get("alias"),
-            "status": acc.get("status"), "is_default": acc.get("is_default"),
-            "dd_configured": bool(has), "dd_paths": paths,
-        })
-    print(json.dumps({"drives": drives}, ensure_ascii=False, indent=2))
+    print(json.dumps(call("/api/ai/preflight"), ensure_ascii=False, indent=2))
 
 
 def cmd_history(args) -> None:
-    kws = call(f"/api/search/recent-keywords?limit=10")
-    recs = call("/api/records?source=search")
-    rows = []
-    for r in (recs if isinstance(recs, list) else [])[: args.limit]:
-        rows.append({"id": r.get("id"), "name": r.get("n"), "type": r.get("t"),
-                     "path": r.get("p"), "status": r.get("st"), "time": r.get("tm")})
-    print(json.dumps({"recent_keywords": kws, "recent_transfers": rows}, ensure_ascii=False, indent=2))
+    print(json.dumps(call(f"/api/ai/history?limit={max(1, min(args.limit, 50))}"),
+                     ensure_ascii=False, indent=2))
 
 
 def cmd_search(args) -> None:
-    qs = urllib.parse.urlencode({"kw": args.kw, "refresh": "true" if args.refresh else "false"})
-    rows = call(f"/api/search/results?{qs}")
+    qs = urllib.parse.urlencode({
+        "kw": args.kw,
+        "refresh": "true" if args.refresh else "false",
+        **({"drives": args.drives} if args.drives else {}),
+    })
+    rows = call(f"/api/ai/search?{qs}")
     print(json.dumps(rows, ensure_ascii=False, indent=2))
 
 
@@ -238,75 +268,37 @@ def cmd_recognize(args) -> None:
     body = {"name": args.name}
     if args.hint:
         body["hint"] = args.hint
-    print(json.dumps(call("/api/recognize", method="POST", body=body), ensure_ascii=False, indent=2))
+    print(json.dumps(call("/api/ai/recognize", method="POST", body=body), ensure_ascii=False, indent=2))
 
 
 def cmd_check(args) -> None:
-    body = {"type": args.type, "url": args.url, "code": args.code or ""}
-    print(json.dumps(call("/api/search/check-link", method="POST", body=body, limited=True),
+    body = {"type": args.type, "url": args.url, "share_code": args.code or ""}
+    print(json.dumps(call("/api/ai/check", method="POST", body=body, limited=True),
                      ensure_ascii=False, indent=2))
 
 
 def cmd_files(args) -> None:
     qs = urllib.parse.urlencode({"type": args.type, "url": args.url, "code": args.code or "",
                                  "refresh": "true" if args.refresh else "false"})
-    payload = call(f"/api/search/share-files?{qs}", limited=True)
-    # 只保留扁平清单（path/name/is_dir/size/md5），树太占输出
-    if isinstance(payload, dict):
-        payload.pop("tree", None)
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    print(json.dumps(call(f"/api/ai/files?{qs}", limited=True), ensure_ascii=False, indent=2))
 
 
-def cmd_enqueue(args) -> None:
+def cmd_transfer(args) -> None:
     raw = Path(args.file).read_text(encoding="utf-8") if args.file else sys.stdin.read()
     body = json.loads(raw)
-    print(json.dumps(call("/api/queue/tasks", method="POST", body=body, limited=True),
-                     ensure_ascii=False, indent=2))
+    call_transfer(body)
 
 
 def cmd_state(_args) -> None:
-    print(json.dumps(call("/api/queue/state"), ensure_ascii=False, indent=2))
-
-
-def _tmdb_get(path_qs: str, cfg: dict) -> dict:
-    """访问 TMDB：tmdb_proxy（代理）> tmdb_ip（映射 IP，Host/SNI 仍为官方域名）> 直连。"""
-    import http.client
-    import ssl
-
-    host = "api.themoviedb.org"
-    headers = {"User-Agent": "watch-movie-skill/1.0", "Host": host}
-    ip = (cfg.get("tmdb_ip") or "").strip()
-    proxy = (cfg.get("tmdb_proxy") or "").strip()
-    if ip:
-        h, _, p = ip.partition(":")
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE  # 按 IP 建连时证书校验不了域名，映射 IP 场景关闭校验
-        conn = http.client.HTTPSConnection(h, int(p) if p else 443, context=ctx, timeout=30)
-        conn.request("GET", path_qs, headers=headers)
-        resp = conn.getresponse()
-        return json.loads(resp.read().decode("utf-8"))
-    req = urllib.request.Request(f"https://{host}{path_qs}", headers=headers)
-    if proxy:
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
-        with opener.open(req, timeout=30) as r:
-            return json.loads(r.read().decode("utf-8"))
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.loads(r.read().decode("utf-8"))
+    print(json.dumps(call("/api/ai/queue-state"), ensure_ascii=False, indent=2))
 
 
 def cmd_tmdb_season(args) -> None:
-    cfg = load_config()
-    key = cfg.get("tmdb_api_key")
-    if not key:
-        raise SystemExit(err(json.dumps({"error": "未配置 tmdb_api_key（可选）"}, ensure_ascii=False)))
-    data = _tmdb_get(f"/tv/{args.tmdb_id}/season/{args.season}?api_key={key}&language=zh-CN", cfg)
-    eps = [{"episode_number": e.get("episode_number"), "name": e.get("name")} for e in data.get("episodes") or []]
-    print(json.dumps({"season": args.season, "episode_count": len(eps), "episodes": eps},
-                     ensure_ascii=False, indent=2))
+    qs = urllib.parse.urlencode({"tmdb_id": args.tmdb_id, "season": args.season})
+    print(json.dumps(call(f"/api/ai/tmdb-season?{qs}", limited=True), ensure_ascii=False, indent=2))
 
 
-MASK_KEYS = {"api_key", "password", "tmdb_api_key"}
+MASK_KEYS = {"api_key", "password"}
 
 
 def cmd_config(args) -> None:
@@ -326,26 +318,13 @@ def cmd_config(args) -> None:
     print(json.dumps({"ok": True, args.key: shown}, ensure_ascii=False))
 
 
-CHANNEL_LABELS = {"serverchan": "Server酱", "bark": "Bark", "webhook": "Webhook"}
-CHANNEL_KEY_FIELDS = {"serverchan": "sendkey", "bark": "device_key", "webhook": "url"}
-
-
 def cmd_notify_channel(_args) -> None:
-    """查用户配置的通知通道（汇报「结果看 xx 推送」用）——通道在设置页单选，汇报里别写死。"""
-    data = call("/api/settings")
-    n = data.get("notify") or {}
-    if not n.get("enabled"):
-        print(json.dumps({"ok": False, "channel": None, "label": None,
-                          "reason": "通知总开关未开启"}, ensure_ascii=False))
-        return
-    ch = (n.get("channel") or "").strip()
-    label = CHANNEL_LABELS.get(ch, ch or "未知")
-    configured = bool((n.get(ch) or {}).get(CHANNEL_KEY_FIELDS.get(ch, "")))
-    print(json.dumps({"ok": True, "channel": ch, "label": label, "configured": configured}, ensure_ascii=False))
+    """查用户配置的通知通道（汇报「结果看 xx 推送」用）——判定在服务端做，这里透传。"""
+    print(json.dumps(call("/api/ai/notify-channel", limited=False), ensure_ascii=False, indent=2))
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="pankeeper API client (watch-movie skill)")
+    p = argparse.ArgumentParser(description="pankeeper AI API client (watch-movie skill)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("preflight").set_defaults(fn=cmd_preflight)
@@ -357,6 +336,7 @@ def main() -> None:
     s = sub.add_parser("search")
     s.add_argument("kw")
     s.add_argument("--refresh", action="store_true")
+    s.add_argument("--drives", default="", help="逗号分隔的已配置盘（preflight 拿），传了就服务端过滤分组")
     s.set_defaults(fn=cmd_search)
 
     r = sub.add_parser("recognize")
@@ -377,9 +357,9 @@ def main() -> None:
     f.add_argument("--refresh", action="store_true")
     f.set_defaults(fn=cmd_files)
 
-    e = sub.add_parser("enqueue")
+    e = sub.add_parser("transfer", help="提交转存（判断闸在服务端：被拒输出 ok:false+reason，退出码 2）")
     e.add_argument("--file", default="")
-    e.set_defaults(fn=cmd_enqueue)
+    e.set_defaults(fn=cmd_transfer)
 
     sub.add_parser("state").set_defaults(fn=cmd_state)
 
@@ -391,7 +371,7 @@ def main() -> None:
     c.add_argument("value", nargs="?", default=None)
     c.set_defaults(fn=cmd_config)
 
-    t = sub.add_parser("tmdb-season")
+    t = sub.add_parser("tmdb-season", help="某季集数清单（走服务端 TMDB 配置）")
     t.add_argument("tmdb_id", type=int)
     t.add_argument("season", type=int)
     t.set_defaults(fn=cmd_tmdb_season)

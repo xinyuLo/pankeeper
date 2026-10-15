@@ -27,6 +27,7 @@ from .base import (
     CredentialExpired,
     ShareBanned,
     ShareFile,
+    ShareLocked,
     TaskSpec,
     TransferResult,
 )
@@ -146,11 +147,17 @@ class QuarkAdapter(CloudAdapter):
             "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/token",
             json_body={"pwd_id": pwd_id, "passcode": passcode},
         )
-        # 业务语义：status!=200 且非 500 → 分享失效（500 视为网络抖动走 AdapterError 重试链）
+        # 业务语义：status!=200 且非 500 → 分享失效（500 视为网络抖动走 AdapterError 重试链）。
+        # 例外：「要提取码/访问码」是活链可行动错误（补码重试），不能混进死链——
+        # 2026-10-15 实锤：缺码活链被当 ShareBanned → check-link 判 bad 拦死，
+        # 执行期则变「分享清单失败：请输入访问码」失败推送（轰炸源之一）。
         if data.get("status") == 500:
             raise AdapterError("夸克接口网络异常（500）")
         if data.get("status") != 200:
-            raise ShareBanned(data.get("message") or "分享已失效")
+            msg = data.get("message") or "分享已失效"
+            if any(k in msg for k in ("提取码", "访问码", "密码")):
+                raise ShareLocked(f"夸克分享需要提取码/访问码：{msg}")
+            raise ShareBanned(msg)
         stoken = (data.get("data") or {}).get("stoken")
         if not stoken:
             raise AdapterError("未取到 stoken")
@@ -576,5 +583,10 @@ class QuarkAdapter(CloudAdapter):
     def prepare(self, spec: TaskSpec) -> dict:
         """取 stoken 并缓存（save 批次复用），返回解析结果。"""
         parsed = extract_share(spec.share_url)
+        # 提取码回落：链接没带 ?pwd= 时用独立 share_code 字段（搜索结果给的提取码），
+        # 与百度 list_share「三个来源都认」同口径——此前夸克完全无视 share_code，
+        # 密码不在链接里就裸奔（2026-10-15 实锤）
+        if not parsed["passcode"] and (spec.share_code or "").strip():
+            parsed["passcode"] = spec.share_code.strip()
         self._stoken = self.get_stoken(parsed["pwd_id"], parsed["passcode"])
         return parsed

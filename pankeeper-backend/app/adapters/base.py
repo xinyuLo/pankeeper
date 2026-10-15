@@ -50,6 +50,14 @@ class AdapterError(Exception):
     """一般转存失败。"""
 
 
+class ShareLocked(AdapterError):
+    """链接活着，但需要提取码/访问码（没带上或不对）。
+
+    继承 AdapterError：既有 except AdapterError 兜底照常接住；需要区分
+    「要密码」和「死链/失败」的调用方（check_link / manual 执行 / AI 层
+    transfer 闸）在更早处单独捕获——要密码是可行动的（补码重试），不是坏链。"""
+
+
 class RiskControlError(AdapterError):
     """网盘风控/限频（115 的 302 跳风控页、406 限频、验证码告警）。
 

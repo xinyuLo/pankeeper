@@ -5,6 +5,13 @@ frontend-dev.log
 backend-err-dev.log
 frontend-err-dev.log
 
+# 本地起服务的运行日志（仓根目录，2026-10-15 补）
+local-dev.log
+local-vite.log
+
+# Python 字节码缓存
+__pycache__/
+
 # 本地单端口联调的前端构建产物（Docker 构建时自行编译前端，不入库）
 pankeeper-backend/web/
 pankeeper-backend/dev-backend.log

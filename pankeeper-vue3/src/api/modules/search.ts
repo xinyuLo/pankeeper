@@ -33,10 +33,14 @@ export function getSearchResults(keyword: string): Promise<SearchResultItem[]> {
 }
 
 /** 链接死活预检结果（后端用网盘适配器实拉清单判定，同转存链路最准）。
- * ok=有效 / bad=死链 / locked=需提取码 / uncertain=无法判定 / unknown=检测不可用 */
+ * ok=有效 / bad=死链 / locked=链接活着但要提取码（2026-10-15 起真实现）/
+ * uncertain=无法判定 / unknown=检测不可用。
+ * has_code=这单有没有提供过提取码（链接 ?pwd=/?password= 或独立字段）：
+ * locked + has_code=false → 缺码（找发布页补码）；locked + has_code=true → 码不对 */
 export interface LinkCheckResult {
   state: 'ok' | 'bad' | 'locked' | 'uncertain' | 'unknown'
   summary: string
+  has_code?: boolean
 }
 
 /** 转存前死活预检（pansou 侧自带缓存；检测不可用时后端回 unknown，调用方放行别挡转存） */

@@ -42,7 +42,9 @@ def get_current_user(request: Request) -> str:
         return "local"
     # API Key 等效登录态（auth_guard 中间件已验过的在 state 里留了 key id；
     # 这里兜一遍是防直接调依赖的路径）。返回值只当「已登录」标记用，非真实用户名。
+    # ⚠️ 两处同款铁律（2026-10-15 定案）：API Key 只能调 /api/ai/*，其他口子 403。
     if getattr(request.state, "via_api_key", None) is not None:
+        _apikey_path_gate(request)
         return "apikey"
     from .services import apikey_svc
 
@@ -50,6 +52,7 @@ def get_current_user(request: Request) -> str:
     if raw:
         row = apikey_svc.validate(raw)
         if row is not None:
+            _apikey_path_gate(request)
             request.state.via_api_key = row.id
             apikey_svc.touch_later(row.id)
             return "apikey"
@@ -59,6 +62,13 @@ def get_current_user(request: Request) -> str:
     if not username:
         raise HTTPException(status_code=401, detail="登录凭证不存在或已过期")
     return username
+
+
+def _apikey_path_gate(request: Request) -> None:
+    """API Key 路径白名单：只放行 /api/ai/*。兜底防线——正常请求已在 auth_guard
+    中间件被拦，这里防的是绕过中间件直达依赖的路径（测试/内部调用）。"""
+    if not request.url.path.startswith("/api/ai/"):
+        raise HTTPException(status_code=403, detail="API Key 仅允许访问 /api/ai/* 接口（其他口子已封闭）")
 
 
 CurrentUser = Depends(get_current_user)

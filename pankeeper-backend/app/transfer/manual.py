@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import time
 
-from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, TaskSpec, split_video_files
+from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, ShareLocked, TaskSpec, split_video_files
 from ..adapters.factory import make_adapter
 from ..db import SessionLocal
 from ..models import Account, DdItem, Record
@@ -136,6 +136,13 @@ def run_manual(eng, t: dict, cfg: dict) -> None:
     except ShareBanned as e:
         _push_log(t, "ERROR", f"分享已失效：{e}")
         _finish(eng, t, "fail", f"分享失效：{e}", files_snap=_files_snap(files, spec, None))
+        return
+    except ShareLocked as e:
+        # 链接活着但要提取码/访问码：与死链空清单同口径 warn 收场、不推送（防轰炸）。
+        # 正常路径已被前端预检（locked 拦截）和 AI transfer 闸挡住，漏到这里说明码不对
+        # 或分享方中途加了码——重试也不可能成，推了只会骚扰。
+        _push_log(t, "WARN", f"分享需要提取码/访问码：{e}")
+        _finish(eng, t, "warn", f"需要提取码/访问码：{e}", files_snap=_files_snap(files, spec, None))
         return
     except CredentialExpired as e:
         _push_log(t, "ERROR", str(e))
