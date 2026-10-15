@@ -81,24 +81,17 @@ def test_list_newest_first():
 
 
 # ---------- HTTP 层：中间件 + 依赖（非回环来源，走完整鉴权链） ----------
+# ⚠️ 2026-10-15 起 API Key 只能调 /api/ai/*（app/api/pk_ai.py）：打其他口子一律
+# 403。Key 的「能通」断言挪去了 test_pk_ai.py；这里只保留禁区与回落语义。
 
 def test_http_without_any_credential_is_401():
     assert client.get("/api/apikeys").status_code == 401
 
 
-def test_http_x_api_key_header():
-    _, raw = apikey_svc.create("单测-请求头")
-    r = client.get("/api/apikeys", headers={"X-API-Key": raw})
-    assert r.status_code == 200
-    assert any(i["name"] == "单测-请求头" for i in r.json()["items"])
-    # 列表里绝不出现明文 key / 哈希
-    assert all("key" not in i and "key_hash" not in i for i in r.json()["items"])
-
-
-def test_http_api_key_query_param():
-    _, raw = apikey_svc.create("单测-URL参数")
-    r = client.get("/api/apikeys", params={"api_key": raw})
-    assert r.status_code == 200
+def test_http_api_key_blocked_outside_ai_layer():
+    _, raw = apikey_svc.create("单测-越界")
+    assert client.get("/api/apikeys", headers={"X-API-Key": raw}).status_code == 403
+    assert client.get("/api/apikeys", params={"api_key": raw}).status_code == 403
 
 
 def test_http_invalid_key_falls_back_to_token_check():
@@ -117,7 +110,7 @@ def test_http_disabled_key_is_401():
     assert client.get("/api/apikeys", headers={"X-API-Key": raw}).status_code == 401
 
 
-# ---------- 改密码是 API Key 唯一禁区 ----------
+# ---------- 改密码是 API Key 禁区（中间件路径收口后由 /api/ai/* 白名单覆盖，语义不变） ----------
 
 def test_password_change_forbidden_via_api_key():
     _, raw = apikey_svc.create("单测-改密")

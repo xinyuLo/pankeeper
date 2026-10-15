@@ -32,9 +32,10 @@ import { FolderOutlined, ThunderboltOutlined } from '@ant-design/icons-vue'
 import PkTree from '@/components/PkTree.vue'
 import LazyDirTree from '@/components/LazyDirTree.vue'
 import { USE_MOCK } from '@/api/http'
-import { getRootDirs } from '@/api/modules/accounts'
+import { getRootDirs, listAccounts } from '@/api/modules/accounts'
 import { listDdItems, listQmsPaths, listStrmPaths } from '@/api/modules/dd'
-import { getSearchShareFiles } from '@/api/modules/search'
+import { checkShareLink, getSearchShareFiles } from '@/api/modules/search'
+import { extractShareCode } from '@/api/modules/tasks'
 import { recognizeShare, type RecognizeCandidate } from '@/api/modules/recognize'
 import { getSettings } from '@/api/modules/settings'
 import { pkQueueCfgFetch } from '@/queue/engine'
@@ -46,9 +47,21 @@ import { MINE_TREE } from '@/api/mock/tree'
 import type { DdItem, DdQmsPath, DdStrmPath, MainDriveType, TreeNode } from '@/types/model'
 
 import { useBackGuard } from '@/composables/useBackGuard'
-const props = defineProps<{ open: boolean; target: TransferTarget | null }>()
+const props = defineProps<{ open: boolean; target: TransferTarget | null; linkMode?: boolean }>()
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>()
 useBackGuard(() => props.open, () => emit('update:open', false))
+
+/* ---- 链接直转模式（记录页「链接转存」入口，2026-10-15 定稿单弹窗两段式）：
+ * 上段贴链接+提取码 →「识别」（探活 + 拉文件清单），成功后链接区折叠成摘要卡、
+ * 下方展开转存表单；失败留在原位改了重试。该盘没配转存目录 → 拦下不让填。 ---- */
+const linkTarget = ref<TransferTarget | null>(null)
+/** 实际生效目标：搜索页传入优先；链接模式用解析结果。全弹窗统一读它。 */
+const target = computed<TransferTarget | null>(() => props.target ?? linkTarget.value)
+const linkUrl = ref('')
+const linkCode = ref('')
+const linkParsing = ref(false)
+const linkError = ref('')
+const parsed = computed(() => !!linkTarget.value)
 
 const DEFAULT_DIR = USE_MOCK ? '/我的资源/影视/电视剧/国产剧' : '/'
 
@@ -58,7 +71,7 @@ const rootDirs = ref<Record<string, string>>({})
 /** 本次打开的根目录配置是否已就绪：没就绪先不渲染树（不然按真根白列一轮，等锁定了又重列） */
 const rootReady = ref(false)
 /** 只有三大盘支持真实目录浏览；其余盘允许直接转存（目标目录自动创建） */
-const isMainDrive = computed(() => !!props.target && (['baidu', 'quark', '115'] as string[]).includes(props.target.type))
+const isMainDrive = computed(() => !!target.value && (['baidu', 'quark', '115'] as string[]).includes(target.value.type))
 
 /* 真实目录树刷新：绕过后端缓存直连重拉根层 */
 const mineTree = ref<InstanceType<typeof LazyDirTree> | null>(null)
@@ -72,9 +85,9 @@ async function onRefreshTree() {
   }
 }
 
-const meta = computed(() => (props.target ? DRIVE_META[props.target.type] : null))
+const meta = computed(() => (target.value ? DRIVE_META[target.value.type] : null))
 /** 分享摘要行：资源名 + 「N 项 · X GB」跟着资源走（项数 mock 固定 12） */
-const sumMeta = computed(() => `12 项 · ${props.target?.size || '82.4 GB'}`)
+const sumMeta = computed(() => `12 项 · ${target.value?.size || '82.4 GB'}`)
 
 /** 识别分阶段提示：后端并行搜 TMDB 也要 2~3s（走代理），按耗时轮换文案让用户知道在动 */
 const RECOGNIZE_STAGES: Array<[number, string]> = [
@@ -100,7 +113,7 @@ const recognizing = ref(false)
 const pickerOpen = ref(false)
 const pickerCands = ref<RecognizeCandidate[]>([])
 async function onRecognize() {
-  const src = (props.target?.name || '').trim()
+  const src = (target.value?.name || '').trim()
   if (!src) {
     message.warning('没有可识别的资源名')
     return
@@ -109,8 +122,11 @@ async function onRecognize() {
   recognizing.value = true
   const timers = recognizeTipStart()
   try {
-    const r = await recognizeShare(src, src, { share_type: props.target?.type || '', share_url: props.target?.url || '', share_code: props.target?.share_code || '' })
+    const r = await recognizeShare(src, src, { share_type: target.value?.type || '', share_url: target.value?.url || '', share_code: target.value?.share_code || '' })
     if (r.ok && r.media_name) {
+      // 联动：TMDB 认定电影/电视节目 → 同步右侧 radio（用户定稿：识别要能定类型）
+      const kind = r.candidates?.[0]?.media_type
+      if (kind === 'movie' || kind === 'tv') mediaKind.value = kind
       if (r.confident) {
         renameInput.value = r.media_name
         recognizeTipDone(timers, true, r.doubt ? `已识别（存疑，请确认）：${r.media_name}` : `已识别：${r.media_name}`)
@@ -130,6 +146,7 @@ async function onRecognize() {
 }
 function onPickCandidate(c: RecognizeCandidate) {
   renameInput.value = c.year ? `${c.title} (${c.year})` : c.title
+  mediaKind.value = c.media_type // 用户挑了候选，类型跟着候选走
 }
 
 /* ---- 分享文件多选（左栏，必选）：真实清单（share_list_cache 联动，点过查看文件秒开）。
@@ -159,7 +176,7 @@ async function loadShareFiles() {
   fileRows.value = []
   selPaths.value = []
   try {
-    const meta = await getSearchShareFiles(props.target!.type, props.target!.url || '', props.target!.share_code || '')
+    const meta = await getSearchShareFiles(target.value!.type, target.value!.url || '', target.value!.share_code || '')
     fileRows.value = (meta.files || [])
       .filter((f) => !f.is_dir)
       .map((f) => ({ path: f.path, name: f.name, size: f.size }))
@@ -222,7 +239,7 @@ const reverseOn = ref(false)
 /** 转存路径 = 目标位置 + 壳名（更名值优先，回落资源名） */
 const savePath = computed(() => {
   const dir = (selectedDir.value || '').replace(/\/+$/, '')
-  const shell = renameInput.value.trim() || props.target?.name || ''
+  const shell = renameInput.value.trim() || target.value?.name || ''
   return `${dir}/${shell}`
 })
 const qmsPaths = ref<DdQmsPath[]>([])
@@ -235,7 +252,7 @@ const strmOpts = computed(() => strmPaths.value.map((p) => ({ value: p.id, label
 
 /** 目标目录命中的转存配置（最长前缀优先，对齐后端 _match_dd_link 语义） */
 function hitDd(pred: (d: DdItem) => boolean): DdItem | null {
-  const t = props.target
+  const t = target.value
   if (!t) return null
   const dir = selectedDir.value
   return (
@@ -285,19 +302,124 @@ watch(lpOn, (v) => {
   if (v && !mediaTouched.value && mediaBackend.value === 'litepan') lpEvent.value = lpHit.value?.lp_event || ''
 })
 
+/* ---- 链接直转：解析四步（域名定盘 → 配置闸 → 探活 → 拉清单）。
+ * 识别按钮 = 这四步；成功折叠摘要卡、失败留原位改了重试（2026-10-15 定稿）。 ---- */
+const DRIVE_DOMAINS: Array<[RegExp, TransferTarget['type']]> = [
+  [/pan\.baidu\.com/i, 'baidu'],
+  [/pan\.quark\.cn/i, 'quark'],
+  [/(?:115|115cdn|anxia)\.com/i, '115'],
+]
+/** 电影/电视节目（用于推荐目标位置）：切到与当前目录 media_type 不符时自动跳到匹配目录 */
+const mediaKind = ref<'movie' | 'tv' | ''>('')
+
+async function onParseLink() {
+  if (linkParsing.value) return
+  const url = linkUrl.value.trim()
+  if (!url) {
+    message.warning('请先粘贴分享链接')
+    return
+  }
+  const type = DRIVE_DOMAINS.find(([re]) => re.test(url))?.[1]
+  if (!type) {
+    linkError.value = '无法识别的网盘链接（支持百度 / 夸克 / 115）'
+    return
+  }
+  linkParsing.value = true
+  linkError.value = ''
+  linkTarget.value = null
+  try {
+    // 账号闸（2026-10-15 用户定稿，就一条：有没有这个网盘）——链接转存 = 普通转存，
+    // 不要求配过「转存配置」，目录树随便选、目标目录自动创建
+    const accs = (await listAccounts().catch(() => [])) as Array<{ type: string }>
+    if (!accs.some((a) => a.type === type)) {
+      linkError.value = `还没有 ${DRIVE_META[type]?.name || type} 账号，先到「网盘连接」添加`
+      return
+    }
+    // 提取码：框里填的优先，空则按 ?pwd=/密码=/括号/末尾四位规则自动识别回填
+    const code = (linkCode.value.trim() || extractShareCode(url)).trim()
+    if (code && !linkCode.value.trim()) linkCode.value = code
+    // 探活：死链/缺码在这里拦（locked 语义 2026-10-15 起后端真实现）；
+    // uncertain/unknown 与搜索页同策略放行，靠文件清单这道最终守门
+    const chk = await checkShareLink(type, url, code)
+    if (chk.state === 'bad') {
+      linkError.value = `分享已失效（${chk.summary || '检测未通过'}）`
+      return
+    }
+    if (chk.state === 'locked') {
+      linkError.value =
+        chk.has_code === false
+          ? '链接需要提取码——链接和提取码框都没带上，补码后重新识别'
+          : '提取码不对，核对后重新识别'
+      return
+    }
+    const list = await getSearchShareFiles(type, url, code)
+    const rows = list.files || []
+    if (!rows.length) {
+      linkError.value = '分享内容为空（可能已失效），无法转存'
+      return
+    }
+    // 资源名回落：挑最大的视频文件名去扩展名（更名框可手改，右侧「识别」可再过 TMDB 校准）
+    const vids = rows.filter((f) => !f.is_dir && isVideoFile(f.name)).sort((a, b) => b.size - a.size)
+    const baseName = (vids[0]?.name || rows.find((f) => !f.is_dir)?.name || '链接分享').replace(/\.[^.]+$/, '')
+    const total = rows.filter((f) => !f.is_dir).reduce((s, f) => s + f.size, 0)
+    linkTarget.value = { type, name: baseName, size: fmtSize(total), url, share_code: code }
+    renameInput.value = baseName
+    // 电影/电视节目初判：文件名带季/集特征归电视节目
+    mediaKind.value = /S\d{1,2}E\d{1,2}|第\s*\d+\s*[集期]|Season\s*\d|第[一二三四五六七八九十]+季/i.test(rows.map((f) => f.name).join(' ')) ? 'tv' : 'movie'
+    // 表单就位：目录树根按该盘重取、文件清单（缓存命中毫秒级）、联动默认值
+    rootDir.value = rootDirs.value[type] || ''
+    selectedDir.value = rootDir.value || DEFAULT_DIR
+    void loadShareFiles()
+    resetMedia()
+    // 自动过一遍 TMDB 识别：更名校准 + 电影/电视节目联动（候选带 media_type；
+    // 加载提示走全局 message，与成功 toast 互不干扰）
+    void onRecognize()
+    message.success(`链接有效，共 ${rows.filter((f) => !f.is_dir).length} 个文件，请在下方确认转存配置`)
+  } catch {
+    linkError.value = '文件清单获取失败——链接可能已失效，无法转存'
+  } finally {
+    linkParsing.value = false
+  }
+}
+/** 摘要卡上的「重新识别」：回到链接输入态（链接和码保留，方便改一半重试） */
+function reEditLink() {
+  linkTarget.value = null
+  linkError.value = ''
+}
+/** 切电影/电视节目：当前目录的 media_type 不符且有匹配目录 → 自动跳过去 */
+function onKindChange(k: 'movie' | 'tv') {
+  const dir = selectedDir.value
+  const cur = hitDd((d) => dir === d.path || dir.startsWith((d.path || '').replace(/\/+$/, '') + '/'))
+  if (cur && cur.media_type && cur.media_type !== k) {
+    const alt = (ddStore.items as DdItem[]).find((d) => d.type === target.value?.type && d.media_type === k)
+    if (alt) {
+      selectedDir.value = alt.path
+      message.info(`已切到${k === 'tv' ? '剧集' : '电影'}目录：${alt.path}`)
+    }
+  }
+}
+
 /** 每次打开重置：分享树收起、勾选清空、目标位置回默认国产剧 */
   watch(
   () => props.open,
   async (v) => {
     if (!v) return
+    if (props.linkMode) {
+      // 链接直转：回输入态重新开始（链接/码也清空）
+      linkTarget.value = null
+      linkUrl.value = ''
+      linkCode.value = ''
+      linkError.value = ''
+      mediaKind.value = ''
+    }
     selPaths.value = []
     renameInput.value = ''
     detectDone.value = false
-    if (props.target?.url) void loadShareFiles() // 左栏文件清单（缓存联动秒开）
+    if (props.target?.url) void loadShareFiles() // 左栏文件清单（缓存联动秒开）；链接模式由 onParseLink 成功后触发
     // 打开即选中锁定根（默认根目录）；没配置就回退原来的默认
     rootReady.value = false
     if (!USE_MOCK) rootDirs.value = await getRootDirs().catch(() => ({}))
-    rootDir.value = rootDirs.value[props.target?.type || ''] || ''
+    rootDir.value = rootDirs.value[target.value?.type || ''] || ''
     rootReady.value = true
     selectedDir.value = rootDir.value || DEFAULT_DIR
     includeSub.value = true
@@ -327,7 +449,7 @@ function close() {
  * 填了更名 = 建壳承接、只转勾选文件（单文件夹单/少文件，正合刮削要求）；
  * 没填更名 = 按勾选路径直接转（子目录结构保留）。清单失败回退"全转"老行为。 */
 function start() {
-  const t = props.target
+  const t = target.value
   if (!t) return
   if (filesLoading.value) {
     message.warning('正在检测资源，请稍候…')
@@ -395,10 +517,50 @@ function start() {
   >
     <template #title>
       <div class="tm-head">
-        <span v-if="meta" class="chip tm-chip" :style="{ background: meta.color }">{{ meta.name }}</span>
-        <span>转存到{{ meta?.full }}</span>
+        <template v-if="target && meta">
+          <span class="chip tm-chip" :style="{ background: meta.color }">{{ meta.name }}</span>
+          <span>转存到{{ meta.full }}</span>
+        </template>
+        <template v-else>
+          <span>链接转存</span>
+        </template>
       </div>
     </template>
+
+    <!-- 链接直转（linkMode）：识别中链接框让位 loading；成功折叠摘要卡；失败留原位可改 -->
+    <div v-if="linkMode" class="tm-linkbox">
+      <div v-if="linkParsing" class="tm-link-loading">
+        <a-spin size="small" />
+        <span>正在检测链接有效性…（探活 + 拉文件清单，首次要几秒）</span>
+      </div>
+      <div v-else-if="parsed && target" class="tm-link-ok">
+        <span class="chip tm-chip" :style="{ background: meta?.color }">{{ meta?.name }}</span>
+        <span class="tm-link-ok-name" :title="target.name">{{ target.name }}</span>
+        <span class="tm-link-ok-meta">
+          {{ filesLoading ? '清单加载中…' : `${fileRows.length} 个文件 · ${fmtSize(selTotal)}` }}
+        </span>
+        <span style="flex: 1"></span>
+        <a-button size="small" @click="reEditLink">重新识别</a-button>
+      </div>
+      <template v-else>
+        <div class="tm-link-row">
+          <label>分享链接</label>
+          <a-input
+            v-model:value="linkUrl"
+            :maxlength="500"
+            placeholder="粘贴 pan.baidu.com / pan.quark.cn / 115 分享链接"
+            allow-clear
+            @pressEnter="onParseLink"
+          />
+          <a-button type="primary" :loading="linkParsing" @click="onParseLink">识别</a-button>
+        </div>
+        <div class="tm-link-row tm-link-code">
+          <label>提取码</label>
+          <a-input v-model:value="linkCode" :maxlength="16" placeholder="链接末尾 ?pwd= 会自动识别" allow-clear />
+          <span v-if="linkError" class="tm-link-err">{{ linkError }}</span>
+        </div>
+      </template>
+    </div>
 
     <div v-if="target" class="tm-body">
       <!-- 转存路径：目标位置 + 壳名（更名值/资源名），随选择实时更新 -->
@@ -407,17 +569,28 @@ function start() {
         <span class="tm-savepath-val" :title="savePath">{{ savePath }}</span>
       </div>
 
-      <!-- 文件夹更名：撑满整行；「识别」= TMDB 识别回填（子目录开关挪到联动框里） -->
+      <!-- 文件夹更名：撑满整行 + 电影/电视节目（推荐目标位置）；「识别」= TMDB 识别回填 -->
       <div class="tm-rename">
         <label>文件夹更名</label>
-        <a-input v-model:value="renameInput" :maxlength="80" placeholder="留空则用资源名新建文件夹" allow-clear>
-          <template #suffix>
-            <a-button size="small" class="tm-recog" :loading="recognizing" @click="onRecognize">
-              <template #icon><ThunderboltOutlined /></template>
-              识别
-            </a-button>
-          </template>
-        </a-input>
+        <div class="tm-rename-row">
+          <a-input v-model:value="renameInput" :maxlength="80" placeholder="留空则用资源名新建文件夹" allow-clear>
+            <template #suffix>
+              <a-button size="small" class="tm-recog" :loading="recognizing" @click="onRecognize">
+                <template #icon><ThunderboltOutlined /></template>
+                识别
+              </a-button>
+            </template>
+          </a-input>
+          <a-radio-group
+            :value="mediaKind"
+            size="small"
+            class="tm-kind"
+            @change="(e: any) => { mediaKind = e.target.value; onKindChange(e.target.value) }"
+          >
+            <a-radio-button value="movie">电影</a-radio-button>
+            <a-radio-button value="tv">电视节目</a-radio-button>
+          </a-radio-group>
+        </div>
       </div>
 
       <!-- 联动：按「系统设置 → 联动后端」切换 QMS / LitePan 表单 -->
@@ -565,18 +738,23 @@ function start() {
     </div>
 
     <div class="tm-foot">
-      <span class="small muted">
-        {{
-          detectBad
-            ? '文件检测未通过 · 链接可能已失效，无法转存'
-            : filesLoading
-              ? '正在检测资源…'
-              : `已选 ${selPaths.length}/${fileRows.length} 个文件 · 共 ${fmtSize(selTotal)} · 只转存勾选内容`
-        }}
-      </span>
+      <template v-if="target">
+        <span class="small muted">
+          {{
+            detectBad
+              ? '文件检测未通过 · 链接可能已失效，无法转存'
+              : filesLoading
+                ? '正在检测资源…'
+                : `已选 ${selPaths.length}/${fileRows.length} 个文件 · 共 ${fmtSize(selTotal)} · 只转存勾选内容`
+          }}
+        </span>
+        <span style="flex: 1"></span>
+      </template>
+      <span v-else class="small muted">粘贴分享链接点「识别」，检测通过后在这里确认转存配置</span>
       <span style="flex: 1"></span>
       <a-button @click="close">取消</a-button>
       <a-button
+        v-if="target"
         type="primary"
         :disabled="filesLoading || detectBad"
         :title="filesLoading ? '正在检测资源，请稍候…' : detectBad ? '文件检测未通过（链接可能已失效）' : undefined"
@@ -712,9 +890,38 @@ function start() {
 .tm-opt input:checked + .tm-box { background: var(--primary); border-color: var(--primary); }
 .tm-opt input:checked + .tm-box::after { opacity: 1; transform: rotate(45deg) scale(1); }
 
-/* 文件夹更名：撑满整行（子目录开关在下方联动框的开关行里） */
+/* 文件夹更名：label 在上、输入框+电影/电视节目 radio 横排在下 */
 .tm-rename { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
 .tm-rename label { font-size: 12px; color: var(--text3); }
+.tm-rename-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.tm-rename-row .ant-input-affix-wrapper { flex: 1; min-width: 0; }
+.tm-kind { flex: none; }
+/* 选中态填充主色（antd 默认浅蓝底看不清，用户点名调整）：实底白字 */
+.tm-kind :deep(.ant-radio-button-wrapper-checked) {
+  background: var(--primary, #1677ff);
+  border-color: var(--primary, #1677ff);
+}
+.tm-kind :deep(.ant-radio-button-wrapper-checked:not(:first-child)) { border-inline-start-color: var(--primary, #1677ff); }
+.tm-kind :deep(.ant-radio-button-wrapper-checked span) { color: #fff; }
+
+/* 链接直转区（linkMode）：边框盒与「转存路径」行同观感；错误红字跟在提取码行尾 */
+.tm-linkbox {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(22, 119, 255, 0.25);
+  border-radius: 8px;
+  background: rgba(22, 119, 255, 0.05);
+}
+.tm-link-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.tm-link-row + .tm-link-row { margin-top: 8px; }
+.tm-link-row label { flex: none; font-size: 12px; color: var(--text3); }
+.tm-link-row .ant-input-affix-wrapper { flex: 1; min-width: 0; }
+.tm-link-code .ant-input-affix-wrapper { flex: 0 1 220px; }
+.tm-link-err { color: var(--error); font-size: 12px; line-height: 1.5; min-width: 0; }
+.tm-link-loading { display: flex; align-items: center; gap: 10px; justify-content: center; padding: 14px 0; font-size: 13px; color: var(--text2); }
+.tm-link-ok { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.tm-link-ok-name { font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tm-link-ok-meta { font-size: 12px; color: var(--text3); flex: none; }
 /* 子目录：联动框开关行里的小号灰边框盒（跟在「过滤其他文件」后面） */
 .tm-opt.tm-sub {
   height: 22px; /* 与旁边 small 开关等高（16px 开关+描边余量），vertical-align 对齐上沿 */
@@ -765,6 +972,10 @@ function start() {
   /* 更名输入框与「子目录」保持同行（2026-10-08 用户定稿）：只收紧 flex 基准不换行 */
   .tm-rename { flex: 1 1 140px; }
   .tm-media { min-height: 0; }
+  /* 链接直转：窄屏输入行允许折行，提取码框占满一行 */
+  .tm-link-row { flex-wrap: wrap; }
+  .tm-link-code .ant-input-affix-wrapper { flex: 1 1 100%; }
+  .tm-rename-row { flex-wrap: wrap; }
   .tm-foot { flex-wrap: wrap; }
   .tm-foot .small { flex: 1 1 100%; margin-bottom: 2px; }
   .tm-foot :deep(.ant-btn) { flex: 1; }

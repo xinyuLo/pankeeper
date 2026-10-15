@@ -4,12 +4,13 @@
  * （内存过滤 + 切片）；记录是快照，抽屉展示转存当时的配置与结果。 */
 import { computed, onMounted, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import { CopyOutlined, FolderOpenOutlined } from '@ant-design/icons-vue'
+import { CopyOutlined, FolderOpenOutlined, LinkOutlined } from '@ant-design/icons-vue'
 import PkPager from '@/components/PkPager.vue'
 import LogBox from '@/components/LogBox.vue'
 import { useBackGuard } from '@/composables/useBackGuard'
 import ClearHistoryButton, { type ClearRange } from '@/components/ClearHistoryButton.vue'
 import ShareFilesModal from '@/views/auto/ShareFilesModal.vue'
+import TransferModal from '@/views/search/TransferModal.vue'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { DD_MEDIA, DRIVE_META, MAIN_ORDER } from '@/api/mock/meta'
 import { recordsStore } from '@/api/mock/records'
@@ -49,6 +50,8 @@ onMounted(async () => {
 const fStatus = ref('') // ''=全部状态 ok=完成 part=部分失败 fail=失败
 const fPan = ref('') // ''=全部网盘
 const kw = ref('')
+/** 链接转存弹窗（记录页入口：手头有分享链接、不经过搜索页直接转） */
+const linkOpen = ref(false)
 const STATUS_OPTS = [
   { value: '', label: '全部状态' },
   { value: 'ok', label: '完成' },
@@ -327,6 +330,10 @@ async function confirmTrig() {
           <a-select v-model:value="fPan" :options="PAN_OPTS" style="width: 120px" />
           <a-input v-model:value="kw" placeholder="资源名称" style="width: 200px" allow-clear />
           <span class="rk-flex1"></span>
+          <a-button class="rk-linkbtn" @click="linkOpen = true">
+            <template #icon><LinkOutlined /></template>
+            链接转存
+          </a-button>
           <a-button v-if="mediaBackend === 'qms'" type="primary" ghost @click="openTrig">触发 QMS / STRM</a-button>
           <ClearHistoryButton @clear="onClear" />
         </div>
@@ -534,10 +541,29 @@ async function confirmTrig() {
         <a-select v-model:value="trigStrm" :options="trigStrmOpts" :loading="pathsLoading" placeholder="目录加载中…" style="width: 100%" />
       </div>
     </a-modal>
+
+    <!-- 链接转存（单弹窗两段式：上识别下表单，2026-10-15 定稿） -->
+    <TransferModal link-mode :open="linkOpen" :target="null" @update:open="linkOpen = $event" />
   </div>
 </template>
 
 <style scoped>
+/* 链接转存按钮：智能识别一族的紫色描边（与弹窗内「识别」按钮同色语言） */
+.rk-linkbtn {
+  color: #8c73e6;
+  border-color: rgba(140, 115, 230, 0.55);
+  background: rgba(140, 115, 230, 0.08);
+  box-shadow: none;
+}
+.rk-linkbtn :deep(.anticon) { margin-inline-end: 0; }
+.rk-linkbtn :deep(.ant-btn-icon + span) { margin-inline-start: 6px; }
+.rk-linkbtn:hover,
+.rk-linkbtn:focus-visible {
+  color: #7451d8;
+  border-color: #8c73e6;
+  background: rgba(140, 115, 230, 0.14);
+}
+
 /* 卡片去内边距：筛选条接表头、表格接分页，连成一张完整卡（原型 padding:0;overflow:hidden） */
 .rk-flush {
   padding: 0;

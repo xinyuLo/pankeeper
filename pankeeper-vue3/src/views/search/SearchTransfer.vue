@@ -342,8 +342,9 @@ function hasDD(t: DriveType) {
 }
 
 /* ===== 转存前死活预检（2026-10-06 用户定稿：点了先探，死链直接不让过）=====
- * pansou /api/check/links 单条透传（服务端有缓存，重复点很快）。
- * 只拦 bad；locked（需提取码）/uncertain（无法判定）/unknown（检测器不可用）一律放行，
+ * 适配器实拉判定（后端 /api/search/check-link，服务端有缓存，重复点很快）。
+ * 拦 bad（死链）和 locked（链接活着但要提取码，放过去转存必失败——2026-10-15 起
+ * 后端真返回 locked）；uncertain（无法判定）/unknown（检测器不可用）一律放行，
  * 别让检测器挂掉把转存也挡死。检测中该行按钮禁用防连点。 */
 const checkingRows = ref(new Set<string>())
 function rowKeyOf(r: SearchResultItem) {
@@ -357,7 +358,7 @@ async function aliveOrBlock(r: SearchResultItem): Promise<boolean> {
   const key = rowKeyOf(r)
   if (checkingRows.value.has(key)) return false
   checkingRows.value = new Set(checkingRows.value).add(key)
-  // 检测可能打 pansou 真探测（秒级）：300ms 还没回来就提示"正在检测"，别让用户以为卡死；
+  // 检测可能实拉网盘清单（秒级）：300ms 还没回来就提示"正在检测"，别让用户以为卡死；
   // 缓存命中（点过查看文件）毫秒级返回，提示根本不会出现
   let tipShown = false
   const tipTimer = window.setTimeout(() => {
@@ -369,6 +370,13 @@ async function aliveOrBlock(r: SearchResultItem): Promise<boolean> {
     if (res.state === 'bad') {
       if (tipShown) message.warning({ content: `分享已失效（${res.summary || '链接检测未通过'}）`, key: 'linkcheck', duration: 5 })
       else message.warning(`分享已失效（${res.summary || '链接检测未通过'}）`, 5)
+      return false
+    }
+    if (res.state === 'locked') {
+      const hint = res.has_code === false ? '链接和搜索结果里都没带上提取码，找发布页补码后再转' : '提取码不对，核对后重试'
+      const txt = `分享需要提取码（${res.summary || '需要访问码'}）——${hint}`
+      if (tipShown) message.warning({ content: txt, key: 'linkcheck', duration: 6 })
+      else message.warning(txt, 6)
       return false
     }
     if (tipShown) message.success({ content: '链接有效', key: 'linkcheck', duration: 1 })

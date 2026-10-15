@@ -1,6 +1,7 @@
 """搜索：pansou 代理 + 频道/地址展示。"""
 from __future__ import annotations
 
+import re
 import time
 
 from fastapi import APIRouter, HTTPException
@@ -133,34 +134,41 @@ def check_link(body: dict, _user=CurrentUser):
     适配器实拉结果：
     - 清单非空 → ok（顺手不写缓存：include_subdirs=False 只列了根层，别污染查看文件的完整树）
     - 分享不存在/已取消/已过期/内容为空 → bad（前端拦截）
-    - 需要提取码 → locked；凭据过期/网络异常 → unknown（**放行**，别挡转存）"""
+    - 需要提取码/访问码（没带上或不对）→ locked（链接活着，可行动：补码重试；
+      2026-10-15 起真实现——此前 locked 只是文档声明，适配器从未抛过）
+    - 凭据过期/网络异常 → unknown（**放行**，别挡转存）
+    has_code：这单有没有提供过提取码（独立字段或链接 ?pwd=/?password=，静态可判）。
+    locked + has_code=false → 该问用户/上游要码；locked + has_code=true → 码不对。"""
     t = (body.get("type") or "").strip()
     url = (body.get("url") or "").strip()
     code = (body.get("share_code") or "").strip()
+    # 提取码是否可用是纯静态事实（链接带 ?pwd=/?password= 或独立字段给了码），
+    # 所有返回都带上，调用方在 locked 时不用再猜「是缺码还是码错」
+    has_code = bool(code) or bool(re.search(r"[?&](?:pwd|password)=[a-zA-Z0-9]+", url or ""))
     if not url:
-        return {"state": "unknown", "summary": "无链接"}
+        return {"state": "unknown", "summary": "无链接", "has_code": has_code}
     # ① 清单缓存快路径：点过「查看文件」/刚转过 → 毫秒级
     from ..services.share_cache import share_key, share_list_cache
 
     hit = share_list_cache.get(share_key(t, url, code))
     if hit and isinstance(hit[0], dict) and (hit[0].get("total") or 0) > 0:
-        return {"state": "ok", "summary": "近期查看过文件清单", "from_cache": True}
+        return {"state": "ok", "summary": "近期查看过文件清单", "from_cache": True, "has_code": has_code}
 
     # ①' 探针正结果短缓存：检测过的链接 5 分钟内直接放行（检测→快速转存→普通转存
     #    一连串点下来不再重复实拉；进程内存态即可）
     probe_key = (t, url, code)
     ts = _PROBE_OK.get(probe_key)
     if ts and time.time() - ts < _PROBE_TTL:
-        return {"state": "ok", "summary": "5 分钟内检测过", "from_cache": True}
+        return {"state": "ok", "summary": "5 分钟内检测过", "from_cache": True, "has_code": has_code}
 
     # ② 适配器实拉（判死活只需要小第一页：probe_share；没实现探针的盘回落 list_share）
-    from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, TaskSpec
+    from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, ShareLocked, TaskSpec
     from ..adapters.factory import make_adapter
 
     try:
         adapter = make_adapter(t)
     except AdapterError as e:
-        return {"state": "unknown", "summary": str(e)}
+        return {"state": "unknown", "summary": str(e), "has_code": has_code}
     DEAD_HINTS = ("不存在", "已取消", "已删除", "过期", "失效", "违规", "敏感")
     try:
         spec = TaskSpec(share_url=url, share_code=code, include_subdirs=False)
@@ -170,19 +178,21 @@ def check_link(body: dict, _user=CurrentUser):
             files = adapter.list_share(spec)
         _PROBE_OK[probe_key] = time.time()
         if not files:
-            return {"state": "bad", "summary": "分享内容为空（可能已失效）"}
-        return {"state": "ok", "summary": f"清单 {len(files)} 项"}
+            return {"state": "bad", "summary": "分享内容为空（可能已失效）", "has_code": has_code}
+        return {"state": "ok", "summary": f"清单 {len(files)} 项", "has_code": has_code}
     except ShareBanned as e:
-        return {"state": "bad", "summary": str(e) or "分享已失效"}
-    except CredentialExpired:
-        return {"state": "unknown", "summary": "网盘凭据已过期"}
+        return {"state": "bad", "summary": str(e) or "分享已失效", "has_code": has_code}
+    except ShareLocked as e:
+        return {"state": "locked", "summary": str(e) or "分享需要提取码/访问码", "has_code": has_code}
+    except CredentialExpired as e:
+        return {"state": "unknown", "summary": "网盘凭据已过期", "has_code": has_code}
     except AdapterError as e:
         msg = str(e)
         if any(k in msg for k in DEAD_HINTS):
-            return {"state": "bad", "summary": msg}
-        return {"state": "uncertain", "summary": msg[:60]}
+            return {"state": "bad", "summary": msg, "has_code": has_code}
+        return {"state": "uncertain", "summary": msg[:60], "has_code": has_code}
     except Exception as e:  # noqa: BLE001 —— 检测是旁路，异常一律放行别挡转存
-        return {"state": "unknown", "summary": str(e)[:60] or "检测异常"}
+        return {"state": "unknown", "summary": str(e)[:60] or "检测异常", "has_code": has_code}
 
 
 @router.get("/share-files")

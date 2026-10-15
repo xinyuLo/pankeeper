@@ -27,7 +27,7 @@ import requests
 
 from ..security import decrypt_credential
 from ..services import reqstat
-from .base import AdapterError, CloudAdapter, CredentialExpired, ShareBanned, ShareFile, TaskSpec, TransferResult
+from .base import AdapterError, CloudAdapter, CredentialExpired, ShareBanned, ShareFile, ShareLocked, TaskSpec, TransferResult
 from .rate_gate import RateGate
 
 UA = (
@@ -297,7 +297,7 @@ class BaiduClient(CloudAdapter):
         if errno == -6 or errno in (31041, 31042):
             raise CredentialExpired("百度 Cookie 已失效")
         if errno == -12:
-            raise AdapterError("提取码错误")
+            raise ShareLocked("提取码错误")
         if errno in (-62, -19):
             raise AdapterError("触发验证码，请稍后再试或手动过一次验证")
         raise AdapterError(f"{action}失败：errno={errno}")
@@ -420,7 +420,7 @@ class BaiduClient(CloudAdapter):
             if "页面不存在" in html or resp.status_code == 404:
                 raise ShareBanned("分享链接不存在（页面 404）")
             if re.search(r"输入提取码|提取码：|share-verif", html):
-                raise AdapterError("该分享需要提取码，但请求里没有带上（请补提取码后重试）")
+                raise ShareLocked("该分享需要提取码，但请求里没有带上（请补提取码后重试）")
             if re.search(r"分享的文件已经被取消|分享已过期|分享不存在|链接不存在", html):
                 raise ShareBanned("分享页提示链接已失效")
             # 兜底带上页面特征（2026-10-04：init 预热+重抓仍失败时，用户对着一句话没法排查）
