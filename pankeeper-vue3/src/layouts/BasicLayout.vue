@@ -312,7 +312,7 @@ watch(
         >
           {{ theme.isDark ? '☀ 日间' : '☾ 夜间' }}
         </button>
-        <span class="small muted pc-ver">v1.1.0</span>
+        <span class="small muted pc-ver">v1.2.0</span>
       </div>
     </div>
 

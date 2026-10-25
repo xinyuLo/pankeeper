@@ -24,7 +24,7 @@ WEBHOOK_PATH = "/api/open/automation/events"
 
 
 def _full_webhook_url(url: str) -> str:
-    """Webhook 地址补全：用户只填 LitePan 基地址（如 http://127.0.0.1:5545）时
+    """Webhook 地址补全：用户只填 LitePan 基地址（如 http://<你的地址>:5545）时
     自动拼上 /api/open/automation/events（2026-10-06 用户实填基地址，别让他记长路径）。"""
     url = (url or "").strip().rstrip("/")
     if url and not url.endswith(WEBHOOK_PATH):

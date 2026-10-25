@@ -11,9 +11,9 @@ export const ddStore = reactive<{ items: DdItem[]; seq: number }>({
 })
 
 export const ddQmsPaths: DdQmsPath[] = [
-  { id: 1, media_type: 'tv', source_path: '/data/media/电视剧' },
-  { id: 2, media_type: 'movie', source_path: '/data/media/电影' },
-  { id: 3, media_type: 'tv', source_path: '/data/media/纪录片' },
+  { id: 1, media_type: 'tv', source_path: '/media/电视剧' },
+  { id: 2, media_type: 'movie', source_path: '/media/电影' },
+  { id: 3, media_type: 'tv', source_path: '/media/纪录片' },
 ]
 
 export const ddStrmPaths: DdStrmPath[] = [

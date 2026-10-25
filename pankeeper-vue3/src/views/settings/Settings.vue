@@ -619,7 +619,7 @@ async function onRemoveAvatar() {
           <div class="formrow">
             <label>服务器地址</label>
             <div class="ctl">
-              <a-input v-model:value="notify.bark.server" style="width: 320px" placeholder="http://192.168.1.100:5546" @blur="flushSave('notify')" />
+              <a-input v-model:value="notify.bark.server" style="width: 320px" placeholder="http://你的服务器地址:5546" @blur="flushSave('notify')" />
             </div>
           </div>
           <div class="formrow">

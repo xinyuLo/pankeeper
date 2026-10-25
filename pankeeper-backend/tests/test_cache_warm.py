@@ -311,6 +311,10 @@ def _warm_env(monkeypatch, tree: dict, root_cfg: dict) -> list[str]:
         return {}
 
     monkeypatch.setattr(cache_api, "get_group", fake_get)
+    # T-013② 起门常装配（wait 进 loader）：stub 成快门，别让真实 0.8~2s 间隔拖慢用例
+    from app.adapters.rate_gate import RateGate
+
+    monkeypatch.setattr(cache_api, "_warm_gate", lambda t, a: RateGate(t, min_interval=0.001, cooldown=1))
     return calls
 
 
@@ -389,4 +393,47 @@ def test_warm_walk_root_cfg_resolve_failure_falls_back_with_log(monkeypatch, cap
     assert "解析失败" in out and "回落真根" in out  # 日志写明原因
     assert job["status"] == "done"  # 回落真根照常扫完（真根层已缓存命中，BFS 继续列 m）
     assert "m" in calls
+    dir_cache.clear()
+
+
+def test_manual_warm_paces_only_cache_misses(monkeypatch):
+    """T-013② 验收：手动预热（force=False）注入记录门——命中缓存的层 gate.wait 零调用、
+    miss 的层过门；force=True 等待次数与改前一致（每目录一次）。"""
+    from app.adapters.rate_gate import RateGate
+    from app.api import cache_api
+    from app.services.dircache import dir_cache
+
+    class _CountGate(RateGate):
+        def __init__(self):
+            super().__init__("quark", min_interval=0.001, cooldown=1)
+            self.waits = 0
+
+        def wait(self):
+            self.waits += 1
+            return super().wait()
+
+    tree = {"0": [{"fid": "d0", "name": "A", "is_dir": True, "size": 0}], "d0": []}
+    calls = {"n": 0}
+
+    def fake_load(type_, acc_id, parent, path):
+        calls["n"] += 1
+        return tree.get(parent, [])
+
+    monkeypatch.setattr(cache_api, "_load_dir_payload", fake_load)
+    dir_cache.clear()
+    with dir_cache._lock:  # 预置新鲜根层缓存：手动预热应命中它（零等待零网盘）
+        dir_cache._restored = True
+        dir_cache._store[("quark", "main", "0")] = (list(tree["0"]), _time.time() + 300, _time.time())
+
+    g = _CountGate()
+    job = {"status": "queued", "done": 0, "total": 1, "message": "", "acc_id": None}
+    cache_api._warm_walk("quark", None, job, force=False, gate=g)
+    assert calls["n"] == 1      # 只有 miss 的 d0 真打了网盘
+    assert g.waits == 1         # 命中的根层零等待；miss 层过门
+    assert job["status"] == "done" and job["done"] == 2
+
+    g2 = _CountGate()
+    job2 = {"status": "queued", "done": 0, "total": 1, "message": "", "acc_id": None}
+    cache_api._warm_walk("quark", None, job2, force=True, gate=g2)  # force：绕缓存全真拉
+    assert calls["n"] == 3 and g2.waits == 2  # 根 + d0 各等一次——与改前每目录一次一致
     dir_cache.clear()

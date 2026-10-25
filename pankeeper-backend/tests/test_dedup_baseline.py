@@ -712,6 +712,11 @@ def test_baidu_delete_dir_uses_pcs_channel():
     for ok in (12, None):
         cli._get = lambda url, params=None: {"errno": ok}
         cli.delete_dir("/a")
+    # T-013①：凭据失效码必须抛 CredentialExpired（标记账号 + 推过期告警），与 _mkdir 同口径
+    for expired in (-6, 31041, 31042):
+        cli._get = lambda url, params=None: {"errno": expired}
+        with pytest.raises(CredentialExpired):
+            cli.delete_dir("/a")
     cli._get = lambda url, params=None: {"errno": 8}
     with pytest.raises(AdapterError, match="删除失败：errno=8"):
         cli.delete_dir("/a")

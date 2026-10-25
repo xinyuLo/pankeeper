@@ -1,24 +1,36 @@
 """手动转存流程（搜索页「快速转存 / 转存」入队的任务，source=search）。
 
-⚠️ 与自动转存 auto.py 刻意分成两个文件、流程各自完整一份（允许代码重复）：
-两边的业务规则本就不同——手动没有定时熔断/执行历史回写，推送策略也独立。
-改这边的逻辑不要碰 auto.py，反过来也一样。
-网盘 API 层在 adapters/ 下，同样每盘独立文件（baidu/quark/pan115 互不依赖）。
+管道（日志/快照/台账/收尾/联动挂载）在 core.py 共用，**改管道只改 core，改完两条
+链路一起生效**；业务分支（建壳 spec、onlyVideo 开关、ShareLocked 收尾、mediaOff、
+显式 qmsId/strmId 优先级）保留在本文件，**改分支不用碰 auto.py**。
+网盘 API 层在 adapters/ 下，每盘独立文件（baidu/quark/pan115 互不依赖）。
 """
 from __future__ import annotations
 
-import json
 import time
 
-from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, ShareLocked, TaskSpec, TransferResult, split_video_files
+from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, ShareLocked, TaskSpec, split_video_files
 from ..adapters.factory import make_adapter
-from ..db import SessionLocal
-from ..models import Account, DdItem, Record
-from ..services import media_push, notify, qms
+from ..services import media_push, qms
 from ..services.settings_svc import get_group
-from .ledger import ledger_prefilter, ledger_write
+from .targets import (  # T-012：解析件收口 targets；T-013④ 内联 import 提到顶层（targets 不反向依赖 manual，无循环）
+    _match_dd_link,
+    _strm_for_qms,
+    dir_only_video,
+    resolve_litepan_link,
+)
+from .core import (
+    files_snap as _files_snap,
+    finish as core_finish,
+    mark_account_expired as _mark_account_expired,
+    push_log as _push_log,
+    sleep_phase as _sleep_phase,
+    transfer_share,
+)
 
-MAX_LOGS = 40
+# 本链路的收尾参数（差异只用参数表达，见 core.finish）：手动记录 source=search、
+# 只写 Record、链路挂 Record.id、失败推送走 search 来源开关（恒推送，无 enabled 闸）
+_FINISH_KW = dict(record_source="search", hist_sink="record", notify_kind="search_fail")
 
 
 def _clean_folder_name(s: str) -> str:
@@ -26,42 +38,6 @@ def _clean_folder_name(s: str) -> str:
     from ..services.names import sanitize_name
 
     return sanitize_name(s)
-
-
-def _push_log(t: dict, lv: str, txt: str) -> None:
-    t["logs"].append({"lv": lv, "txt": txt})
-    if len(t["logs"]) > MAX_LOGS:
-        t["logs"].pop(0)
-
-
-def _files_snap(files, spec, result) -> list:
-    """分享内文件清单快照（记录详情「最近结果 → 详情」弹窗用）。
-    done 记录里非新增的文件只有两种去向：去重跳过 / 未勾选；
-    fail 记录没有逐文件结果，统一「未转存」。目录条目不进表。"""
-    ok_names = {e.get("name") for e in (result.transferred if result else [])}
-
-    def kept(rel: str) -> bool:
-        rel = rel.strip("/")  # 两侧同口径剥斜杠（2026-10-08 修复勾选全不中）
-        for sel in spec.only_paths or set():
-            sel = sel.strip("/")
-            if sel and (rel == sel or rel.startswith(sel + "/")):
-                return True
-        return False
-
-    out = []
-    for f in files:
-        if f.is_dir:
-            continue
-        if result is not None and (f.name in ok_names or (f.target_name or f.name) in ok_names):
-            st = "已转存"
-        elif result is not None and spec.only_paths and not kept(f.path):
-            st = "未勾选"
-        elif result is not None:
-            st = "已在库跳过"
-        else:
-            st = "未转存"
-        out.append({"path": f.path, "name": f.name, "size": f.size, "st": st})
-    return out
 
 
 def run_manual(eng, t: dict, cfg: dict) -> None:
@@ -72,7 +48,7 @@ def run_manual(eng, t: dict, cfg: dict) -> None:
         adapter = make_adapter(t["type"], t.get("accId"))
     except AdapterError as e:
         _push_log(t, "ERROR", str(e))
-        _finish(eng, t, "fail")
+        core_finish(eng, t, "fail", **_FINISH_KW)
         return
 
     spec = TaskSpec(
@@ -93,7 +69,7 @@ def run_manual(eng, t: dict, cfg: dict) -> None:
     )
     if not spec.share_url:
         _push_log(t, "ERROR", "任务缺少分享链接（shareUrl），无法转存")
-        _finish(eng, t, "fail")
+        core_finish(eng, t, "fail", **_FINISH_KW)
         return
 
     files: list = []
@@ -103,7 +79,6 @@ def run_manual(eng, t: dict, cfg: dict) -> None:
         files = adapter.list_share(spec)
         # 过滤其他文件：放在项数统计前，「完成 N/M」分母只算留下的。
         # 弹窗显式指定（onlyVideo，普通转存弹窗开关默认开）优先；没带（快速转存等）按目录配置
-        from .auto import dir_only_video
         only_video = t.get("onlyVideo")
         use_filter = dir_only_video(t["path"]) if only_video is None else bool(only_video)
         if use_filter:
@@ -118,7 +93,7 @@ def run_manual(eng, t: dict, cfg: dict) -> None:
             # 按警告收场而非完成/失败：不推 Server 酱（避免死链任务天天骚扰），
             # 记录页显示黄色「链接已失效」。
             _push_log(t, "WARN", "分享内容为空（0 个文件），链接可能已失效")
-            _finish(eng, t, "warn", "链接已失效（分享内容为空）")
+            core_finish(eng, t, "warn", message="链接已失效（分享内容为空）", **_FINISH_KW)
             return
         total_size = sum(f.size for f in files if not f.is_dir)  # 目录行自带整目录合计，计入会双重计算
         _push_log(t, "INFO", f"获取分享内文件清单，共 {len(files)} 项（{total_size / 1024**3:.1f} GB）")
@@ -131,62 +106,52 @@ def run_manual(eng, t: dict, cfg: dict) -> None:
         def on_log(txt: str) -> None:
             _push_log(t, "INFO", txt)
 
-        # T-002 本地台账（去重第一道，先于适配器内的网盘基线）：命中直接跳过；
-        # 手动/搜索转存无任务 id，task_id 记 0（唯一键含 save_dir，不同目录互不干扰）；
-        # 全命中则短路 save_files——连网盘基线都不查（零网盘请求）
-        all_files = files
-        files, ledger_hits = ledger_prefilter(t["type"], int(t.get("paTaskId") or 0), spec.save_dir, files, on_log=on_log)
-        if ledger_hits and not any(not f.is_dir for f in files):
-            result = TransferResult()
-            result.skip = ledger_hits
-            _push_log(t, "STEP", f"转存完成：新增 0 / 跳过 {result.skip} / 失败 0（本地台账全命中，未请求网盘）")
-        else:
-            result = adapter.save_files(files, spec, on_progress, on_log)
-            if ledger_hits:
-                result.skip += ledger_hits
-            # T-002：转存成功落账（防 QMS 把文件搬进媒体库后重复转存）；写失败不影响转存
-            ledger_write(t["type"], t.get("accId"), int(t.get("paTaskId") or 0), spec.share_url, spec.save_dir, files, result)
-            _push_log(t, "STEP", f"转存完成：新增 {result.add} / 跳过 {result.skip} / 失败 {result.fail}")
-        if result.renamed:
-            _push_log(t, "INFO", f"按规则重命名 {result.renamed} 项")
+        all_files = list(files)  # T-011-F3：先留全量清单——save_files 阶段抛错时失败详情不退化成空表
+        # T-002 本地台账 + 转存（管道在 core）：手动无任务 id，task_id 记 0
+        # （唯一键含 save_dir，不同目录互不干扰）；全命中则短路 save_files——零网盘请求
+        result, all_files = transfer_share(
+            adapter, spec, files,
+            drive=t["type"], acc_id=t.get("accId"), task_id=int(t.get("paTaskId") or 0),
+            on_progress=on_progress, on_log=on_log,
+            log_step=lambda txt: _push_log(t, "STEP", txt),
+        )
     except ShareBanned as e:
         _push_log(t, "ERROR", f"分享已失效：{e}")
-        _finish(eng, t, "fail", f"分享失效：{e}", files_snap=_files_snap(all_files, spec, None))
+        core_finish(eng, t, "fail", message=f"分享失效：{e}", snap_rows=_files_snap(all_files, spec, None), **_FINISH_KW)
         return
     except ShareLocked as e:
         # 链接活着但要提取码/访问码：与死链空清单同口径 warn 收场、不推送（防轰炸）。
         # 正常路径已被前端预检（locked 拦截）和 AI transfer 闸挡住，漏到这里说明码不对
         # 或分享方中途加了码——重试也不可能成，推了只会骚扰。
         _push_log(t, "WARN", f"分享需要提取码/访问码：{e}")
-        _finish(eng, t, "warn", f"需要提取码/访问码：{e}", files_snap=_files_snap(all_files, spec, None))
+        core_finish(eng, t, "warn", message=f"需要提取码/访问码：{e}", snap_rows=_files_snap(all_files, spec, None), **_FINISH_KW)
         return
     except CredentialExpired as e:
         _push_log(t, "ERROR", str(e))
         _mark_account_expired(t["type"], t.get("accId"))
-        _finish(eng, t, "fail", str(e), files_snap=_files_snap(all_files, spec, None))
+        core_finish(eng, t, "fail", message=str(e), snap_rows=_files_snap(all_files, spec, None), **_FINISH_KW)
         return
     except AdapterError as e:
         _push_log(t, "ERROR", f"转存失败：{e}")
-        _finish(eng, t, "fail", str(e), files_snap=_files_snap(all_files, spec, None))
+        core_finish(eng, t, "fail", message=str(e), snap_rows=_files_snap(all_files, spec, None), **_FINISH_KW)
         return
 
     # ---- 转存成功，走 QMS/STRM 联动（阶段机照前端契约，延迟可配） ----
     qms_snap, strm_snap = _media_chain(eng, t, cfg, result, name_head)
-    _finish(eng, t, "done", qms_snap=qms_snap, strm_snap=strm_snap, result=result, files_snap=_files_snap(all_files, spec, result))
+    core_finish(eng, t, "done", qms_snap=qms_snap, strm_snap=strm_snap, result=result, snap_rows=_files_snap(all_files, spec, result), **_FINISH_KW)
 
 
 def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict, dict]:
-    """触发 QMS / STRM。STRM 目标三档：**弹窗下拉显式选的**（2026-10-09 恢复）→
+    """触发 QMS/STRM。STRM 目标三档：**弹窗下拉显式选的**（2026-10-09 恢复）→
     转存配置目录的 strm_id → 按 QMS 整理目标自动配对（strm_id_for_qms）；
     刮削成功才生成、失败不生成。
 
     QMS 目标来源两档：任务显式指定的 qmsId（普通转存弹窗下拉）→ 按目标路径前缀匹配
-    「转存配置」里 qms_on 的目录。解析结果挂在 t["_media"] 上——_finish 落库后挂
+    「转存配置」里 qms_on 的目录。解析结果挂在 t["_media"] 上——core.finish 落库后挂
     回填/STRM 线程要用同一份，别再现场 _match_dd_link（显式指定会被目录匹配覆盖掉）。"""
     if get_group("media").get("backend", "qms") != "qms":
         # 联动后端切到 LitePan：按目录配的 lp_on/lp_event 推 webhook（未配的目录跳过）
         from ..services import litepan
-        from .auto import resolve_litepan_link
         t["_media"] = {"qms_id": None, "strm_id": None}
         lp_link = resolve_litepan_link(t["path"])
         # 弹窗里填了事件名（搜索转存弹窗输入框）= 一次性联动：不要求目录开过 lp_on
@@ -205,7 +170,7 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
             })
             _push_log(t, "INFO" if lp_res["ok"] else "WARN", f"联动后端为 LitePan：{lp_res['message']}")
         _push_log(t, "STEP", "LitePan 模式独立推送流程已挂后台（自识别 TMDB，不查 LitePan 状态）")
-        # LitePan 模式的**独立推送流程**：自识别 TMDB 直接推送（与 QMS 流程隔离）
+        # LitePan 模式的**独立推送流程**：PanKeeper 自己识别 TMDB 直接推送（与 QMS 流程隔离）
         media_push.watch_and_spawn({
             "drive": t["type"], "task": name_head,
             "names": [e.get("name") for e in result.transferred],
@@ -238,8 +203,8 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
     if qms_id is not None and strm_id is None:
         strm_id = _strm_for_qms(qms_id)
     t["_media"] = {"qms_id": qms_id, "strm_id": strm_id}
-    # 反转开关（队列配置全局）：先生成 STRM 再触发 QMS。挂到 t 上，_finish 落库后的
-    # STRM 挂后台线程据此跳过（反转时 STRM 已经触发过，不能再等刮削）
+    # 反转开关（队列配置全局）：先生成 STRM 再触发 QMS。挂到 t 上，core.finish 落库后的
+    # STRM 挂后台据此跳过（反转时 STRM 已经触发过，不能再等刮削）
     reverse = bool(get_group("queue_cfg").get("reverse"))
     t["_media_reverse"] = reverse
 
@@ -290,135 +255,5 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
         # 反转模式已在上面先触发过，不再挂
         strm_snap = {"st": "等待中", "cls": "t-wait"}
 
-    # 推送（watch_and_spawn）挪到 _finish 落库后：那里才有 record id，推送线程才能等 STRM 结果
+    # 推送（watch_and_spawn）挪到 core.finish 落库后：那里才有 record id，推送线程才能等 STRM 触发结果
     return qms_snap, strm_snap
-
-
-def _strm_for_qms(qms_id: int) -> int | None:
-    """与 QMS 配对的 STRM 同步路径：**QMS 侧自动配对**（刮削整理目标根 ↔ 同步路径，
-    2026-10-04 用户定稿：转存配置里不再单独选 STRM）；QMS 侧拿不到再回退转存配置
-    里存的 strm_id（历史数据）。"""
-    sid = qms.strm_id_for_qms(qms_id)
-    if sid:
-        return sid
-    with SessionLocal() as s:
-        d = s.query(DdItem).filter(DdItem.qms_id == int(qms_id), DdItem.qms_on.is_(True)).first()
-        return d.strm_id if d and d.strm_id else None
-
-
-def _match_dd_link(path: str) -> dict | None:
-    """转存目录 → 配置的 QMS/STRM 关联：前缀命中里取**最长**（最具体的配置赢），
-    与添加顺序无关（2026-10-13 清单七：嵌套目录时旧实现按库序首个命中，会命中宽的那条；
-    auto 侧 _hit_dd_dir 一直是正确写法，这边看齐）。"""
-    with SessionLocal() as s:
-        rows = s.query(DdItem).filter(DdItem.qms_on.is_(True), DdItem.qms_id.isnot(None)).all()
-        for d in sorted(rows, key=lambda x: len(x.path or ""), reverse=True):
-            if path == d.path or path.startswith(d.path.rstrip("/") + "/"):
-                return {"qms_id": d.qms_id, "strm_id": d.strm_id}
-    return None
-
-
-def _sleep_phase(eng, t: dict, phase: str, seconds: int, log_txt: str) -> None:
-    _push_log(t, "STEP", log_txt)
-    with eng._lock:
-        t["phase"] = phase
-        t["phaseStart"] = int(time.time() * 1000)
-    deadline = time.time() + seconds
-    while time.time() < deadline:
-        time.sleep(0.5)
-
-
-def _mark_account_expired(drive_type: str, acc_id: int | None = None) -> None:
-    """标记凭据失效，并**只在「由好变坏」时推送一次**（每日探活同语义，防每日骚扰）。"""
-    prev: str | None = None
-    display = drive_type
-    with SessionLocal() as s:
-        if acc_id is not None:
-            acc = s.get(Account, acc_id)
-        else:
-            acc = s.query(Account).filter(Account.type == drive_type).order_by(Account.id).first()
-        if acc:
-            prev = acc.status
-            display = acc.display_name
-            acc.status = "expired"
-            s.commit()
-    if prev is not None and prev != "expired" and notify.drive_enabled(str(acc_id) if acc_id else drive_type):
-        notify.push("凭据过期告警", f"{display} 凭据已失效，请到「网盘连接」重新绑定", kind="cred")
-
-
-def _finish(eng, t: dict, status: str, message: str = "", qms_snap: dict | None = None, strm_snap: dict | None = None, result=None, files_snap: list | None = None) -> None:
-    """收尾：更新任务状态 + 写记录快照。失败推送走 search 来源的开关（notify 内部分流）。"""
-    now_ms = int(time.time() * 1000)
-    with eng._lock:
-        t["status"] = status
-        t["doneAt"] = now_ms
-        t["phase"] = ""
-        if status in ("done", "warn"):
-            # warn（死链）同样算走完一轮：进度拉满、重置转存间隔，下一任务照常排队
-            t["progress"] = 100
-            eng.state["lastDone"] = now_ms
-        eng._cond.notify_all()
-    # 记录快照（手动任务不接富文本推送——交互契约；失败提示走 notify 内部的 search_fail 开关）
-    rid = None
-    with SessionLocal() as s:
-        hist = Record(
-            n=t["name"],
-            t=t["type"],
-            p=t["path"],
-            st=("完成 %d/%d" % (result.add, t["files"] or result.add)) if status == "done" and result else (message or ("已完成" if status == "done" else "失败")),
-            cls="t-ok" if status == "done" else ("t-warn" if status == "warn" else "t-bad"),
-            tm=time.strftime("%m-%d %H:%M"),
-            qms_json=json.dumps(qms_snap or {"st": "未执行", "cls": "t-off"}, ensure_ascii=False),
-            strm_json=json.dumps(strm_snap or {"st": "未执行", "cls": "t-off"}, ensure_ascii=False),
-            share_url=t.get("shareUrl", ""),
-            share_code=t.get("shareCode", ""),
-            source="search",  # 手动查询转存：记录页唯一来源
-            backend=get_group("media").get("backend", "qms"),  # 当时的联动后端（行级触发按它分流）
-            logs_json=json.dumps(t["logs"], ensure_ascii=False),
-            files_json=json.dumps(files_snap or [], ensure_ascii=False),
-        )
-        s.add(hist)
-        s.commit()
-        rid = hist.id
-    from ..services import run_watch
-    run_watch.touch_records()  # 记录已落库 → SSE 推给搜索历史页，行带着「正在整理」立即出现
-    # QMS 触发受理 ≠ 刮削成功：挂真实结果回填 + STRM 等刮完再触发（有失败不生成）+ 富文本推送
-    media = t.get("_media") or {}
-    qms_id = media.get("qms_id")
-    strm_id = media.get("strm_id")
-    # 「已触发」前缀匹配兼容搭车快照「已触发（搭车：同路径刮削进行中）」——搭车也要挂
-    # 回填/STRM/推送全链路，等的是代刮产生的记录（2026-10-15）
-    qms_fired = bool(qms_snap and str(qms_snap.get("st", "")).startswith("已触发"))
-    # 触发过但被拒（快照「失败 ·」开头）也推——转存成功联动挂了，手机必须知道（2026-10-13 清单四）
-    qms_attempted = bool(qms_snap and str(qms_snap.get("st", "")).startswith("失败"))
-    if result and result.transferred and (qms_fired or qms_attempted):
-        from ..services import media_push, run_watch
-
-        names = [e.get("name") for e in result.transferred]
-        baseline = t.get("_qms_baseline") or {}
-        strm_plan = None
-        if qms_fired:
-            run_watch.watch_qms(rid, t["name"].split(".")[0], names, baseline=baseline, table=Record,
-                                on_state=lambda st: run_watch.write_qms_interim(rid, st, table))
-            if strm_id and not t.get("_media_reverse"):
-                # 反转模式 STRM 已先行触发过（run_watch 会回填 QMS 真实结果，但不再挂 STRM 线程）；
-                # 没配 STRM 时整段不挂（此前调用放在守卫外：反转时 delay 未定义 NameError、
-                # 无 STRM 时 int(None) TypeError）
-                delay = int(get_group("queue_cfg").get("strm", 10))
-                strm_plan = {"strm_id": int(strm_id), "delay": delay}
-                run_watch.trigger_strm_after_scrape(rid, int(qms_id), int(strm_id), delay, table=Record,
-                                                    ride=bool(t.get("_qms_ride")),
-                                                    log_fn=lambda txt: _push_log(t, "STEP", txt))
-        media_push.watch_and_spawn({
-            "drive": t["type"],
-            "task": t["name"].split(".")[0],
-            "names": names,
-            "qms_ok": qms_fired,
-            "strm_plan": strm_plan,
-            "run_id": rid,
-            "strm_table": "Record",
-            "qms_baseline": baseline,
-            "source": t.get("source", "search"),
-        })
-    if status == "fail":
-        notify.push("转存失败", f"{t['name']}：{message or '未知原因'}", kind="search_fail")

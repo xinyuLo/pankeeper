@@ -235,12 +235,25 @@ def _warm_gate(type: str, acc_id: int | None) -> RateGate:
     return g
 
 
+def _paced_warm_loader(type: str, acc_id: int | None, fid: str, pace: RateGate | None):
+    """预热 loader 包装：**真正要打网盘才过门**（T-013②）——dir_cache 命中缓存时
+    loader 根本不会被调，等待零发生；miss / force 时过共享限速门（CircuitOpen
+    熔断 → 整轮失败走 cache_warm 退避重试）。"""
+
+    def _load():
+        if pace is not None:
+            pace.wait()
+        return _load_dir_payload(type, acc_id, fid, "")
+
+    return _load
+
+
 def _warm_root_id(type: str, acc_id: int | None, acc_key: str, pace: RateGate | None = None) -> str | None:
     """预热起点（T-010）：优先 root_cfg[type] 配的默认根目录，解析成该网盘的**目录标识**。
 
     - 百度：路径本身就是标识，直接返回（零解析请求）；
     - 夸克/115：从真根 fid 逐层下钻找各段名的子目录（每层走 dir_cache.get_or_load，
-      force 预热时同样过限速门；顺带把路径链缓存了）。
+      miss 时过共享限速门；顺带把路径链缓存了）。
     没配（空 / "/"）返回 None（回落真根）；配了但逐层解析不到 → None + 日志说明
     （目录可能已改名/删除，或该账号网盘里没有这条路径）。"""
     path = str((get_group("root_cfg") or {}).get(type) or "").strip()
@@ -250,11 +263,9 @@ def _warm_root_id(type: str, acc_id: int | None, acc_key: str, pace: RateGate | 
         return path
     fid = "0"
     for seg in [p for p in path.strip("/").split("/") if p]:
-        if pace is not None:
-            pace.wait()
         payload = dir_cache.get_or_load(
             (type, acc_key, fid),
-            lambda: _load_dir_payload(type, acc_id, fid, ""),
+            _paced_warm_loader(type, acc_id, fid, pace),
         )
         hit = next((it for it in payload if it["is_dir"] and it["name"] == seg), None)
         if hit is None:
@@ -265,13 +276,17 @@ def _warm_root_id(type: str, acc_id: int | None, acc_key: str, pace: RateGate | 
 
 
 def _warm_walk(type: str, acc_id: int | None, job: dict, force: bool = False, gate: RateGate | None = None) -> None:
-    """预热走查。force=True（cache_warm 到期触发）才绕缓存真拉 + 过共享限速门；
-    手动「全部预热」保持原行为（force=False：吃缓存，只补 miss 的层——T-009-F1.3）。
+    """预热走查。force=True（cache_warm 到期触发）绕缓存真拉；手动（force=False）吃缓存、
+    只补 miss 的层（T-009-F1.3）——**两种模式的 loader 都过共享限速门**：命中缓存零等待，
+    真打网盘才 wait（T-013②）。
     gate 可注入（测试记时间用），缺省按 (type, 账号) 取共享门。
     起点优先 root_cfg 配的默认根目录（T-010，手动/自动同一起点），没配或解析失败
     回落真根——真根下的无关文件夹会吃掉 300 目录额度，影视库可能排在上限外。"""
     job["status"] = "running"
-    pace = (gate or _warm_gate(type, acc_id)) if force else None
+    # 门常装配（不再只在 force 时）：wait 收进 loader（_paced_warm_loader）——手动预热
+    # 命中缓存的层零等待，miss 的层照样过门（T-013②，T-009-F2 修漏的一半）；
+    # force=True 时 loader 必被调，等待次数与原实现一致。
+    pace = gate or _warm_gate(type, acc_id)
     root = _warm_root_id(type, acc_id, str(acc_id) if acc_id else "main", pace=pace)
     if root is None:
         root = "0" if type in ("quark", "115") else "/"
@@ -287,11 +302,9 @@ def _warm_walk(type: str, acc_id: int | None, job: dict, force: bool = False, ga
             if job["done"] >= WARM_MAX_DIRS or depth > WARM_MAX_DEPTH:
                 job["message"] = f"已达上限（{WARM_MAX_DIRS} 个目录 / {WARM_MAX_DEPTH} 层），其余浏览时按需缓存"
                 break
-            if pace is not None:
-                pace.wait()  # 真要打网盘的每一步都过门（CircuitOpen 熔断 → 整轮失败走重试）
             payload = dir_cache.get_or_load(
                 (type, acc_key, key_id),
-                lambda: _load_dir_payload(type, acc_id, key_id, ""),
+                _paced_warm_loader(type, acc_id, key_id, pace),
                 # T-009：到期预热必须真打网盘——不带 force 会被自家缓存挡掉（触发时刻
                 # 条目"还差几十秒过期"也照样全命中，2026-10-24 14:52 三账号整轮空转实录）
                 force=force,

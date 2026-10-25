@@ -784,6 +784,10 @@ class BaiduClient(CloudAdapter):
         errno = data.get("errno")
         if errno in (0, 12, None):
             return  # 12 = 目标不存在（幂等语义，与 _mkdir 同款），None = 无该字段按成功
+        if errno == -6 or errno in (31041, 31042):
+            # 与 _mkdir 同款口径（T-013①）：凭据失效必须抛 CredentialExpired 标记账号、
+            # 推「凭据过期告警」——此前落到 AdapterError 只显示「删除失败：errno=-6」
+            raise CredentialExpired("百度 Cookie 已失效")
         raise AdapterError(f"删除失败：errno={errno}")
 
     def _ensure_dirs(self, dirs: list[str]) -> None:
