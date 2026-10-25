@@ -30,6 +30,8 @@ interface DirNode extends DirItem {
   open: boolean
   loading: boolean
   kids: DirNode[]
+  /** 展开失败（大概率旧 fid 已改名/删除，百度 errno=-9）：行上留「请点刷新」提示 */
+  broken: boolean
 }
 
 const props = defineProps<{
@@ -56,39 +58,74 @@ const props = defineProps<{
 const emit = defineEmits<{ (e: 'select', path: string, fid: string): void }>()
 
 /**
- * 暴露给调用方：刷新"当前可见层级"（根 + 所有已展开的层）。
- * 逐层 force 重拉（绕后端缓存），按 fid 对齐保留展开/选中状态——不是废弃整树重头再来。
+ * 暴露给调用方：刷新（老大 2026-10-25 定稿，**不递归**）——选中了目录只 force 重拉
+ * 该目录的**直接子层**；没选中才刷根层（锁定根或真根）。一次一发列目录请求；
+ * 选中态不重置，展开态按 fid 对齐保留（搬旧子树，不再递归强刷展开的层）。
  */
-defineExpose({
-  reload: () => {
-    // 刷新必须绕后端缓存（force=true）：曾走 init() 不带 force，锁定根模式吃了缓存——
-    // 网盘上删掉的目录点刷新还在（2026-10-03 套娃目录删了还在案）。
-    if (props.rootPath && props.rootPath !== '/') return init(true)
-    return refreshLayer('0', '/', root.items, (items) => (root.items = items))
-  },
-})
+defineExpose({ reload })
 
-/** force 重拉一层；旧子节点里已展开的按 fid 对齐递归强刷。返回该层新节点。 */
-async function refreshLayer(
-  parent: string,
-  parentPath: string,
-  oldNodes: DirNode[],
-  commit: (nodes: DirNode[]) => void,
-) {
-  const items = (await fetchDir(parent, parentPath === '/' ? '/' : '', true)).items
-  const oldByFid = new Map(oldNodes.map((n) => [n.fid, n]))
-  const nodes = items.map((it) => toNode(it, parentPath, parent))
-  for (const n of nodes) {
+/** 刷新入口：选中节点 → 刷它的下一层；没选中（或选中节点已不在树里）→ 刷根层。 */
+async function reload() {
+  const target = props.nodes ? null : findNode(root.items, currentSel.value)
+  if (target?.is_dir) return reloadNodeKids(target)
+  await reloadRootLayer()
+}
+
+/** force 重拉根层（锁定根那一层 / 真根层）：一发请求，旧子树按 fid 对齐保留展开态。 */
+async function reloadRootLayer() {
+  const locked = !!(props.rootPath && props.rootPath !== '/')
+  root.loading = true
+  root.error = ''
+  root.retry = ''
+  try {
+    const meta = await fetchDir('0', locked ? props.rootPath! : '/', true, (t) => (root.retry = t))
+    const base = locked ? props.rootPath! : '/'
+    root.items = mergeLayer(
+      meta.items.filter((it) => it.is_dir).map((it) => toNode(it, base, base)),
+      root.items,
+    )
+  } catch (e: unknown) {
+    root.error = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail || '目录刷新失败'
+  } finally {
+    root.loading = false
+    root.retry = ''
+  }
+}
+
+/** force 重拉某节点的直接子层（一发请求）：子节点沿用旧展开态/子树，成功即展开它。 */
+async function reloadNodeKids(n: DirNode) {
+  n.loading = true
+  try {
+    const meta = await fetchDir(n.fid, '', true)
+    n.kids = mergeLayer(
+      meta.items.filter((it) => it.is_dir).map((it) => toNode(it, n.path, n.fid)),
+      n.kids,
+    )
+    n.loaded = true
+    n.broken = false
+    n.open = true // 刷新即看结果：展开刚拉回来的这一层
+  } catch (e: unknown) {
+    n.broken = true
+    message.error((e as { response?: { data?: { detail?: string } } })?.response?.data?.detail || '目录刷新失败')
+  } finally {
+    n.loading = false
+  }
+}
+
+/** 新旧两层按 fid 对齐：新节点搬旧节点的展开态与已加载子树（**不递归重拉**——刷新
+ * 一次只允许一发请求，T-005）；fid 对不上的（改名/删除）自然从树上消失。 */
+function mergeLayer(fresh: DirNode[], old: DirNode[]): DirNode[] {
+  const oldByFid = new Map(old.map((n) => [n.fid, n]))
+  for (const n of fresh) {
     const o = oldByFid.get(n.fid)
-    if (o && o.open && o.loaded && n.is_dir) {
-      // 该子层本来就展开着：跟着强刷，保持展开
-      n.kids = await refreshLayer(n.fid, n.path, o.kids, () => {})
-      n.loaded = true
-      n.open = true
+    if (o) {
+      n.open = o.open
+      n.loaded = o.loaded
+      n.kids = o.kids
+      n.broken = o.broken
     }
   }
-  commit(nodes)
-  return nodes
+  return fresh
 }
 
 function toNode(it: DirItem, parentPath: string, parentKey: string): DirNode {
@@ -100,6 +137,7 @@ function toNode(it: DirItem, parentPath: string, parentKey: string): DirNode {
     open: false,
     loading: false,
     kids: [],
+    broken: false,
   }
 }
 
@@ -162,14 +200,18 @@ async function loadRoot(force = false) {
   }
 }
 
-/** 拉一层子目录（toggle 展开；失败已在 fetchDir 内重试，仍败才提示） */
+/** 拉一层子目录（toggle 展开；失败已在 fetchDir 内重试，仍败才标失效态） */
 async function loadKids(n: DirNode) {
   n.loading = true
   try {
     const meta = await fetchDir(n.fid)
     n.kids = meta.items.filter((it) => it.is_dir).map((it) => toNode(it, n.path, n.fid))
     n.loaded = true
+    n.broken = false
   } catch (e: unknown) {
+    // 失效大概率是缓存里的旧 fid 已改名/删除（百度按路径打 → errno=-9）：就地标
+    // 失效态、行上留「请点刷新」提示——别只弹一句 error 就没了（T-005）
+    n.broken = true
     message.error((e as { response?: { data?: { detail?: string } } })?.response?.data?.detail || '子目录加载失败')
   } finally {
     n.loading = false
@@ -184,6 +226,8 @@ async function toggle(n: DirNode) {
     return
   }
   if (!n.loaded) await loadKids(n)
+  if (n.broken) return // 失效态：提示已在行上，展开无意义（点刷新拉最新清单自愈）
+  if (!n.kids.length) return // 只有文件的层：箭头已隐藏，兜底不展开也不再请求
   n.open = true
 }
 
@@ -385,10 +429,12 @@ watch(
       >
         <span class="ldt-caret" @click.stop="toggle(n)">
           <LoadingOutlined v-if="n.loading" />
-          <RightOutlined v-else-if="n.is_dir" :class="{ open: n.open }" />
+          <!-- 已加载且子目录为空（只剩文件）的节点不显示箭头：再点也不会请求（T-005） -->
+          <RightOutlined v-else-if="n.is_dir && !(n.loaded && n.kids.length === 0)" :class="{ open: n.open }" />
         </span>
         <FolderOutlined v-if="n.is_dir" style="color: var(--primary)" />
         <span class="ldt-name">{{ n.name }}</span>
+        <span v-if="n.broken" class="ldt-broken">目录可能已改名，请点刷新</span>
       </div>
       <div v-if="n.is_dir && n.open && n.loaded" class="ldt-kids">
         <LazyDirTree :type="type" :nodes="n.kids" :path-base="n.path" :selected="currentSel" @select="onChildSelect" />
@@ -426,10 +472,11 @@ watch(
         >
           <span class="ldt-caret" @click.stop="toggle(n)">
             <LoadingOutlined v-if="n.loading" />
-            <RightOutlined v-else-if="n.is_dir" :class="{ open: n.open }" />
+            <RightOutlined v-else-if="n.is_dir && !(n.loaded && n.kids.length === 0)" :class="{ open: n.open }" />
           </span>
           <FolderOutlined v-if="n.is_dir" style="color: var(--primary)" />
           <span class="ldt-name">{{ n.name }}</span>
+          <span v-if="n.broken" class="ldt-broken">目录可能已改名，请点刷新</span>
         </div>
         <div v-if="n.is_dir && n.open && n.loaded" class="ldt-kids">
           <LazyDirTree :type="type" :nodes="n.kids" :path-base="n.path" :selected="currentSel" @select="onChildSelect" />
@@ -515,4 +562,6 @@ watch(
 .ldt-caret .open { transform: rotate(90deg); }
 .ldt-kids { margin-left: 16px; border-left: 1px dashed var(--split); padding-left: 8px; }
 .ldt-name { overflow: hidden; text-overflow: ellipsis; }
+/* 展开失败的节点（旧 fid 疑似已改名/删除）：行上常驻提示，点刷新自愈（T-005） */
+.ldt-broken { flex: none; margin-left: 4px; font-size: 12px; color: var(--error); opacity: 0.85; }
 </style>

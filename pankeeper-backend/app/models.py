@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, Integer, Text
+from sqlalchemy import Boolean, Integer, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -220,6 +220,33 @@ class RunHistory(Base):
     qms_json: Mapped[str] = mapped_column(Text, default="")
     strm_json: Mapped[str] = mapped_column(Text, default="")
     logs_json: Mapped[str] = mapped_column(Text, default="[]")
+
+
+class TransferLedger(Base):
+    """本地已转存台账（T-002）。
+
+    QMS 整理时把文件从待整理目录**移动**进媒体库（源文件消失）：网盘基线
+    （T-001 的 compare_path 递归扫描）看得到库内文件，但文件再被移走/基线缓存
+    陈旧时仍可能判成新增再转一遍。台账是最后一道保险——转存过的文件记在本地
+    库里，不依赖网盘现状。
+
+    唯一键 (drive, task_id, save_dir, name)：手动/搜索转存 task_id 记 0，
+    不同目录下的同名文件靠 save_dir 区分（缺它会互相覆盖导致误跳过）。
+    acc_id 冗余记录（清理/排查用），不进唯一键——账号删了重加，账不能丢。
+    不自动过期、不自动清理；手工删了网盘文件想重转走 DELETE /api/pa/ledger。"""
+
+    __tablename__ = "transfer_ledger"
+    __table_args__ = (UniqueConstraint("drive", "task_id", "save_dir", "name", name="uq_transfer_ledger"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    drive: Mapped[str] = mapped_column(Text)  # baidu|quark|115
+    acc_id: Mapped[int] = mapped_column(Integer, default=0)
+    task_id: Mapped[int] = mapped_column(Integer, default=0, index=True)  # PaTask id；手动/搜索转存 = 0
+    share_url: Mapped[str] = mapped_column(Text, default="")
+    name: Mapped[str] = mapped_column(Text)  # 转存后的目标名（target_name 优先，与 transferred 账目一致）
+    md5: Mapped[str] = mapped_column(Text, default="")  # 分享侧 MD5（低冗余）：改名文件重转时靠它兜住
+    save_dir: Mapped[str] = mapped_column(Text)
+    transferred_at: Mapped[str] = mapped_column(Text, default="")  # %Y-%m-%d %H:%M:%S
 
 
 class SearchHistory(Base):

@@ -24,8 +24,9 @@ import httpx
 
 from ..security import decrypt_credential
 from ..services import reqstat
+from ..services.dircache import dir_cache
 from .base import AdapterError, CloudAdapter, CredentialExpired, RiskControlError, ShareBanned, ShareFile, ShareLocked, TaskSpec, TransferResult
-from .rate_gate import RateGate
+from .rate_gate import CircuitOpen, RateGate, RateLimited
 
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -36,6 +37,9 @@ REFERER = "https://servicewechat.com/wx2c744c010a61b0fa/94/page-frame.html"
 SHARE_RE = re.compile(r"(?:115|115cdn|anxia)\.com/s/(\w+)(?:\?password=(\w+))?")
 ALREADY = "文件已接收，无需重复接收"
 PAGE = 1000
+
+# 去重基线惰性下钻子目录的额外 list 请求上限（每任务共享，风控：宁可漏扫不可连打）
+SUBDIR_SCAN_LIMIT = 3
 
 _CLIENTS: dict[str, httpx.Client] = {}
 _CLIENT_LOCK = threading.Lock()
@@ -65,6 +69,9 @@ def parse_share_url(url: str) -> tuple[str, str]:
 
 class Pan115Adapter(CloudAdapter):
     type = "115"
+    # 目录缓存 key 的账号段：由 make_adapter_for 注入（与 cache_api.list_files 同口径，
+    # T-001-F4）；未注入（测试 __new__ 出来的裸实例等）默认 "main"
+    acc_key: str = "main"
 
     def __init__(self, cookies_enc: str, gate: RateGate | None = None):
         self.cookies = decrypt_credential(cookies_enc)
@@ -226,7 +233,8 @@ class Pan115Adapter(CloudAdapter):
 
     @staticmethod
     def _row_name(row: dict) -> str:
-        return row.get("n") or row.get("fn") or ""
+        """条目名：兼容网盘原始行（n/fn）与 dir_cache 归一行（name，T-001 基线下钻用）。"""
+        return str(row.get("n") or row.get("fn") or row.get("name") or "")
 
     @staticmethod
     def _is_file_row(row: dict) -> bool:
@@ -245,13 +253,96 @@ class Pan115Adapter(CloudAdapter):
         return ShareFile(fid=fid, name=name, is_dir=is_dir, size=int(row.get("s") or 0),
                          path=(base + "/" + name).lstrip("/") if name else base, md5="")
 
-    def list_dir_names(self, dir_path: str) -> set[str]:
-        """目标目录现有文件名集合（目录不存在/为空返回空集）。"""
+    def list_dir_names(
+        self,
+        dir_path: str,
+        cand_names: set[str] | None = None,
+        budget: list[int] | None = None,
+        on_log=None,
+        stats: dict | None = None,
+    ) -> set[str]:
+        """目标目录现有文件名集合（目录不存在/为空返回空集）。
+
+        惰性递归一层（T-001）：QMS 媒体库「剧名/Season 1/集.mkv」结构下，剧名目录
+        一层只看得到 Season 1 文件夹本身——cand_names（本轮仍待比对的名字）有未
+        命中才下钻直接子目录；子目录清单经 dir_cache 读穿（命中缓存不打网盘），
+        额外 list 请求受 budget（[剩余次数]，任务内跨目录共享）上限约束，超限立即
+        停。cand_names=None（契约调用）只扫一层。115 无 MD5，名字即口径。
+        CredentialExpired 一律上抛。
+        """
         try:
             cid = self.path_to_cid(dir_path)
+        except CredentialExpired:
+            raise
         except AdapterError:
+            if stats is not None:
+                stats["dirs"] = 0
             return set()
-        return {self._row_name(r) for r in self._list_own_dir(cid) if self._is_file_row(r)}
+        if budget is None:
+            budget = [SUBDIR_SCAN_LIMIT]
+        names: set[str] = set()
+        subdirs: list[str] = []
+        for r in self._list_own_dir(cid):
+            if self._row_is_file(r):
+                names.add(self._row_name(r))
+            else:
+                sub_id = str(r.get("cid") or r.get("fid") or "")
+                if sub_id:
+                    subdirs.append(sub_id)
+        scanned = 1
+
+        def _pending() -> bool:
+            return bool(cand_names) and any(n not in names for n in cand_names)
+
+        for sub in subdirs:
+            if not _pending():
+                break
+            if budget[0] <= 0:
+                if on_log:
+                    on_log(f"子目录扫描达上限（{SUBDIR_SCAN_LIMIT} 次/任务），因上限停止递归：{dir_path}")
+                if stats is not None:
+                    stats["stopped"] = True
+                break
+            flag: dict = {}
+            ok = True
+            try:
+                rows = dir_cache.get_or_load(("115", self.acc_key, sub), lambda c=sub: self._list_own_dir_norm(c), flag=flag)
+            except CredentialExpired:
+                raise
+            except (AdapterError, CircuitOpen, RateLimited) as e:
+                if on_log:
+                    on_log(f"子目录读取失败（{e}），跳过")
+                ok = False
+                rows = []
+            if not flag.get("cached"):
+                budget[0] -= 1  # 真打了网盘才占预算（失败请求也算）
+            if not ok:
+                continue
+            scanned += 1  # 列到了就计数（空目录也是扫过的目录）；失败的才不计
+            # 只下钻一层：孙目录不进基线（媒体库就两层，深挖纯属给风控送请求）
+            names |= {self._row_name(r) for r in rows if self._row_is_file(r)}
+        if stats is not None:
+            stats["dirs"] = scanned
+        return names
+
+    @staticmethod
+    def _row_is_file(row: dict) -> bool:
+        """条目是否文件：兼容网盘原始行（文件带 sha/sha1）与 dir_cache 归一行（is_dir）。"""
+        if "is_dir" in row:
+            return not bool(row["is_dir"])
+        return bool(row.get("sha") or row.get("sha1"))
+
+    def _list_own_dir_norm(self, cid: str) -> list[dict]:
+        """列自己的目录并归一成 dir_cache 统一形状（与 cache_api._load_dir_payload 115 分支一致）。"""
+        return [
+            {
+                "fid": str(r.get("fid") or r.get("cid") or ""),
+                "name": self._row_name(r),
+                "is_dir": self._is_dir_row(r),
+                "size": int(r.get("s") or 0),
+            }
+            for r in self._list_own_dir(cid)
+        ]
 
     def _list_own_dir(self, cid: str) -> list[dict]:
         """列自己的目录一层（webapi /files）。
@@ -385,11 +476,34 @@ class Pan115Adapter(CloudAdapter):
         if spec.save_dir and spec.save_dir not in bases:
             bases.append(spec.save_dir)
         existing: set[str] = set()
+
+        def _pending_cands() -> set[str]:
+            # 本轮仍待比对的名字（原名+目标名，按最终匹配口径剔已命中）：
+            # 下个 base 的惰性递归据此决定值不值得下钻
+            left: set[str] = set()
+            for f in save_list:
+                if f.name in existing or (f.target_name or f.name) in existing:
+                    continue
+                left.add(f.name)
+                if f.target_name:
+                    left.add(f.target_name)
+            return left
+
+        budget = [SUBDIR_SCAN_LIMIT]
+        scan_stats: dict = {"dirs": 0, "stopped": False}
         for base in bases:
             try:
-                existing |= self.list_dir_names(base)
-            except (AdapterError, CredentialExpired) as e:
+                st: dict = {}
+                existing |= self.list_dir_names(
+                    base, cand_names=_pending_cands(), budget=budget, on_log=on_log, stats=st
+                )
+                scan_stats["dirs"] += int(st.get("dirs") or 0)
+                scan_stats["stopped"] = scan_stats["stopped"] or bool(st.get("stopped"))
+            except CredentialExpired:
+                raise  # 凭据失效必须上抛标记账号 expired（T-001：不许吞）
+            except AdapterError as e:
                 on_log(f"对比目录 {base} 读取失败（{e}），该目录不参与去重基线")
+        on_log(f"去重基线：扫描了 {scan_stats['dirs']} 个目录（含子目录），现有 {len(existing)} 个文件名")
         need = [f for f in save_list if f.name not in existing and (f.target_name or f.name) not in existing]
         result.skip = len(save_list) - len(need)
         on_log(f"清单 {len(save_list)} 项：去重跳过 {result.skip} / 待转存 {len(need)}")
@@ -402,7 +516,15 @@ class Pan115Adapter(CloudAdapter):
         for f in need:
             rel = f.path.rsplit("/", 1)[0] if "/" in f.path else ""
             by_dir.setdefault(rel, []).append(f)
-        target_cid = self.ensure_dir(spec.save_dir)
+        # T-007：转存前确保目标目录存在——缺失才建一次并留痕（ensure_dir 此前静默建）；
+        # 存在则 path_to_cid 解析的 cid 直接复用。凭据失效照旧上抛，不当"目录不存在"吞
+        try:
+            target_cid = self.path_to_cid(spec.save_dir)
+        except CredentialExpired:
+            raise
+        except AdapterError:
+            target_cid = self.ensure_dir(spec.save_dir)
+            on_log(f"目标目录 {spec.save_dir} 不存在，已自动创建")
         done, total = 0, len(need)
         for rel, group in by_dir.items():
             cid = target_cid

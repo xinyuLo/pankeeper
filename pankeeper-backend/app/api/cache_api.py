@@ -8,6 +8,7 @@ from collections import deque
 from fastapi import APIRouter, HTTPException
 
 from ..adapters.base import AdapterError, CredentialExpired, RiskControlError
+from ..adapters.rate_gate import RateGate
 from ..db import SessionLocal
 from ..deps import CurrentUser, make_adapter_for
 from ..models import Account, DirPathCache
@@ -193,6 +194,9 @@ def _load_dir_payload(type: str, acc_id: int | None, parent: str, path: str):
                 "name": str(it.get("server_filename", "")),
                 "is_dir": bool(it.get("isdir")),
                 "size": int(it.get("size") or 0),
+                # T-001-F1：必须带 md5（小写）——去重基线读同一份缓存按 MD5 比对，
+                # 缺这个键的旧条目会被基线判为旧形状并触发额外重拉
+                "md5": str(it.get("md5") or "").lower(),
             }
             for it in items
         ]
@@ -210,12 +214,67 @@ _WARM_JOBS: dict[tuple, dict] = {}
 _WARM_QUEUES: dict[str, deque] = {}  # type → 该网盘的任务队列（FIFO）
 _WARM_LOCK = threading.Lock()
 _WARM_WORKERS: dict[str, threading.Thread] = {}  # type → 消费线程
+# (type, acc_key) → 完成回调（T-009：cache_warm 靠它「成功后才推进 last」）。单放一张表、
+# 不塞进 job——job 会被端点整包 JSON 给前端，函数进不去
+_WARM_CBS: dict[tuple, object] = {}
+# (type, acc_key) → 预热专用共享限速门（T-009-F2）。_load_dir_payload 每次调用都新建
+# adapter → 新 RateGate（_last=0），目录之间零间隔——force 全量真拉时一轮 300 发近似
+# 连发，限速形同虚设（429 直接来源）。这里按 (网盘, 账号) 复用同一扇门，走查期间
+# 相邻请求强制满足该网盘最小间隔（与各 adapter 的默认间隔一致）。
+_WARM_GATES: dict[tuple, RateGate] = {}
+_WARM_GATE_INTERVAL = {"baidu": 1.0, "quark": 0.8, "115": 2.0}
 WARM_TYPES = ("baidu", "quark", "115")
 
 
-def _warm_walk(type: str, acc_id: int | None, job: dict) -> None:
+def _warm_gate(type: str, acc_id: int | None) -> RateGate:
+    key = (type, str(acc_id) if acc_id else "main")
+    g = _WARM_GATES.get(key)
+    if g is None:
+        g = RateGate(type, min_interval=_WARM_GATE_INTERVAL.get(type, 1.0), cooldown=30.0)
+        _WARM_GATES[key] = g
+    return g
+
+
+def _warm_root_id(type: str, acc_id: int | None, acc_key: str, pace: RateGate | None = None) -> str | None:
+    """预热起点（T-010）：优先 root_cfg[type] 配的默认根目录，解析成该网盘的**目录标识**。
+
+    - 百度：路径本身就是标识，直接返回（零解析请求）；
+    - 夸克/115：从真根 fid 逐层下钻找各段名的子目录（每层走 dir_cache.get_or_load，
+      force 预热时同样过限速门；顺带把路径链缓存了）。
+    没配（空 / "/"）返回 None（回落真根）；配了但逐层解析不到 → None + 日志说明
+    （目录可能已改名/删除，或该账号网盘里没有这条路径）。"""
+    path = str((get_group("root_cfg") or {}).get(type) or "").strip()
+    if not path or path == "/":
+        return None
+    if type == "baidu":
+        return path
+    fid = "0"
+    for seg in [p for p in path.strip("/").split("/") if p]:
+        if pace is not None:
+            pace.wait()
+        payload = dir_cache.get_or_load(
+            (type, acc_key, fid),
+            lambda: _load_dir_payload(type, acc_id, fid, ""),
+        )
+        hit = next((it for it in payload if it["is_dir"] and it["name"] == seg), None)
+        if hit is None:
+            print(f"[cache] 预热起点 {path} 在 {type} 上解析失败（缺「{seg}」），回落真根扫全盘", flush=True)
+            return None
+        fid = str(hit["fid"])
+    return fid
+
+
+def _warm_walk(type: str, acc_id: int | None, job: dict, force: bool = False, gate: RateGate | None = None) -> None:
+    """预热走查。force=True（cache_warm 到期触发）才绕缓存真拉 + 过共享限速门；
+    手动「全部预热」保持原行为（force=False：吃缓存，只补 miss 的层——T-009-F1.3）。
+    gate 可注入（测试记时间用），缺省按 (type, 账号) 取共享门。
+    起点优先 root_cfg 配的默认根目录（T-010，手动/自动同一起点），没配或解析失败
+    回落真根——真根下的无关文件夹会吃掉 300 目录额度，影视库可能排在上限外。"""
     job["status"] = "running"
-    root = "0" if type in ("quark", "115") else "/"
+    pace = (gate or _warm_gate(type, acc_id)) if force else None
+    root = _warm_root_id(type, acc_id, str(acc_id) if acc_id else "main", pace=pace)
+    if root is None:
+        root = "0" if type in ("quark", "115") else "/"
     queue: deque = deque([(root, 0)])
     seen: set[str] = set()
     acc_key = str(acc_id) if acc_id else "main"
@@ -228,9 +287,14 @@ def _warm_walk(type: str, acc_id: int | None, job: dict) -> None:
             if job["done"] >= WARM_MAX_DIRS or depth > WARM_MAX_DEPTH:
                 job["message"] = f"已达上限（{WARM_MAX_DIRS} 个目录 / {WARM_MAX_DEPTH} 层），其余浏览时按需缓存"
                 break
+            if pace is not None:
+                pace.wait()  # 真要打网盘的每一步都过门（CircuitOpen 熔断 → 整轮失败走重试）
             payload = dir_cache.get_or_load(
                 (type, acc_key, key_id),
                 lambda: _load_dir_payload(type, acc_id, key_id, ""),
+                # T-009：到期预热必须真打网盘——不带 force 会被自家缓存挡掉（触发时刻
+                # 条目"还差几十秒过期"也照样全命中，2026-10-24 14:52 三账号整轮空转实录）
+                force=force,
             )
             job["done"] += 1
             job["total"] = max(job["total"], job["done"])
@@ -239,9 +303,17 @@ def _warm_walk(type: str, acc_id: int | None, job: dict) -> None:
                     job["total"] += 1
                     queue.append((it["fid"], depth + 1))
         job["status"] = "done"
+        # T-009：预热收尾打一行账（账号/目录数/是否触顶）——空转一眼可见
+        capped = "已达上限" in (job.get("message") or "")
+        print(
+            f"[cache] 预热完成：{_acc_name(type, job.get('acc_id'))} 扫描 {job['done']} 个目录"
+            + ("（已达目录数/深度上限，其余浏览时按需缓存）" if capped else ""),
+            flush=True,
+        )
     except Exception as e:  # noqa: BLE001 —— 预热失败不影响业务，状态报给前端
         job["status"] = "error"
         job["message"] = str(e)
+        print(f"[cache] 预热失败：{_acc_name(type, job.get('acc_id'))}：{e}", flush=True)
 
 
 def _warm_worker(type: str) -> None:
@@ -258,7 +330,15 @@ def _warm_worker(type: str) -> None:
             job = _WARM_JOBS.get(key)
             if job is None:
                 continue
-        _warm_walk(key[0], job.get("acc_id"), job)
+        _warm_walk(key[0], job.get("acc_id"), job, bool(job.get("force")), None)
+        # T-009：终态回调（cache_warm 记账用）：ok=是否真跑完（触顶算成功）、reason=失败原因
+        with _WARM_LOCK:
+            cb = _WARM_CBS.pop(key, None)
+        if cb is not None:
+            try:
+                cb(key[0], job.get("acc_id"), job.get("status") == "done", job.get("message") or "")
+            except Exception as e:  # noqa: BLE001 —— 回调失败不能影响队列继续消费
+                print(f"[cache] 预热完成回调失败：{e}", flush=True)
 
 
 def _acc_name(type: str, acc_id: int | None) -> str:
@@ -275,17 +355,23 @@ def _acc_name(type: str, acc_id: int | None) -> str:
     return acc.alias or acc.nickname or f"{type}#{acc_id}"
 
 
-def _enqueue_warm(type: str, acc_id: int | None) -> dict:
-    """入队一个预热任务；同 (type, 账号) 已在排队/在跑则直接回现状（不重复排）。"""
+def _enqueue_warm(type: str, acc_id: int | None, on_done=None, force: bool = False) -> dict:
+    """入队一个预热任务；同 (type, 账号) 已在排队/在跑则直接回现状（不重复排）。
+
+    on_done(type, acc_id, ok, reason)：该账号预热终态回调（T-009，cache_warm 记账用）。
+    已在跑时 setdefault——第一个回调有效，后来者不顶替（完成时总会有人记账）。
+    force：到期自动预热传 True（绕缓存真拉 + 过共享限速门），手动预热默认 False（T-009-F1.3）。"""
     acc_key = str(acc_id) if acc_id else "main"
     key = (type, acc_key)
     with _WARM_LOCK:
+        if on_done is not None:
+            _WARM_CBS.setdefault(key, on_done)
         job = _WARM_JOBS.get(key)
         if job and job["status"] in ("queued", "running"):
             return job
         _WARM_JOBS[key] = {
             "type": type, "acc_id": acc_id, "acc_key": acc_key, "acc_name": _acc_name(type, acc_id),
-            "status": "queued", "done": 0, "total": 1, "message": "",
+            "status": "queued", "done": 0, "total": 1, "message": "", "force": bool(force),
         }
         _WARM_QUEUES.setdefault(type, deque()).append(key)
         w = _WARM_WORKERS.get(type)
@@ -315,16 +401,22 @@ def warm_status(type: str, acc_id: int | None = None, _user=CurrentUser):
     return {**job} if job else {"type": type, "status": "idle", "done": 0, "total": 0, "message": ""}
 
 
-def enqueue_warm_all() -> int:
-    """全部已连接账号入队预热（按网盘分道：同盘串行防风控，跨盘并行——2026-10-15 定稿）。
+def enqueue_warm_all(targets: list[tuple[str, int]] | None = None, on_done=None, force: bool = False) -> int:
+    """全部（或 targets 指定的）已连接账号入队预热（按网盘分道：同盘串行防风控，
+    跨网盘并行——2026-10-15 定稿）。
 
-    缓存配置页「全部预热」按钮与 cache_warm 到期自动预热共用这一个入口。"""
+    targets=[(type, acc_id)] 只预热指定账号（T-009 按账号到期判断用）；
+    on_done(type, acc_id, ok, reason) 逐账号终态回调（cache_warm 据此推进 last——
+    入队≠成功）。force：到期自动预热传 True，手动「全部预热」保持 False（T-009-F1.3）。"""
     with SessionLocal() as db:
         rows = db.query(Account).filter(Account.status == "connected").order_by(Account.id).all()
-        targets = [(r.type, r.id) for r in rows if r.type in WARM_TYPES]
-    for type, acc_id in targets:
-        _enqueue_warm(type, acc_id)
-    return len(targets)
+        pairs = [(r.type, r.id) for r in rows if r.type in WARM_TYPES]
+    if targets is not None:
+        want = {(t, int(a)) for t, a in targets}
+        pairs = [p for p in pairs if p in want]
+    for type, acc_id in pairs:
+        _enqueue_warm(type, acc_id, on_done=on_done, force=force)
+    return len(pairs)
 
 
 @router.post("/cache/trees/warm-all")
@@ -338,7 +430,7 @@ def warm_all_status(_user=CurrentUser):
     """预热队列总览：排队数 / 在跑的当前任务 / 已完成任务数（缓存配置页轮询用）。"""
     with _WARM_LOCK:
         jobs = [dict(v) for v in _WARM_JOBS.values()]
-    return {
+    out = {
         "total_jobs": len(jobs),
         "done_jobs": sum(1 for j in jobs if j["status"] in ("done", "error")),
         "failed_jobs": sum(1 for j in jobs if j["status"] == "error"),
@@ -346,6 +438,14 @@ def warm_all_status(_user=CurrentUser):
         "current": next((j for j in jobs if j["status"] == "running"), None),
         "jobs": jobs,
     }
+    # T-009：各账号下次自动预热时间（前端「下次刷新」直接展示这份，不再自己按条目算）
+    try:
+        from ..services.cache_warm import warm_schedule
+
+        out["next_warm"] = warm_schedule()
+    except Exception:  # noqa: BLE001 —— 计划拿不到不影响进度总览
+        out["next_warm"] = []
+    return out
 
 
 def _resolve_path(adapter, path: str) -> str:

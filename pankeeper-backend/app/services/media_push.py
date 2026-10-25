@@ -126,7 +126,8 @@ def _watch(ctx: dict) -> None:
         if ctx.get("qms_ok") is False:
             _qms_trigger_failed(ctx)
             return
-        records = _wait_records(ctx)
+        records, verdict = _wait_records(ctx)
+        ctx["qms_verdict"] = verdict  # T-008：dedup（按文件去重没重刮）时统计段要说「已在库」
         strm_res = _wait_strm(ctx)  # 自动转存：等后台线程触发完 STRM，信息条才能如实显示
         emby = (strm_res or {}).get("emby") or None  # Bark/Server酱 统计行展示「触发 Emby 库刷新」
         header = _header(ctx, records, strm_res, emby)
@@ -187,7 +188,7 @@ def _wait_strm(ctx: dict) -> dict | None:
     return None
 
 
-def _wait_records(ctx: dict) -> list[dict]:
+def _wait_records(ctx: dict) -> tuple[list[dict], str]:
     """轮询 QMS 刮削记录，等**本次转存的全部文件**出现本次触发产生的新终态记录。
 
     2026-10-06 起委托 run_watch._wait（统一两处实现——此前各自维护，同一个早退 bug
@@ -196,11 +197,12 @@ def _wait_records(ctx: dict) -> list[dict]:
     ctx.qms_baseline）：旧记录不算这次的账，同名裸名文件跨剧碰撞（狂飙 17.mp4 撞兰香
     如故旧记录）不会再把推送标题变成别的剧。
 
-    返回本次的新记录（失败记录一并返回）；没等到的一律不在其中，由 _header/_fallback 如实标注。"""
+    返回 (本次的新记录, verdict)（T-008 起 verdict 一并带回：dedup 时统计段说
+    「已在库（未重刮）」而不是「未见记录」——那是"本来就在库里"，不是"没刮到"）。
+    没等到的文件一律不在记录里，由 _header/_fallback 如实标注。"""
     from . import run_watch  # 延迟导入避免循环
 
-    recs, _verdict = run_watch._wait(list(ctx["names"]), ctx.get("qms_baseline") or {})
-    return recs
+    return run_watch._wait(list(ctx["names"]), ctx.get("qms_baseline") or {})
 
 
 def _header(ctx: dict, records: list[dict], strm_res: dict | None = None, emby: str | None = None) -> str:
@@ -281,6 +283,10 @@ def _stats_list(ctx: dict, records: list[dict], strm_res: dict | None = None) ->
                 stats.append(f"⚠️ QMS 失败 {len(failed)}/{len(records)}")
             else:
                 stats.append("❌ QMS 刮削失败")
+        elif ctx.get("qms_verdict") == "dedup":
+            # QMS 按文件路径去重没重刮 = 文件本来就在库里（T-008，2026-10-25 17:02 实锤
+            # 被误报成「未见记录」）——不是"没刮到"，绝不能进 missing 口径
+            stats.append("✅ QMS 已在库（未重刮）")
         elif missing:
             stats.append(f"⚠️ QMS {missing} 项未见记录")
         else:
@@ -439,11 +445,12 @@ def _fallback(ctx: dict, records: list[dict], strm_res: dict | None = None, emby
     print("[push] 富文本推送回退纯文字")
     failed = {r.get("file_name"): r.get("failed_reason") or "刮削失败" for r in records if r.get("status") in FAILED_STATUS}
     seen = {r.get("file_name") for r in records}
+    dedup = ctx.get("qms_verdict") == "dedup"  # T-008-F1：已在库的文件不能标「未见」
     lines = []
     for n in ctx["names"]:
         if n in failed:
             lines.append(f"- {n}（{failed[n]}）")
-        elif n not in seen and is_video_file(n):  # 杂件（nfo/图片）QMS 不刮，不标未见
+        elif n not in seen and is_video_file(n) and not dedup:  # 杂件（nfo/图片）QMS 不刮，不标未见
             lines.append(f"- {n}（未见 QMS 刮削记录）")
         else:
             lines.append(f"- {n}")

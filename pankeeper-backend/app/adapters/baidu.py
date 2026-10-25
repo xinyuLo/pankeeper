@@ -10,7 +10,8 @@
 - GET  /s/<surl>                                分享页 HTML 抓 yunData（shareid/uk/bdstoken/file_list）
 - GET  /share/list                              分享内子目录清单（翻页）
 - POST /share/transfer                          转存（fsidlist 一组，Referer 必须是分享链接）
-- POST /rest/2.0/xpan/file?method=filemanager   重命名（oper=rename）
+- POST /rest/2.0/xpan/file?method=filemanager   重命名（opera=rename，**query 参数**——缺 opera 一律 errno=2，T-004）
+- GET  pcs.baidu.com/rest/2.0/pcs/file           删除目录（method=delete；filemanager 的 opera=delete 实测不可用，T-004-F1）
 解析全部做防御性处理：字段缺失返回 None，不让摘要挂掉。
 """
 from __future__ import annotations
@@ -27,8 +28,9 @@ import requests
 
 from ..security import decrypt_credential
 from ..services import reqstat
+from ..services.dircache import dir_cache
 from .base import AdapterError, CloudAdapter, CredentialExpired, ShareBanned, ShareFile, ShareLocked, TaskSpec, TransferResult
-from .rate_gate import RateGate
+from .rate_gate import CircuitOpen, RateGate, RateLimited
 
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -45,6 +47,9 @@ SHARE_UA = (
 # 请求都会新建 —— client 必须按账号（Cookie）复用，进程生命周期内不关闭。
 _CLIENTS: dict[str, httpx.Client] = {}
 _CLIENT_LOCK = threading.Lock()
+
+# 去重基线惰性下钻子目录的额外 list 请求上限（每任务共享，风控：宁可漏扫不可连打）
+SUBDIR_SCAN_LIMIT = 3
 
 
 def _shared_client(cookies: str) -> httpx.Client:
@@ -64,6 +69,9 @@ def _shared_client(cookies: str) -> httpx.Client:
 
 class BaiduClient(CloudAdapter):
     type = "baidu"
+    # 目录缓存 key 的账号段：由 make_adapter_for 注入（与 cache_api.list_files 同口径，
+    # T-001-F4）；未注入（测试 __new__ 出来的裸实例等）默认 "main"
+    acc_key: str = "main"
 
     def __init__(self, cookies_enc: str, gate: RateGate | None = None):
         self.cookies = decrypt_credential(cookies_enc)
@@ -578,24 +586,135 @@ class BaiduClient(CloudAdapter):
         return out
 
     def list_dir_names(self, dir_path: str) -> set[str]:
-        """base 契约方法：只要名字。内部走 _dir_baselines 同一份请求。"""
+        """base 契约方法：只要名字。内部走 _dir_baselines 同一份请求
+        （不带候选 → 惰性递归不触发，只扫一层）。"""
         names, _ = self._dir_baselines(dir_path)
         return names
 
-    def _dir_baselines(self, dir_path: str) -> tuple[set[str], set[str]]:
+    # 基线扫描的行读取：同一份逻辑要兼容两种来源——网盘原始行（server_filename/
+    # isdir/path）与 dir_cache 归一行（name/is_dir/fid，见 _list_dir_cached）
+    @staticmethod
+    def _row_name(row: dict) -> str:
+        return str(row.get("name") or row.get("server_filename") or (row.get("path") or "/").rsplit("/", 1)[-1])
+
+    @staticmethod
+    def _row_is_dir(row: dict) -> bool:
+        if "is_dir" in row:
+            return bool(row.get("is_dir"))
+        return bool(int(row.get("isdir") or 0))
+
+    @staticmethod
+    def _row_md5(row: dict) -> str:
+        return str(row.get("md5") or "").lower()
+
+    def _list_dir_cached(self, dir_path: str) -> list[dict]:
+        """列一层目录并归一成 dir_cache 统一形状（与 cache_api._load_dir_payload 百度
+        分支一致，额外带 md5——基线要按 MD5 比对，浏览前端忽略多余键）。"""
+        return [
+            {
+                "fid": str(e.get("path") or ""),
+                "name": self._basename(e),
+                "is_dir": bool(int(e.get("isdir") or 0)),
+                "size": int(e.get("size") or 0),
+                "md5": self._row_md5(e),
+            }
+            for e in self.list_dir(dir_path)
+        ]
+
+    def _dir_baselines(
+        self,
+        dir_path: str,
+        cands: list[ShareFile] | None = None,
+        budget: list[int] | None = None,
+        on_log=None,
+        stats: dict | None = None,
+    ) -> tuple[set[str], set[str]]:
         """一次 list_dir 同时收文件名与 MD5（去重基线）。
 
         bdsavePro 的 list_local_files 同款语义：名字与 MD5 本就来自同一份列表，
         分两次调只会把对百度目录接口的请求量翻倍——风控时代请求能省则省。
+
+        惰性递归一层（T-001）：QMS 把文件搬进媒体库「剧名/Season 1/」后，剧名目录
+        一层只剩子文件夹本身，里面的文件永远比不上 → 每次重跑都判成新增。先只扫
+        base 一层；cands（本轮仍待比对的**文件**）全部命中就不下钻，仍有未命中才
+        逐个扫**直接子目录**——子目录清单经 dir_cache 读穿（命中缓存不打网盘），
+        额外 list 请求受 budget（[剩余次数]，任务内跨目录共享）上限约束，超限立即
+        停。命中判定与最终 need 判定等价（T-001-F3）：名字命中**或**对应 MD5 命中
+        任一即算覆盖，不再白耗预算下钻。cands=None（契约调用）时只扫一层。
+        CredentialExpired 一律上抛（凭据失效吞了就是下次任务再撞一遍）。
         """
         names: set[str] = set()
         md5s: set[str] = set()
+        subdirs: list[str] = []
         for e in self.list_dir(dir_path):
-            if int(e.get("isdir") or 0):
+            if self._row_is_dir(e):
+                subdirs.append(str(e.get("path") or e.get("fid") or (dir_path.rstrip("/") + "/" + self._row_name(e))))
                 continue
-            names.add(self._basename(e))
-            if e.get("md5"):
-                md5s.add(str(e["md5"]).lower())
+            names.add(self._row_name(e))
+            if self._row_md5(e):
+                md5s.add(self._row_md5(e))
+        scanned = 1
+        if budget is None:
+            budget = [SUBDIR_SCAN_LIMIT]
+
+        def _pending() -> bool:
+            if not cands:
+                return False
+            return any(
+                (f.target_name or f.name) not in names and f.name not in names and (not f.md5 or f.md5 not in md5s)
+                for f in cands
+            )
+
+        if subdirs and _pending():
+            for sub in subdirs:
+                if not _pending():
+                    break
+                if budget[0] <= 0:
+                    if on_log:
+                        on_log(f"子目录扫描达上限（{SUBDIR_SCAN_LIMIT} 次/任务），因上限停止递归：{dir_path}")
+                    if stats is not None:
+                        stats["stopped"] = True
+                    break
+                flag: dict = {}
+                ok = True
+                try:
+                    rows = dir_cache.get_or_load(("baidu", self.acc_key, sub), lambda p=sub: self._list_dir_cached(p), flag=flag)
+                except CredentialExpired:
+                    raise
+                except (AdapterError, CircuitOpen, RateLimited) as e:
+                    if on_log:
+                        on_log(f"子目录 {sub} 读取失败（{e}），跳过")
+                    ok = False
+                    rows = []
+                if not flag.get("cached"):
+                    budget[0] -= 1  # 真打了网盘才占预算（失败请求也算）
+                if not ok:
+                    continue
+                # 旧形状缓存修复（T-001-F1）：前端浏览写入的条目没有 md5 键，候选却要按
+                # MD5 比对——缺键即判旧形状，force 重拉一次刷新该层缓存（一次性开销，
+                # 不占正常预算；重拉失败沿用缓存条目，名字比对仍有效）
+                if flag.get("cached") and cands and any(f.md5 for f in cands):
+                    file_rows = [e for e in rows if not self._row_is_dir(e)]
+                    if file_rows and all("md5" not in e for e in file_rows):
+                        if on_log:
+                            on_log(f"子目录 {sub} 的缓存为旧格式（无 MD5），重拉一次补齐")
+                        try:
+                            rows = dir_cache.get_or_load(("baidu", self.acc_key, sub), lambda p=sub: self._list_dir_cached(p), force=True)
+                        except CredentialExpired:
+                            raise
+                        except (AdapterError, CircuitOpen, RateLimited) as e:
+                            if on_log:
+                                on_log(f"子目录 {sub} 重拉失败（{e}），沿用缓存条目")
+                scanned += 1  # 列到了就计数（空目录也是扫过的目录）；失败的才不计
+                # 只下钻一层：孙目录不进基线（媒体库就两层，深挖纯属给风控送请求）
+                for e in rows:
+                    if self._row_is_dir(e):
+                        continue
+                    names.add(self._row_name(e))
+                    if self._row_md5(e):
+                        md5s.add(self._row_md5(e))
+        if stats is not None:
+            stats["dirs"] = scanned
         return names, md5s
 
     @staticmethod
@@ -633,14 +752,16 @@ class BaiduClient(CloudAdapter):
         return full
 
     def rename_dir(self, path: str, new_name: str) -> str:
-        """重命名目录（filemanager oper=rename，与转存后改名的 _apply_renames 同款接口）。
+        """重命名目录（filemanager opera=rename，与转存后改名的 _apply_renames 同款接口）。
 
-        返回新完整路径。目录同样走这条通道，百度不区分文件/目录。"""
+        返回新完整路径。目录同样走这条通道，百度不区分文件/目录。
+        ⚠️ opera 必须在 query（T-004）：filemanager 靠它分辨动作，缺了回 errno=2
+        （2026-10 历史 14/16/17 三条「重命名失败：errno=2」实证）。"""
         parent = path.rstrip("/").rsplit("/", 1)[0]
         full = (parent + "/" + new_name) if parent else "/" + new_name
         body = self._share_post(
             "https://pan.baidu.com/rest/2.0/xpan/file",
-            params={"method": "filemanager", "web": 1},
+            params={"method": "filemanager", "web": 1, "opera": "rename"},
             data={"filelist": json.dumps([{"path": path, "newname": new_name}], ensure_ascii=False)},
             referer="https://pan.baidu.com/disk/main",
         )
@@ -649,15 +770,21 @@ class BaiduClient(CloudAdapter):
         return full
 
     def delete_dir(self, path: str) -> None:
-        """删除目录（filemanager oper=delete，百度目录删除是递归的，含全部内容）。"""
-        body = self._share_post(
-            "https://pan.baidu.com/rest/2.0/xpan/file",
-            params={"method": "filemanager", "web": 1},
-            data={"oper": "delete", "filelist": json.dumps([{"path": path}], ensure_ascii=False)},
-            referer="https://pan.baidu.com/disk/main",
+        """删除目录（PCS delete，与 _mkdir 同一条通道；目录删除是递归的，含全部内容）。
+
+        ⚠️ 通道实测定案（2026-10-25 真实账号逐组合验证，T-004-F1）：filemanager 的
+        opera=delete 对**目录删除不可用**——xpan/file 与 api/filemanager 各参数组合
+        （含 async=1/2、web=1、bdstoken、filelist 带 isdir:1）全回 8001，带 bdstoken
+        只是变成 132；唯独 GET pcs.baidu.com/…/pcs/file?method=delete 成功、目录立即
+        消失。**别改回 filemanager 通道**（重命名不受影响，rename 的 opera 通道是好的）。"""
+        data = self._get(
+            "https://pcs.baidu.com/rest/2.0/pcs/file",
+            {"method": "delete", "path": path, "app_id": 778750},
         )
-        if int(body.get("errno") or 0) != 0:
-            raise AdapterError(f"删除失败：errno={body.get('errno')}")
+        errno = data.get("errno")
+        if errno in (0, 12, None):
+            return  # 12 = 目标不存在（幂等语义，与 _mkdir 同款），None = 无该字段按成功
+        raise AdapterError(f"删除失败：errno={errno}")
 
     def _ensure_dirs(self, dirs: list[str]) -> None:
         # bdsavePro _ensure_dir_tree_exists 语义：整树能 list 通 = 目录已存在，
@@ -676,6 +803,24 @@ class BaiduClient(CloudAdapter):
             for p in parts:
                 cur += "/" + p
                 self._mkdir(cur)
+
+    def _ensure_save_dir(self, dir_path: str, on_log) -> None:
+        """转存前确保目标目录存在（T-007）。
+
+        save_files 此前只对文件的**子目录** _ensure_dirs，save_dir 本身从不检查——
+        目录被改名/删掉后拿不存在的路径提交转存，百度直接回 errno=2 整单失败
+        （2026-10-25 03:12/03:14 实录）。先一次 list 探测：存在零额外写请求；
+        缺失才走 _ensure_dirs 逐级建（PCS mkdir 已验证通道）并留痕。
+        CredentialExpired 照旧上抛——凭据失效不能当"目录不存在"吞掉。"""
+        try:
+            self.list_dir(dir_path)
+            return
+        except CredentialExpired:
+            raise
+        except AdapterError:
+            pass
+        self._ensure_dirs([dir_path])
+        on_log(f"目标目录 {dir_path} 不存在，已自动创建")
 
     def save_files(self, files: list[ShareFile], spec: TaskSpec, on_progress, on_log) -> TransferResult:
         ctx = getattr(self, "_share_ctx", None)
@@ -714,14 +859,36 @@ class BaiduClient(CloudAdapter):
             bases.append(spec.save_dir)
         existing: set[str] = set()
         md5s: set[str] = set()
+
+        def _pending_files() -> list[ShareFile]:
+            # 本轮仍待比对的文件（按最终匹配口径剔已命中：MD5 命中**或**名字命中）：
+            # 下个 base 的惰性递归据此决定值不值得下钻——全部命中就一层收工（T-001-F3）
+            return [
+                f
+                for f in save_list
+                if not (f.md5 and f.md5 in md5s)
+                and (f.target_name or f.name) not in existing
+                and f.name not in existing
+            ]
+
+        budget = [SUBDIR_SCAN_LIMIT]
+        scan_stats: dict = {"dirs": 0, "stopped": False}
         for base in bases:
             try:
                 # 名字与 MD5 同源：一次扫描拿全（原两遍 list_dir 是给风控送人头的写法）
-                dir_names, dir_md5s = self._dir_baselines(base)
+                st: dict = {}
+                dir_names, dir_md5s = self._dir_baselines(
+                    base, cands=_pending_files(), budget=budget, on_log=on_log, stats=st
+                )
                 existing |= dir_names
                 md5s |= dir_md5s
-            except (AdapterError, CredentialExpired) as e:
+                scan_stats["dirs"] += int(st.get("dirs") or 0)
+                scan_stats["stopped"] = scan_stats["stopped"] or bool(st.get("stopped"))
+            except CredentialExpired:
+                raise  # 凭据失效必须上抛标记账号 expired，吞了下次任务还会再撞
+            except AdapterError as e:
                 on_log(f"对比目录 {base} 读取失败（{e}），该目录不参与去重基线")
+        on_log(f"去重基线：扫描了 {scan_stats['dirs']} 个目录（含子目录），现有 {len(existing)} 个文件名 / {len(md5s)} 个 MD5")
         need = []
         for f in save_list:
             if f.md5 and f.md5 in md5s:
@@ -736,6 +903,9 @@ class BaiduClient(CloudAdapter):
         if not need:
             on_progress(100)
             return result
+
+        # T-007：转存前确保目标目录存在（缺失自动建一次并留痕），三平台同语义
+        self._ensure_save_dir(spec.save_dir, on_log)
 
         # 建目录：需要的相对目录全部确保存在（目录条目也在 files 里，直接按 path 收集）
         rel_dirs = sorted({f.path.rsplit("/", 1)[0] for f in need if "/" in f.path})
@@ -866,7 +1036,7 @@ class BaiduClient(CloudAdapter):
             full = target_dir.rstrip("/") + "/" + f.name
             body = self._share_post(
                 "https://pan.baidu.com/rest/2.0/xpan/file",
-                params={"method": "filemanager", "web": 1},
+                params={"method": "filemanager", "web": 1, "opera": "rename"},
                 data={"filelist": json.dumps([{"path": full, "newname": target}], ensure_ascii=False)},
                 referer="https://pan.baidu.com/disk/main",
             )

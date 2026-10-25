@@ -102,7 +102,7 @@ def run_task(task_id: int, force: bool = False) -> dict:
             excl_md5 = json.loads(getattr(t, "exclude_md5_json", "") or "[]")
         except ValueError:
             excl_md5 = []
-        engine.enqueue({
+        qid = engine.enqueue({
             "name": t.name or "自动任务",
             "type": t.type,
             "path": t.save_dir or "/",
@@ -118,10 +118,16 @@ def run_task(task_id: int, force: bool = False) -> dict:
             "exclude_md5s": excl_md5,
             "compare_path": t.compare_path or "",
         })
+        if qid == -1:
+            # 引擎侧同链接去重（snapshot 检查与入队之间有竞态窗口）：如实报未入队，
+            # 别再说 queued=True——前端会拿着不存在的队列任务干等（T-006）
+            return {"queued": False, "reason": "同一分享链接已在队列中，跳过本次"}
         t.last_run = time.strftime("%m-%d %H:%M")
         t.last_status = "running"
         s.commit()
-        return {"queued": True, "task": t.name}
+        # queue_task_id：入队返回的队列任务 id——前端执行监控按它精确匹配本轮，
+        # 不再被 30 分钟残留的旧终态任务冒充（T-006）
+        return {"queued": True, "task": t.name, "queue_task_id": qid}
 
 
 def next_run_times() -> dict[int, str]:

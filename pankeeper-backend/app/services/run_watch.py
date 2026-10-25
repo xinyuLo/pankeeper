@@ -530,8 +530,18 @@ def _watch(run_id: int, task_name: str, names: list[str], baseline: dict[str, li
     try:
         recs, verdict = _wait(names, baseline, on_state=on_state)
         if verdict == "dedup":
-            # QMS 没产生新记录 = 按文件去重、根本没重刮：保留原判定，不拿旧结果冒充新结果
-            print(f"[run-watch] record {run_id} QMS 未产生新记录（按文件去重，未重刮）→ 保持原判定", flush=True)
+            # QMS 没产生新记录 = 按文件去重、根本没重刮：文件本来就在库里，不是"没刮到"。
+            # 写终态快照，运行详情不再一直挂着「已触发」（T-008）；不拿旧结果冒充新结果。
+            # ⚠️ 旧终态要看（T-008-F2）：baseline 里挂着失败态时，"没重刮"意味着那次失败
+            # 仍是现状——不能粉饰成绿色「已在库」；全是 renamed 才算真在库。
+            old_status = {v[1] for v in baseline.values() if isinstance(v, (list, tuple)) and len(v) > 1 and v[1]}
+            if old_status & FAILED_STATUS:
+                snap = {"st": "刮削失败（未重刮）", "cls": "t-bad"}
+                print(f"[run-watch] record {run_id} QMS 未重刮且旧终态为失败 → 刮削失败（未重刮）", flush=True)
+            else:
+                snap = {"st": "已在库（未重刮）", "cls": "t-ok"}
+                print(f"[run-watch] record {run_id} QMS 未产生新记录（按文件去重，未重刮）→ 已在库", flush=True)
+            _write(run_id, snap, table)
             return
         _write(run_id, _summary(recs, names), table)
     except Exception as e:  # noqa: BLE001 —— 后台线程不能把异常丢给队列

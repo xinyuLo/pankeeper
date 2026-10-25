@@ -44,6 +44,9 @@ _RE_PDIR = re.compile(r"#/list/share/(\w{32})")
 
 BATCH = 100  # 服务端 save_as_top_fids 上限 100，超过会被截断
 
+# 去重基线惰性下钻子目录的额外 list 请求上限（每任务共享，风控：宁可漏扫不可连打）
+SUBDIR_SCAN_LIMIT = 3
+
 
 def extract_share(url: str) -> dict:
     """从分享链接解析 pwd_id / 提取码 / 子目录 fid（无需请求网页）。"""
@@ -83,6 +86,9 @@ def _shared_client(cookies: str) -> httpx.Client:
 
 class QuarkAdapter(CloudAdapter):
     type = "quark"
+    # 目录缓存 key 的账号段：由 make_adapter_for 注入（与 cache_api.list_files 同口径，
+    # T-001-F4）；未注入（测试 __new__ 出来的裸实例等）默认 "main"
+    acc_key: str = "main"
 
     def __init__(self, cookies_enc: str, gate: RateGate | None = None):
         self.cookies = decrypt_credential(cookies_enc)
@@ -279,12 +285,117 @@ class QuarkAdapter(CloudAdapter):
         return (data.get("data") or {}).get("list") or []
 
     def list_dir_names(self, dir_path: str) -> set[str]:
-        fid = self.ensure_dir(dir_path)  # 不存在会顺带建好，语义对转存更顺
+        """契约方法：一层现有条目名（含目录名）。内部走 ensure_dir（不存在会顺带
+        建好，语义对转存更顺）。递归下钻版见 _dir_baseline——compare_path 只读不建。"""
+        fid = self.ensure_dir(dir_path)
         return {str(it.get("file_name")) for it in self._list_dir(fid)}
 
     def _path_to_fid(self, dir_path: str) -> str:
         """路径 → fid（建好目录树后取末级）。"""
         return self.ensure_dir(dir_path)
+
+    def _resolve_fid_soft(self, dir_path: str) -> str | None:
+        """路径 → fid；任一层缺失返回 None（**不建目录**）。
+
+        ensure_dir 会把缺失层级建出来；扫 compare_path（QMS 媒体库）用它会在库里
+        凭空建一串空目录——对比路径只允许读（T-001 硬约束）。"""
+        fid = "0"
+        for part in [p for p in dir_path.strip("/").split("/") if p]:
+            hit = next((c for c in self._list_dir(fid) if c.get("file_name") == part and c.get("dir")), None)
+            if hit is None:
+                return None
+            fid = str(hit["fid"])
+        return fid
+
+    # 基线扫描的行读取：兼容网盘原始行（file_name/dir）与 dir_cache 归一行（name/is_dir）
+    @staticmethod
+    def _row_name(it: dict) -> str:
+        return str(it.get("file_name") or it.get("name") or "")
+
+    @staticmethod
+    def _row_is_dir(it: dict) -> bool:
+        if "is_dir" in it:
+            return bool(it.get("is_dir"))
+        return bool(it.get("dir"))
+
+    def _list_dir_norm(self, fid: str) -> list[dict]:
+        """列自己的目录并归一成 dir_cache 统一形状（与 cache_api._load_dir_payload 夸克分支一致）。"""
+        return [
+            {"fid": str(it.get("fid", "")), "name": str(it.get("file_name", "")), "is_dir": bool(it.get("dir")), "size": int(it.get("size") or 0)}
+            for it in self._list_dir(fid)
+        ]
+
+    def _dir_baseline(
+        self,
+        dir_path: str,
+        *,
+        create: bool = False,
+        cand_names: set[str] | None = None,
+        budget: list[int] | None = None,
+        on_log=None,
+        stats: dict | None = None,
+    ) -> set[str]:
+        """去重基线：目标目录现有条目名（含目录名，沿用 list_dir_names 口径）。
+
+        T-001：① 基线纳入 compare_path（此前 save_files 只扫 save_dir——QMS 把文件
+        搬进媒体库「剧名/Season 1/」后，save_dir 里空空如也，同一集每次都判新增）；
+        ② 惰性递归一层：先只扫 base 一层，cand_names（本轮仍待比对的名字）全部
+        命中就不下钻；仍有未命中才逐个扫直接子目录——子目录清单经 dir_cache 读穿
+        （命中缓存不打网盘），额外 list 请求受 budget（[剩余次数]，任务内跨目录
+        共享）上限约束，超限立即停。create=False（compare_path）走 _resolve_fid_soft
+        绝不建目录；create=True（save_dir）沿用 ensure_dir（转存目标本来就要存在）。
+        夸克无 MD5，名字即口径。CredentialExpired 一律上抛。
+        """
+        fid = self.ensure_dir(dir_path) if create else (self._resolve_fid_soft(dir_path) or "")
+        if not fid:
+            if on_log:
+                on_log(f"对比目录 {dir_path} 不存在，不参与去重基线")
+            if stats is not None:
+                stats["dirs"] = 0
+            return set()
+        if budget is None:
+            budget = [SUBDIR_SCAN_LIMIT]
+        names: set[str] = set()
+        subdirs: list[str] = []
+        for it in self._list_dir(fid):
+            names.add(self._row_name(it))
+            if self._row_is_dir(it) and it.get("fid"):
+                subdirs.append(str(it["fid"]))
+        scanned = 1
+
+        def _pending() -> bool:
+            return bool(cand_names) and any(n not in names for n in cand_names)
+
+        for sub in subdirs:
+            if not _pending():
+                break
+            if budget[0] <= 0:
+                if on_log:
+                    on_log(f"子目录扫描达上限（{SUBDIR_SCAN_LIMIT} 次/任务），因上限停止递归：{dir_path}")
+                if stats is not None:
+                    stats["stopped"] = True
+                break
+            flag: dict = {}
+            ok = True
+            try:
+                rows = dir_cache.get_or_load(("quark", self.acc_key, sub), lambda f=sub: self._list_dir_norm(f), flag=flag)
+            except CredentialExpired:
+                raise
+            except (AdapterError, CircuitOpen, RateLimited) as e:
+                if on_log:
+                    on_log(f"子目录读取失败（{e}），跳过")
+                ok = False
+                rows = []
+            if not flag.get("cached"):
+                budget[0] -= 1  # 真打了网盘才占预算（失败请求也算）
+            if not ok:
+                continue
+            scanned += 1  # 列到了就计数（空目录也是扫过的目录）；失败的才不计
+            # 只下钻一层：孙目录不进基线（媒体库就两层，深挖纯属给风控送请求）
+            names |= {self._row_name(it) for it in rows}
+        if stats is not None:
+            stats["dirs"] = scanned
+        return names
 
     # ---------- 目录管理（浏览弹窗的新建/重命名/删除，2026-10-03） ----------
 
@@ -337,9 +448,48 @@ class QuarkAdapter(CloudAdapter):
             before = len(save_list)
             save_list = [f for f in save_list if _kept(f)]
             result.skip += before - len(save_list)
-        # 去重：目标目录已有同名（按目标名比对，改名后的名字也算已存在）
-        existing = self.list_dir_names(spec.save_dir)
-        to_fid = self._path_to_fid(spec.save_dir)
+        # 去重：目标目录已有同名（按目标名比对，改名后的名字也算已存在）。
+        # 基线 = compare_path ∪ save_dir（T-001：此前只扫 save_dir，QMS 把文件搬进
+        # 媒体库后 save_dir 一空，同一集每次都判新增）；两边都惰性递归一层，子目录
+        # 经 dir_cache 读穿、额外 list 请求受 SUBDIR_SCAN_LIMIT 上限约束。
+        bases: list[tuple[str, bool]] = []
+        if spec.compare_path and spec.compare_path != spec.save_dir:
+            bases.append((spec.compare_path, False))
+        if spec.save_dir:
+            # save_dir 基线也只读（T-007）：目录缺失时的补建统一放到转存前那一步——
+            # 全部去重跳过的任务不该在网盘里留下空目录（T-001 约束 7 同精神）
+            bases.append((spec.save_dir, False))
+        existing: set[str] = set()
+
+        def _pending_cands() -> set[str]:
+            # 本轮仍待比对的名字（原名+目标名，按最终匹配口径剔已命中）：
+            # 下个 base 的惰性递归据此决定值不值得下钻
+            left: set[str] = set()
+            for f in save_list:
+                if (f.target_name or f.name) in existing or f.name in existing:
+                    continue
+                left.add(f.name)
+                if f.target_name:
+                    left.add(f.target_name)
+            return left
+
+        budget = [SUBDIR_SCAN_LIMIT]
+        scan_stats: dict = {"dirs": 0, "stopped": False}
+        for base, create in bases:
+            # T-001-F2：对齐 baidu/115 语义——凭据失效上抛标记账号；单目录抖动/风控
+            # 只跳过该 base 记日志，不再让整单失败（compare_path 进基线后必须有这层兜底）
+            try:
+                st: dict = {}
+                existing |= self._dir_baseline(
+                    base, create=create, cand_names=_pending_cands(), budget=budget, on_log=on_log, stats=st
+                )
+                scan_stats["dirs"] += int(st.get("dirs") or 0)
+                scan_stats["stopped"] = scan_stats["stopped"] or bool(st.get("stopped"))
+            except CredentialExpired:
+                raise
+            except (AdapterError, CircuitOpen, RateLimited) as e:
+                on_log(f"对比目录 {base} 读取失败（{e}），该目录不参与去重基线")
+        on_log(f"去重基线：扫描了 {scan_stats['dirs']} 个目录（含子目录），现有 {len(existing)} 个条目名")
         need = []
         for f in save_list:
             target = f.target_name or f.name
@@ -351,6 +501,13 @@ class QuarkAdapter(CloudAdapter):
         if not need:
             on_progress(100)
             return result
+
+        # T-007：转存前确保目标目录存在——缺失自动建一次并留痕（此前 ensure_dir
+        # 静默建、目录被删也无从知晓）；存在则软解析出的 fid 直接复用，省一次走查
+        to_fid = self._resolve_fid_soft(spec.save_dir)
+        if to_fid is None:
+            to_fid = self.ensure_dir(spec.save_dir)
+            on_log(f"目标目录 {spec.save_dir} 不存在，已自动创建")
 
         done = 0
         total = len(need)
@@ -449,7 +606,7 @@ class QuarkAdapter(CloudAdapter):
             have = {d.get("name") for d in data if isinstance(d, dict)}
             return list(data) + [e for e in entries if e["name"] not in have]
 
-        dir_cache.update(("quark", "main", to_fid), _append)
+        dir_cache.update(("quark", self.acc_key, to_fid), _append)  # 账号段随实例（T-001-F4）
 
     def _save_batch(self, batch: list[ShareFile], to_fid: str, spec: TaskSpec, result: TransferResult, on_log) -> None:
         data = self._req(

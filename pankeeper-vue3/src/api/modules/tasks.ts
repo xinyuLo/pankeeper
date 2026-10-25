@@ -256,10 +256,12 @@ export interface PaRunDetail extends PaRunRow {
   logs: QueueLogLine[]
 }
 
-/** 立即执行（真实）：入队走队列引擎，返回 {queued, task}；被去重/停用时 queued=false + reason */
-export function runPaTaskNow(taskId: number): Promise<{ queued: boolean; task?: string; reason?: string }> {
+/** 立即执行（真实）：入队走队列引擎，返回 {queued, task, queue_task_id}；
+ * queue_task_id = 本轮入队的队列任务 id（执行监控按它精确匹配，T-006）；
+ * 被去重/停用时 queued=false + reason */
+export function runPaTaskNow(taskId: number): Promise<{ queued: boolean; task?: string; reason?: string; queue_task_id?: number }> {
   if (USE_MOCK) return mockDelay({ queued: true, task: 'mock' })
-  return post<{ queued: boolean; task?: string; reason?: string }>(`/pa/tasks/${taskId}/run`)
+  return post<{ queued: boolean; task?: string; reason?: string; queue_task_id?: number }>(`/pa/tasks/${taskId}/run`)
 }
 
 /** 手动重新触发该任务的 QMS 刮削（QMS 侧刮失败后重刷；不动任务配置、不写历史） */

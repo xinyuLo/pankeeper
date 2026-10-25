@@ -389,6 +389,22 @@ def clear_runs(before: str = "", _user=CurrentUser):
     return {"count": n}
 
 
+@router.delete("/ledger")
+def clear_ledger(
+    task_id: int | None = None,
+    drive: str | None = None,
+    name: str | None = None,
+    save_dir: str | None = None,
+    _user=CurrentUser,
+):
+    """清理本地转存台账（T-002）：按 task_id / drive / name / save_dir 任意组合过滤删除，
+    全部缺省 = 清空整表。清掉的记录不再拦截转存——手工删了网盘文件想重转时用这个。"""
+    from ..transfer.ledger import ledger_clear
+
+    n = ledger_clear(task_id=task_id, drive=drive, name=name, save_dir=save_dir)
+    return {"deleted": n}
+
+
 @router.get("/runs")
 def all_runs(
     task_id: int | None = None,

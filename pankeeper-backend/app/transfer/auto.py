@@ -11,13 +11,14 @@ import json
 import re
 import time
 
-from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, TaskSpec, split_video_files
+from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, TaskSpec, TransferResult, split_video_files
 from ..adapters.factory import make_adapter
 from ..db import SessionLocal
 from ..models import Account, DdItem, PaTask, Record, RunHistory
 from ..services import media_push, notify, qms
 from ..services.settings_svc import get_group
 from ..services.share_cache import build_payload, share_key, share_list_cache
+from .ledger import ledger_prefilter, ledger_write
 
 MAX_LOGS = 40
 
@@ -105,6 +106,7 @@ def run_auto(eng, t: dict, cfg: dict) -> None:
         return
 
     files: list = []
+    all_files: list = []  # 台账过滤（T-002）前的清单——详情快照里台账命中项也要有去向
     regex_miss = 0
     excluded_names: list[str] = []
     started_ts = time.time()
@@ -162,28 +164,41 @@ def run_auto(eng, t: dict, cfg: dict) -> None:
         def on_log(txt: str) -> None:
             _push_log(t, "INFO", txt)
 
-        result = adapter.save_files(files, spec, on_progress, on_log)
-        _push_log(t, "STEP", f"转存完成：新增 {result.add} / 跳过 {result.skip} / 失败 {result.fail}")
+        # T-002 本地台账（去重第一道，先于适配器内的网盘基线）：命中直接跳过；
+        # 全命中则短路 save_files——连网盘基线都不查（零网盘请求）
+        all_files = files
+        files, ledger_hits = ledger_prefilter(t["type"], int(t.get("paTaskId") or 0), spec.save_dir, files, on_log=on_log)
+        if ledger_hits and not any(not f.is_dir for f in files):
+            result = TransferResult()
+            result.skip = ledger_hits
+            _push_log(t, "STEP", f"转存完成：新增 0 / 跳过 {result.skip} / 失败 0（本地台账全命中，未请求网盘）")
+        else:
+            result = adapter.save_files(files, spec, on_progress, on_log)
+            if ledger_hits:
+                result.skip += ledger_hits
+            # T-002：转存成功落账（防 QMS 把文件搬进媒体库后重复转存）；写失败不影响转存
+            ledger_write(t["type"], t.get("accId"), int(t.get("paTaskId") or 0), spec.share_url, spec.save_dir, files, result)
+            _push_log(t, "STEP", f"转存完成：新增 {result.add} / 跳过 {result.skip} / 失败 {result.fail}")
         if result.renamed:
             _push_log(t, "INFO", f"按规则重命名 {result.renamed} 项")
     except ShareBanned as e:
         _push_log(t, "ERROR", f"分享已失效：{e}（已熔断，调度器不再入队该链接）")
         _mark_pa_banned(t, str(e))
-        _finish(eng, t, "fail", f"分享失效：{e}", files_snap=_files_snap(files, spec, None))
+        _finish(eng, t, "fail", f"分享失效：{e}", files_snap=_files_snap(all_files, spec, None))
         return
     except CredentialExpired as e:
         _push_log(t, "ERROR", str(e))
         _mark_account_expired(t["type"], t.get("accId"))
-        _finish(eng, t, "fail", str(e), files_snap=_files_snap(files, spec, None))
+        _finish(eng, t, "fail", str(e), files_snap=_files_snap(all_files, spec, None))
         return
     except AdapterError as e:
         _push_log(t, "ERROR", f"转存失败：{e}")
-        _finish(eng, t, "fail", str(e), files_snap=_files_snap(files, spec, None))
+        _finish(eng, t, "fail", str(e), files_snap=_files_snap(all_files, spec, None))
         return
 
     # ---- 转存成功，走 QMS/STRM 联动（阶段机照前端契约，延迟可配） ----
     qms_snap, strm_snap = _media_chain(eng, t, cfg, result, name_head)
-    _finish(eng, t, "done", qms_snap=qms_snap, strm_snap=strm_snap, result=result, files_snap=_files_snap(files, spec, result))
+    _finish(eng, t, "done", qms_snap=qms_snap, strm_snap=strm_snap, result=result, files_snap=_files_snap(all_files, spec, result))
 
 
 def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict, dict]:

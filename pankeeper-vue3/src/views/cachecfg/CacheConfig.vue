@@ -151,46 +151,86 @@ const accRows = computed<AccRow[]>(() => {
 })
 const staleCount = computed(() => trees.value.filter((t) => t.ttlMin < 0).length)
 
+/* ===== T-009：自动预热口径对齐——「下次刷新」直接展示后端给的下次触发时间，
+ * 不再自己按条目 cached_at+TTL 推算（后端整轮触发，两者口径本就不同步）。
+ * 计划挂在 warm-all/status 的返回上（next_warm），本地扩展类型即可，不动共享 api 模块。 */
+type WarmPlan = { type: string; acc_id: number; acc_name: string; last: number; next_at: number | null; retry_at?: number; error: string }
+type WarmAllExt = WarmAllStatus & { next_warm?: WarmPlan[] }
+const warmPlan = ref<WarmPlan[]>([])
+
+/** 该账号的自动预热计划（T-009-F3）：① 按 acc_id 关联——缓存键 id 的账号段（数字 id）
+ * 与计划的 acc_id 对上才算；② 默认账号的缓存键账号段是 "main"（没有数字 id），退
+ * 按 网盘+账号名 精确对。匹配不上就返回 undefined 走条目口径——**绝不跨账号取
+ * 同网盘第一条**（两个账号会显示同一个计划/同一个 error）。 */
+function planFor(row: AccRow): WarmPlan | undefined {
+  const plans = warmPlan.value
+  const byId = plans.find((w) => row.ids.some((id) => String(id).split('/')[1] === String(w.acc_id)))
+  if (byId) return byId
+  return plans.find((w) => w.type === row.type && w.acc_name === row.accName)
+}
+
 function metaName(type: CacheTree['type']): string {
   return DRIVE_META[type]?.name ?? type
 }
 function metaColor(type: CacheTree['type']): string {
   return DRIVE_META[type]?.color ?? '#1677ff'
 }
-/** 下次刷新时间：本组最新缓存那条的到期时间 = now + max(ttlMin)，统一 yyyy-MM-dd HH:mm */
+/** 秒级时间戳 → yyyy-MM-dd HH:mm（下次刷新/缓存时间共用） */
+function fmtTs(tsSec: number): string {
+  const d = new Date(tsSec * 1000)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+/** 下次刷新时间（T-009）：优先展示后端自动预热的下次触发时间；后端没给计划
+ * （自动刷新关/接口异常）回落按条目推算；条目已过期的说「待刷新」而不是「已过期」 */
 function nextRefreshText(row: AccRow): string {
+  const plan = planFor(row)
+  if (plan) {
+    if (plan.error) return '预热失败 · 下次对表重试'
+    if (plan.next_at) return fmtTs(plan.next_at)
+    return cfg.auto ? '—' : '未开启自动刷新'
+  }
   if (!Number.isFinite(row.nextMin)) return '—'
-  if (row.stale) return '已过期 · 打开即刷新'
-  const d = new Date(Date.now() + row.nextMin * 60000)
-  const hh = String(d.getHours()).padStart(2, '0')
-  const mm = String(d.getMinutes()).padStart(2, '0')
-  const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-  return `${ymd} ${hh}:${mm}`
+  if (row.stale) return '待刷新 · 自动预热即将触发'
+  return fmtTs(Math.floor(Date.now() / 1000) + row.nextMin * 60)
 }
 
 /** 缓存时间：本组最新一次缓存写入，yyyy-MM-dd HH:mm */
 function cachedAtText(row: AccRow): string {
   if (!row.lastCachedAt) return '—'
-  const d = new Date(row.lastCachedAt * 1000)
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+  return fmtTs(row.lastCachedAt)
 }
 
-/** 距下次刷新倒计时：紧凑格式（1天5小时 / 5小时59分 / 42分钟） */
+/** 距下次刷新倒计时：紧凑格式（1天5小时 / 5小时59分 / 42分钟）。
+ * T-009：有后端计划按 next_at 倒数；失败待重试直接标出来 */
 function countdownText(row: AccRow): { text: string; warn: boolean } | null {
-  if (!Number.isFinite(row.nextMin)) return null
-  if (row.stale) return null
-  const d = Math.floor(row.nextMin / 1440)
-  const h = Math.floor((row.nextMin % 1440) / 60)
-  const m = row.nextMin % 60
+  let min: number | null = null
+  const plan = planFor(row)
+  if (plan) {
+    if (plan.error) return { text: '待重试', warn: true }
+    if (plan.next_at) min = Math.max(0, Math.round((plan.next_at * 1000 - Date.now()) / 60000))
+  } else if (Number.isFinite(row.nextMin) && !row.stale) {
+    min = row.nextMin
+  }
+  if (min === null) return null
+  const d = Math.floor(min / 1440)
+  const h = Math.floor((min % 1440) / 60)
+  const m = min % 60
   const text = d > 0 ? `${d}天${h}小时` : h > 0 ? `${h}小时${m}分` : `${m}分钟`
   // 剩余不足 1 小时给警示色，提醒快到期了
-  return { text, warn: row.nextMin < 60 }
+  return { text, warn: min < 60 }
 }
 
 
 async function reload() {
   trees.value = await listCacheTrees()
+  try {
+    const st = (await warmAllStatus()) as WarmAllExt
+    warmPlan.value = st.next_warm || []
+  } catch {
+    warmPlan.value = [] // 计划拿不到：回落条目推算口径
+  }
 }
 
 /* 刷新一个账号 = 该账号全部缓存键失效，下次浏览直连重拉。
@@ -418,7 +458,7 @@ onUnmounted(() => window.clearTimeout(warmPollTimer))
                 <span v-if="countdownText(row)" class="cc-count" :class="{ warn: countdownText(row)!.warn }">
                   {{ countdownText(row)!.text }}
                 </span>
-                <span v-else class="cc-count expired">已过期</span>
+                <span v-else class="cc-count expired">待刷新</span>
               </td>
               <td class="cc-td cc-num">{{ row.entries }}</td>
               <td class="cc-td cc-num">{{ row.sizeKb }} KB</td>
@@ -426,7 +466,7 @@ onUnmounted(() => window.clearTimeout(warmPollTimer))
                 <span v-if="refreshing[row.key]" class="tag t-off cc-status"><LoadingOutlined spin class="cc-spin" /> 刷新中…</span>
                 <span v-else-if="flash[row.key]" class="tag t-ok cc-status">{{ flash[row.key] }}</span>
                 <span v-else class="tag cc-status" :class="row.stale ? 't-warn' : 't-ok'">
-                  {{ row.stale ? `${row.stale} 条已过期` : '全部有效' }}
+                  {{ row.stale ? `${row.stale} 条待刷新` : '全部有效' }}
                 </span>
               </td>
               <td class="cc-td">

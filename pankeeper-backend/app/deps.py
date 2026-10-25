@@ -95,12 +95,19 @@ def make_adapter_for(db: OrmSession, drive_type: str, acc_id: int | None = None)
     if acc is None or not acc.cookies_enc:
         raise HTTPException(status_code=400, detail=f"{drive_type} 账号未配置凭据")
     if acc.type == "quark":
-        return QuarkAdapter(acc.cookies_enc)
-    if acc.type == "baidu":
-        return BaiduClient(acc.cookies_enc)
-    if acc.type == "115":
-        return Pan115Adapter(acc.cookies_enc)
-    raise HTTPException(status_code=400, detail=f"网盘 {acc.type} 适配器尚未实现")
+        adapter = QuarkAdapter(acc.cookies_enc)
+    elif acc.type == "baidu":
+        adapter = BaiduClient(acc.cookies_enc)
+    elif acc.type == "115":
+        adapter = Pan115Adapter(acc.cookies_enc)
+    else:
+        raise HTTPException(status_code=400, detail=f"网盘 {acc.type} 适配器尚未实现")
+    # 目录缓存 key 的账号段（T-001-F4）：与 cache_api.list_files 完全同口径——调用方
+    # 传了 acc_id 用 str(acc_id)，没传（回落该类型第一个账号）记 "main"。适配器的
+    # 基线扫描/缓存回写全靠它；此前适配器里写死 "main"，绑定非默认账号的任务基线
+    # 永远缓存 miss（每次真打网盘），还会拿错账号的清单判"已存在"、回写污染别人的缓存。
+    adapter.acc_key = str(acc_id) if acc_id else "main"
+    return adapter
 
 
 __all__ = [

@@ -22,6 +22,8 @@ def _reset() -> None:
         ca._WARM_JOBS.clear()
         ca._WARM_QUEUES.clear()
         ca._WARM_WORKERS.clear()
+        ca._WARM_CBS.clear()
+        ca._WARM_GATES.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -35,7 +37,7 @@ def test_same_drive_serial_cross_drive_parallel(monkeypatch):
     started = threading.Event()
     release = threading.Event()
 
-    def fake_walk(type, acc_id, job):
+    def fake_walk(type, acc_id, job, force=False, gate=None):
         job["status"] = "running"
         if type == "baidu":
             started.set()
@@ -70,7 +72,7 @@ def test_same_drive_serial_cross_drive_parallel(monkeypatch):
 def test_same_drive_fifo_order(monkeypatch):
     order: list[str] = []
 
-    def fake_walk(type, acc_id, job):
+    def fake_walk(type, acc_id, job, force=False, gate=None):
         job["status"] = "running"
         order.append(acc_id)
         job["status"] = "done"

@@ -28,6 +28,10 @@ const done = ref(false)
 let pollTimer: number | null = null
 let notFoundTimer: number | null = null
 let seenTask = false
+/** 本轮入队的队列任务 id（后端 run 响应透出，T-006）：轮询按它精确匹配——
+ * 队列里终态任务保留 30 分钟，连点两次运行时旧任务排前面，按 paTaskId 取第一个
+ * 会一直显示上一轮的日志/错误，看不出新的一轮在跑 */
+let queueTaskId: number | null = null
 
 const PHASE_TEXT: Record<string, string> = {
   '': '正在转存…',
@@ -81,7 +85,19 @@ async function pollOnce() {
   if (done.value || !props.task) return
   try {
     const s = await get<QueueState>('/queue/state')
-    const t = (s.tasks || []).find((x) => x.paTaskId === props.task!.id)
+    const all = s.tasks || []
+    let t: QueueTask | undefined
+    if (queueTaskId != null) {
+      // 首选：按本轮入队的队列任务 id 精确匹配（旧终态任务不可能冒充，T-006）
+      t = all.find((x) => x.id === queueTaskId)
+    } else {
+      // 兜底（旧后端没回 id）：按 paTaskId 匹配——先取还在跑/排队的，全是终态才取
+      // 入队 id 最大（最新）的那条，绝不拿 30 分钟残留的旧终态任务冒充本轮
+      const cands = all.filter((x) => x.paTaskId === props.task!.id)
+      t =
+        cands.find((x) => x.status === 'wait' || x.status === 'run') ??
+        cands.reduce<QueueTask | undefined>((a, b) => (!a || b.id > a.id ? b : a), undefined)
+    }
     if (t) syncFromQueue(t)
   } catch {
     /* 轮询失败不打断，下一轮再试 */
@@ -111,6 +127,7 @@ async function startReal() {
       message.warning(r.reason || '任务未能入队')
       return
     }
+    queueTaskId = r.queue_task_id ?? null // 本轮的队列任务 id：轮询只认它
   } catch (e) {
     done.value = true
     const why = errText(e)
@@ -207,10 +224,13 @@ watch(
   () => props.open,
   (v) => {
     if (v) {
+      // 全量重置（T-006）：旧一轮的日志/统计/提示/匹配 id 一概不带进来
       stats.value = { add: 0, skip: 0, fail: 0, excl: 0 }
       lines.value = []
       done.value = false
       seenTask = false
+      queueTaskId = null
+      hint.value = '正在执行，请稍候…'
       start()
     } else {
       stopAll()
