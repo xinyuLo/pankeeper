@@ -102,6 +102,7 @@ def _migrate_columns() -> None:
             ("files_json", "TEXT DEFAULT '[]'"),
             ("source", "TEXT DEFAULT 'search'"),
             ("backend", "TEXT DEFAULT ''"),
+            ("run_history_id", "INTEGER"),  # T-015：auto 链路 Record ↔ RunHistory 关联（可空）
         ],
         "run_history": [
             ("skip_md5", "INTEGER DEFAULT 0"),

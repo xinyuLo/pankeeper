@@ -24,7 +24,7 @@ import threading
 import time
 
 from ..db import SessionLocal
-from ..models import PaTask, RunHistory
+from ..models import PaTask, Record, RunHistory
 from ..adapters.base import AdapterError, is_video_file
 from . import qms
 
@@ -503,6 +503,12 @@ def _write_strm(run_id: int, snap: dict, table=RunHistory) -> None:
         if r is None:
             return
         r.strm_json = json.dumps(snap, ensure_ascii=False)
+        if table is RunHistory:
+            # T-015：auto 链路——同一事务把同一份快照同步进 run_history_id 指向本行的
+            # Record（记录页数据源），别让它在初始快照（如「等待中」）上停一辈子
+            rec = s.query(Record).filter(Record.run_history_id == run_id).first()
+            if rec is not None:
+                rec.strm_json = r.strm_json
         if snap.get("cls") in ("t-ok", "t-bad"):
             txt = ("STRM 生成成功" if snap.get("cls") == "t-ok" else "STRM 未生成") + \
                   ("" if snap.get("st") in (None, "", "已触发") else f"：{snap['st']}")
@@ -686,6 +692,11 @@ def _write(run_id: int, snap: dict, table=RunHistory) -> None:
             touch_records()
             print(f"[run-watch] record {run_id} QMS 结果回填：{snap.get('st')}", flush=True)
             return
+        # T-015：auto 链路——同一事务把同一份快照同步进 run_history_id 指向本行的
+        # Record（记录页数据源），别让它在初始快照（如「已触发」）上停一辈子
+        rec = s.query(Record).filter(Record.run_history_id == run_id).first()
+        if rec is not None:
+            rec.qms_json = r.qms_json
         latest = (
             s.query(RunHistory)
             .filter(RunHistory.task_id == r.task_id)

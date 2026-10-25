@@ -293,3 +293,103 @@ def test_manual_done_files_snap_destinations(monkeypatch):
         r = s.query(Record).filter(Record.share_url == MARK).order_by(Record.id.desc()).first()
         rows = {row["name"]: row["st"] for row in json.loads(r.files_json)}
     assert rows == {"A.mkv": "已转存", "B.mkv": "未勾选", "C.mkv": "已在库跳过"}
+
+
+# ---------- T-015：auto 终态回填同步记录页 Record ----------
+
+
+def test_finish_pa_links_record_to_runhistory(chain_mocks):
+    """验收 1：finish(hist_sink="pa") 落库后 Record.run_history_id == 对应 RunHistory.id。"""
+    from app.models import RunHistory as RH
+
+    t = _t()
+    t["_qms_baseline"] = {}
+
+    def writer(t_, status, result, q, s):
+        with SessionLocal() as s2:
+            h = RH(task_id=424242, started="x", status="running")
+            s2.add(h)
+            s2.commit()
+            return h.id
+
+    core.finish(
+        _eng(), t, "done",
+        qms_snap={"st": "已触发", "cls": "t-run"}, result=_result(),
+        record_source="auto", hist_sink="pa", notify_kind="auto_fail",
+        run_history_writer=writer, strm_link_resolver=lambda t_: None,
+    )
+    try:
+        with SessionLocal() as s:
+            rec = s.query(Record).filter(Record.share_url == MARK).order_by(Record.id.desc()).first()
+            hist = s.get(RH, rec.run_history_id)
+        assert rec.run_history_id is not None and hist is not None
+        assert rec.run_history_id == hist.id
+    finally:
+        with SessionLocal() as s:
+            s.query(RH).filter(RH.task_id == 424242).delete()
+            s.commit()
+
+
+def test_write_terminal_syncs_linked_record():
+    """验收 2：_write / _write_strm 后，RunHistory 与关联 Record 的 qms_json / strm_json 完全相等。"""
+    import app.services.run_watch as rw
+    from app.models import RunHistory as RH
+
+    with SessionLocal() as s:
+        h = RH(task_id=424243, started="x", status="running",
+               qms_json='{"st":"已触发","cls":"t-run"}', strm_json='{"st":"等待中","cls":"t-wait"}')
+        s.add(h)
+        s.commit()
+        hid = h.id
+        rec = Record(n="T015", t="quark", p="/d", st="完成 1/1", cls="t-ok", tm="x",
+                     share_url=MARK, run_history_id=hid,
+                     qms_json='{"st":"已触发","cls":"t-run"}', strm_json='{"st":"等待中","cls":"t-wait"}')
+        s.add(rec)
+        s.commit()
+        rid = rec.id
+    try:
+        rw._write(hid, {"st": "成功", "cls": "t-ok"})
+        rw._write_strm(hid, {"st": "已触发", "cls": "t-ok"})
+        with SessionLocal() as s:
+            h2 = s.get(RH, hid)
+            r2 = s.get(Record, rid)
+        assert r2.qms_json == h2.qms_json == json.dumps({"st": "成功", "cls": "t-ok"}, ensure_ascii=False)
+        assert r2.strm_json == h2.strm_json == json.dumps({"st": "已触发", "cls": "t-ok"}, ensure_ascii=False)
+    finally:
+        with SessionLocal() as s:
+            s.query(RH).filter(RH.task_id == 424243).delete()
+            s.query(Record).filter(Record.id == rid).delete()
+            s.commit()
+
+
+def test_record_sink_leaves_link_none_and_scopes_writes(chain_mocks):
+    """验收 3：manual 链路 Record.run_history_id 为 NULL；_write_strm(table=Record) 只更新该 Record。"""
+    import app.services.run_watch as rw
+
+    t = _t()
+    t["_media"] = {"qms_id": 3, "strm_id": None}
+    core.finish(
+        _eng(), t, "done",
+        qms_snap={"st": "已触发", "cls": "t-run"}, result=_result(),
+        record_source="search", hist_sink="record", notify_kind="search_fail",
+    )
+    with SessionLocal() as s:
+        rec = s.query(Record).filter(Record.share_url == MARK).order_by(Record.id.desc()).first()
+        assert rec.run_history_id is None  # manual 不建关联
+        rid = rec.id
+        other = Record(n="other", t="quark", p="/x", st="x", cls="t-ok", tm="x", share_url=MARK + "2",
+                       strm_json='{"st":"等待中","cls":"t-wait"}')
+        s.add(other)
+        s.commit()
+        oid = other.id
+    try:
+        rw._write_strm(rid, {"st": "新增 3 个", "cls": "t-ok"}, Record)
+        with SessionLocal() as s:
+            a = s.get(Record, rid)
+            b = s.get(Record, oid)
+        assert a.strm_json == json.dumps({"st": "新增 3 个", "cls": "t-ok"}, ensure_ascii=False)
+        assert b.strm_json == '{"st":"等待中","cls":"t-wait"}'  # 无关行不被波及
+    finally:
+        with SessionLocal() as s:
+            s.query(Record).filter(Record.id == oid).delete()
+            s.commit()

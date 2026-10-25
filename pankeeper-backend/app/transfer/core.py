@@ -201,6 +201,14 @@ def finish(
             if status == "fail" and enabled_gate:
                 notify.push("转存失败", f"{t['name']}：{message or '未知原因'}", kind=notify_kind)
             return
+        # T-015：把 RunHistory.id 回写到刚落的那条 Record——后台终态回填（run_watch）
+        # 顺着这个关联把同一份快照同步写进 Record；此前只写 RunHistory，记录页的
+        # qms/strm 停在收尾初始快照（2026-10-26 老大现场发现 STRM 一直「等待中」）
+        with SessionLocal() as s:
+            rec = s.get(Record, rid)
+            if rec is not None:
+                rec.run_history_id = run_id
+                s.commit()
         run_watch.touch_records()
         qms_fired = bool(qms_snap and str(qms_snap.get("st", "")).startswith("已触发"))
         # 触发过但被拒（快照「失败 ·」开头）也推——转存成功联动挂了，手机必须知道（2026-10-13 清单四）

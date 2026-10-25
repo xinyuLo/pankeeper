@@ -190,6 +190,10 @@ class Record(Base):
     post_notify: Mapped[bool] = mapped_column(Boolean, default=False)
     logs_json: Mapped[str] = mapped_column(Text, default="[]")  # 详情抽屉的执行日志
     files_json: Mapped[str] = mapped_column(Text, default="[]")  # 分享内文件清单快照 [{path,name,size,st}]
+    # 关联的自动任务执行历史（T-015）：auto 链路后台终态回填顺着它把同一份快照同步
+    # 写进本表——此前只写 RunHistory，记录页/转存历史的 qms·strm 停在初始快照。
+    # manual 链路为 NULL（它的后台链路本来就挂在本表 id 上）。
+    run_history_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class RunHistory(Base):
