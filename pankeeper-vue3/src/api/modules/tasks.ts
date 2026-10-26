@@ -257,8 +257,9 @@ export interface PaRunDetail extends PaRunRow {
 }
 
 /** 立即执行（真实）：入队走队列引擎，返回 {queued, task, queue_task_id}；
- * queue_task_id = 本轮入队的队列任务 id（执行监控按它精确匹配，T-006）；
- * 被去重/停用时 queued=false + reason */
+ * queue_task_id = 本轮入队的队列任务真实 id（非排队位次，执行监控按它精确匹配，
+ * T-006 透出 / T-016 修正）；
+ * 未入队（去重/停用/链接失效）后端走 HTTP 400 + detail 原因原文，前端按文案分流 warning（T-016-F1） */
 export function runPaTaskNow(taskId: number): Promise<{ queued: boolean; task?: string; reason?: string; queue_task_id?: number }> {
   if (USE_MOCK) return mockDelay({ queued: true, task: 'mock' })
   return post<{ queued: boolean; task?: string; reason?: string; queue_task_id?: number }>(`/pa/tasks/${taskId}/run`)

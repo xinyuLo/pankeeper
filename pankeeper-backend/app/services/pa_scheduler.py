@@ -102,7 +102,7 @@ def run_task(task_id: int, force: bool = False) -> dict:
             excl_md5 = json.loads(getattr(t, "exclude_md5_json", "") or "[]")
         except ValueError:
             excl_md5 = []
-        qid = engine.enqueue({
+        qid = engine.enqueue_id({
             "name": t.name or "自动任务",
             "type": t.type,
             "path": t.save_dir or "/",
@@ -125,8 +125,9 @@ def run_task(task_id: int, force: bool = False) -> dict:
         t.last_run = time.strftime("%m-%d %H:%M")
         t.last_status = "running"
         s.commit()
-        # queue_task_id：入队返回的队列任务 id——前端执行监控按它精确匹配本轮，
-        # 不再被 30 分钟残留的旧终态任务冒充（T-006）
+        # queue_task_id：真实队列任务 id（enqueue_id）——前端执行监控按它精确匹配本轮，
+        # 不再被 30 分钟残留的旧终态任务冒充（T-006）。T-016：此前误拿 enqueue() 的排队
+        # 位次当 id，位次≠任务 id，监控弹窗永远匹配不到 → 日志空白还误报「未在队列中找到」
         return {"queued": True, "task": t.name, "queue_task_id": qid}
 
 

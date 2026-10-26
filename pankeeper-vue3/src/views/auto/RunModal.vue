@@ -28,7 +28,11 @@ const done = ref(false)
 let pollTimer: number | null = null
 let notFoundTimer: number | null = null
 let seenTask = false
-/** 本轮入队的队列任务 id（后端 run 响应透出，T-006）：轮询按它精确匹配——
+/** 代数令牌：start()/stopAll() 各自自增。startReal/pollOnce 的 await 恢复后核对，
+ * 过期即退出——关窗/快速关开不会留下幽灵轮询或并行两个 interval（T-016-F1） */
+let runToken = 0
+/** 本轮入队的队列任务 id（后端 run 响应透出，T-006；T-016 起保证是真实 id 而非
+ * 排队位次）：轮询按它精确匹配——
  * 队列里终态任务保留 30 分钟，连点两次运行时旧任务排前面，按 paTaskId 取第一个
  * 会一直显示上一轮的日志/错误，看不出新的一轮在跑 */
 let queueTaskId: number | null = null
@@ -81,10 +85,11 @@ function syncFromQueue(t: QueueTask) {
   }
 }
 
-async function pollOnce() {
-  if (done.value || !props.task) return
+async function pollOnce(my: number) {
+  if (my !== runToken || !props.open || done.value || !props.task) return
   try {
     const s = await get<QueueState>('/queue/state')
+    if (my !== runToken || !props.open) return // 在途响应赶上关窗：不写状态/不弹 toast
     const all = s.tasks || []
     let t: QueueTask | undefined
     if (queueTaskId != null) {
@@ -115,13 +120,15 @@ function errText(e: unknown): string {
 }
 
 async function startReal() {
+  const my = runToken
   const t = props.task
   if (!t) return
   hint.value = '正在入队…'
   try {
     const r = await runPaTaskNow(t.id)
+    if (my !== runToken || !props.open) return // await 恢复时已关窗/重开：不留任何 timer
     if (!r.queued) {
-      // 去重/停用/分享失效等：后端给了原因，如实展示
+      // 防御分支：现后端对未入队一律抛 400（走 catch 分流），这里兜 200+queued=false 的形态
       done.value = true
       hint.value = r.reason || '未能入队'
       message.warning(r.reason || '任务未能入队')
@@ -129,20 +136,29 @@ async function startReal() {
     }
     queueTaskId = r.queue_task_id ?? null // 本轮的队列任务 id：轮询只认它
   } catch (e) {
+    if (my !== runToken || !props.open) return
     done.value = true
     const why = errText(e)
-    hint.value = `入队失败：${why}`
-    message.error(`入队失败：${why}`)
+    if (/已在队列中|已停用|缺少分享链接|分享已失效/.test(why)) {
+      // 去重/停用/链接失效是正常业务态（后端 400，detail=原因原文），warning 不当失败喊
+      hint.value = why
+      message.warning(why)
+    } else {
+      hint.value = `入队失败：${why}`
+      message.error(`入队失败：${why}`)
+    }
     return
   }
   // 入队成功：开始轮询。先立即打一次（引擎入队是同步的，大概率马上能看到）
-  await pollOnce()
-  pollTimer = window.setInterval(pollOnce, 1500)
-  // 10s 还没在队列里见到任务（引擎重启丢队/被去重清掉）：给兜底提示
+  await pollOnce(my)
+  if (my !== runToken || !props.open) return // await 后已过期：不新建任何 timer（T-016-F1）
+  pollTimer = window.setInterval(() => void pollOnce(my), 1500)
+  // 10s 还没在队列里见到任务：兜底覆盖两类原因——任务可能真在后台跑完（转存历史有），
+  // 也可能队列服务异常/引擎重启丢队（历史里没有，得看后端日志）
   notFoundTimer = window.setTimeout(() => {
     if (!seenTask && !done.value) {
       done.value = true
-      hint.value = '未在队列中找到该任务（可能已被同链接去重）'
+      hint.value = '未在队列中看到本轮任务：可能已在后台跑完（看转存历史），或队列服务异常（看后端日志）'
     }
   }, 10000)
 }
@@ -204,11 +220,13 @@ function startMock() {
 
 /* ===== 统一入口/清理 ===== */
 function start() {
+  runToken++
   if (USE_MOCK) startMock()
   else void startReal()
 }
 
 function stopAll() {
+  runToken++ // 过代：在途的 startReal/pollOnce await 恢复后核对失败，不再新建 timer
   stopMock()
   if (pollTimer) {
     clearInterval(pollTimer)

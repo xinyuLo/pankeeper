@@ -132,6 +132,17 @@ class QueueEngine:
     # ---------- 对外 API ----------
 
     def enqueue(self, item: dict) -> int:
+        """入队，返回排队位次（wait/run 计数，搜索转存 toast 靠它显示排第几）；-1=同链接去重。"""
+        return self._add_task(item)[1]
+
+    def enqueue_id(self, item: dict) -> int:
+        """入队，返回真实队列任务 id——执行监控按它精确匹配本轮，别拿位次冒充（T-016）。"""
+        t, _ = self._add_task(item)
+        return -1 if t is None else t["id"]
+
+    def _add_task(self, item: dict) -> tuple[dict | None, int]:
+        """入队核心。返回 (任务, 位次)；同链接去重返回 (None, -1)。位次必须在 append
+        的同一把锁里算——拆成两次拿锁，worker 抢跑/别的任务完成会让位次漂移。"""
         with self._lock:
             share_url = item.get("share_url") or item.get("shareUrl") or ""
             # 资源名/更名值洗掉 emoji 与文件名非法字符（pansou note 带emoji、当文件夹名
@@ -145,7 +156,7 @@ class QueueEngine:
             if share_url:
                 for t in self.state["tasks"]:
                     if t["status"] in ("wait", "run") and t.get("shareUrl") == share_url:
-                        return -1
+                        return None, -1
             self.state["seq"] += 1
             t = {
                 "id": self.state["seq"],
@@ -199,7 +210,7 @@ class QueueEngine:
             pos = sum(1 for x in self.state["tasks"] if x["status"] in ("wait", "run"))
             self._cond.notify_all()
         self._persist()
-        return pos
+        return t, pos
 
     def active_count(self) -> int:
         return sum(1 for t in self.state["tasks"] if t["status"] in ("wait", "run"))
