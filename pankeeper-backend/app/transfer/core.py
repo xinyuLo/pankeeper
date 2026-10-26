@@ -117,22 +117,27 @@ def transfer_share(
 ):
     """转存 + 本地台账（T-002 起两条链路逐字相同的管道段）。
 
-    台账预过滤 → 全命中短路（TransferResult(skip=N)，零网盘请求）→ adapter.save_files
-    → 回写台账并累加 skip。返回 (result, all_files)：all_files = 台账过滤前的完整
-    清单（详情快照里台账命中项也要有去向）。
+    台账预过滤 → 全命中短路（TransferResult(skip=N, skip_ledger=N, ledger_skipped=名单)，
+    零网盘请求）→ adapter.save_files → 回写台账并累加 skip（skip_ledger/ledger_skipped
+    同步落账，T-017 跳过三路拆账）。返回 (result, all_files)：all_files = 台账过滤前的
+    完整清单（详情快照里台账命中项也要有去向）。
     log_step：STEP 级日志入口（push_log(t, "STEP", …)）——STEP 是既有日志数据结构，
     不能借道 on_log（那边是 INFO 级）。"""
     all_files = files
     files, ledger_hits = ledger_prefilter(drive, task_id, spec.save_dir, files, on_log=on_log)
     if ledger_hits and not any(not f.is_dir for f in files):
-        # 全命中：不再调用适配器（连网盘基线都不查），直接收工
+        # 全命中：不再调用适配器（连网盘基线都不查），直接收工；名单照样带出（T-017）
         result = TransferResult()
-        result.skip = ledger_hits
+        result.skip = len(ledger_hits)
+        result.skip_ledger = len(ledger_hits)
+        result.ledger_skipped = list(ledger_hits)
         log_step(f"转存完成：新增 0 / 跳过 {result.skip} / 失败 0（本地台账全命中，未请求网盘）")
     else:
         result = adapter.save_files(files, spec, on_progress, on_log)
         if ledger_hits:
-            result.skip += ledger_hits
+            result.skip += len(ledger_hits)
+            result.skip_ledger = len(ledger_hits)
+            result.ledger_skipped = list(ledger_hits)
         # 转存成功落账（防 QMS 把文件搬进媒体库后重复转存）；写失败不影响转存
         ledger_write(drive, acc_id, task_id, spec.share_url, spec.save_dir, files, result)
         log_step(f"转存完成：新增 {result.add} / 跳过 {result.skip} / 失败 {result.fail}")

@@ -504,8 +504,14 @@ class Pan115Adapter(CloudAdapter):
             except AdapterError as e:
                 on_log(f"对比目录 {base} 读取失败（{e}），该目录不参与去重基线")
         on_log(f"去重基线：扫描了 {scan_stats['dirs']} 个目录（含子目录），现有 {len(existing)} 个文件名")
-        need = [f for f in save_list if f.name not in existing and (f.target_name or f.name) not in existing]
-        result.skip = len(save_list) - len(need)
+        need = []
+        for f in save_list:
+            if f.name in existing or (f.target_name or f.name) in existing:
+                # 名字闸命中（115 无 MD5）——名单落库供详情查看；无法比对 MD5（T-017-F2）
+                result.name_skipped.append({"name": f.name, "md5_diff": False, "md5_uncomparable": True})
+            else:
+                need.append(f)
+        result.skip = len(save_list) - len(need)  # 既有赋值口径不动
         on_log(f"清单 {len(save_list)} 项：去重跳过 {result.skip} / 待转存 {len(need)}")
         if not need:
             on_progress(100)

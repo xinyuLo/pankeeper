@@ -142,6 +142,13 @@ def run_auto(eng, t: dict, cfg: dict) -> None:
             on_progress=on_progress, on_log=on_log,
             log_step=lambda txt: _push_log(t, "STEP", txt),
         )
+        # T-017：无新增时把三路去重的账摊开——「跳过 18 / MD5 17」的差值（台账/同名）
+        # 不再靠猜；不管 QMS 有没有配，这行都打，收尾口径统一
+        if result.add == 0 and result.skip:
+            _push_log(
+                t, "INFO",
+                f"无新增文件：{result.skip} 项全部已在库（台账 {result.skip_ledger} + MD5 {result.skip_md5} + 同名 {len(result.name_skipped)}），本次为重复运行",
+            )
     except ShareBanned as e:
         _push_log(t, "ERROR", f"分享已失效：{e}（已熔断，调度器不再入队该链接）")
         _mark_pa_banned(t, str(e))
@@ -303,9 +310,22 @@ def _sync_pa_task(t: dict, status: str, result, qms_snap: dict | None = None, st
     )
     finished_txt = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(finished_ts))
     duration = int(finished_ts - started_ts) if started_ts else 0
-    message = (
-        "转存成功" if status == "done" else (t["logs"][-1]["txt"] if t["logs"] else "失败")
-    )
+    ledger_skipped = result.ledger_skipped if result else []
+    name_skipped = result.name_skipped if result else []
+    if status == "done":
+        # T-017/F2：说明按 add/fail 分流——有新增讲新增；零新增但有失败说失败
+        # （别把「失败 N 个」说成重复执行）；真·全在库才报重复执行（三路摊开）
+        message = (
+            f"转存成功 · 新增 {add}"
+            if add > 0
+            else (
+                f"完成：新增 0 / 失败 {fail}"
+                if fail > 0
+                else f"台账 {len(ledger_skipped)} + MD5 过滤 {result.skip_md5 if result else 0} + 同名 {len(name_skipped)}，重复执行（无新增）"
+            )
+        )
+    else:
+        message = t["logs"][-1]["txt"] if t["logs"] else "失败"
     with SessionLocal() as s:
         pa = s.get(PaTask, task_id)
         if pa is None:
@@ -342,6 +362,10 @@ def _sync_pa_task(t: dict, status: str, result, qms_snap: dict | None = None, st
                 [e.get("name") for e in (result.md5_skipped if result else []) if e.get("name")],
                 ensure_ascii=False,
             ),
+            # T-017：台账 / 同名命中名单（详情弹窗两块明细）。台账先于 MD5/名字闸；
+            # 同名 md5_diff=True 内容可能不同只标黄。只记录，不回写任务配置
+            ledger_skipped_json=json.dumps(ledger_skipped, ensure_ascii=False),
+            name_skipped_json=json.dumps(name_skipped, ensure_ascii=False),
             # QMS/STRM 联动结果快照（详情弹窗「执行结果」行展示）；入队即拒的失败为空串
             qms_json=json.dumps(qms_snap, ensure_ascii=False) if qms_snap else "",
             strm_json=json.dumps(strm_snap, ensure_ascii=False) if strm_snap else "",

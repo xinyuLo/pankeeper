@@ -219,6 +219,11 @@ class RunHistory(Base):
     regex_hit_json: Mapped[str] = mapped_column(Text, default="[]")  # 正则命中（过滤后放行）的文件名
     # MD5 去重命中的文件名（只记录、不回写任务排除清单——2026-10-04 取消回写，但要让用户能查到"哪集被滤掉"）
     md5_skipped_json: Mapped[str] = mapped_column(Text, default="[]")
+    # 台账命中名单（[{name, md5}]，T-017）：本地台账拦下的文件（去重第一道，先于 MD5/名字闸）
+    ledger_skipped_json: Mapped[str] = mapped_column(Text, default="[]")
+    # 同名命中名单（[{name, md5_diff}]，T-017）：名字闸跳过的文件；md5_diff=True=同名但
+    # 文件自带 MD5 与库内不同——内容可能不同（详情页标黄，不改转存行为）。旧记录为空数组
+    name_skipped_json: Mapped[str] = mapped_column(Text, default="[]")
     # QMS/STRM 联动结果快照（{"st": 展示文案, "cls": "t-ok"/"t-bad"/"t-off"}）；
     # 旧记录为空串，前端对空值显示「—」。详情弹窗「执行结果」行用。
     qms_json: Mapped[str] = mapped_column(Text, default="")

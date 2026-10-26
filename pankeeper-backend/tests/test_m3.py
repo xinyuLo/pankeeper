@@ -44,11 +44,21 @@ def test_check_share_errno_buckets():
 def test_share_row_to_file_strips_prefix():
     f = BaiduClient._share_row_to_file(
         {"fs_id": 123, "path": "/sharelink1234-567/剧/第1集.mkv", "server_filename": "第1集.mkv",
-         "isdir": 0, "size": 10, "md5": "ABCDEF"},
+         "isdir": 0, "size": 10, "md5": "AB" * 16},
         "剧",
     )
     assert f.fid == "123" and f.name == "第1集.mkv" and f.path == "剧/第1集.mkv"
-    assert f.md5 == "abcdef" and not f.is_dir
+    assert f.md5 == "ab" * 16 and not f.is_dir
+
+
+def test_share_row_to_file_drops_invalid_md5():
+    """T-017：非 32 位 hex 的脏 MD5（生产台账实测第 9 位 u）解析即丢弃，只留名字去重。"""
+    f = BaiduClient._share_row_to_file(
+        {"fs_id": 1, "path": "/sharelink1-2/剧/第1集.mkv", "server_filename": "第1集.mkv",
+         "isdir": 0, "size": 10, "md5": "8f635f1f3u7286a57f1e8146dabf732f"},
+        "剧",
+    )
+    assert f.md5 == "" and f.name == "第1集.mkv"
 
 
 def test_spec_exclude_and_compare_defaults():

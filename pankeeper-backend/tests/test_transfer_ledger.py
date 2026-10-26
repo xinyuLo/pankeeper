@@ -144,7 +144,7 @@ def test_ledger_clear_api_unblocks():
     assert r.status_code == 200 and r.json() == {"deleted": 1}
 
     kept, hits = ledger_prefilter("quark", 0, "/待整理", _files())
-    assert hits == 0 and len(kept) == 1  # 清掉后台账不再拦截
+    assert hits == [] and len(kept) == 1  # 清掉后台账不再拦截（命中名单为空表）
 
 
 def test_ledger_save_dir_isolation():
@@ -154,9 +154,9 @@ def test_ledger_save_dir_isolation():
     ledger_write("quark", None, 0, SHARE_URL, "/目录A", _files(), result)
 
     kept, hits = ledger_prefilter("quark", 0, "/目录B", _files())
-    assert hits == 0 and len(kept) == 1  # 不同 save_dir：不命中
+    assert hits == [] and len(kept) == 1  # 不同 save_dir：不命中
     kept, hits = ledger_prefilter("quark", 5, "/目录A", _files())
-    assert hits == 0 and len(kept) == 1  # 不同 task_id：不命中（附验）
+    assert hits == [] and len(kept) == 1  # 不同 task_id：不命中（附验）
 
 
 def test_ledger_md5_hit_covers_renamed_file():
@@ -171,4 +171,5 @@ def test_ledger_md5_hit_covers_renamed_file():
 
     renamed = [ShareFile(fid="2", name="新名.mkv", path="/新名.mkv", size=1, md5=MD5)]
     kept, hits = ledger_prefilter("baidu", 0, "/A", renamed)
-    assert hits == 1 and kept == []
+    assert len(hits) == 1 and kept == []
+    assert hits[0]["name"] == "新名.mkv" and hits[0]["md5"] == MD5  # T-017：名单带名字+MD5

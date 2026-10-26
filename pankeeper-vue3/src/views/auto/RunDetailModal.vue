@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /* 转存记录详情弹窗（第二层）：执行信息 / 统计 / 正则命中 / 排除与转存清单 / 完整日志。
  * 任务行的「转存日志」弹窗与「转存历史」页共用这里——详情只有一份，别在页面里再抄一遍。 */
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { FileTextOutlined } from '@ant-design/icons-vue'
 import LogBox from '@/components/LogBox.vue'
 import { getPaRunDetail, type PaRunDetail } from '@/api/modules/tasks'
@@ -13,6 +13,20 @@ useBackGuard(() => props.open, () => emit('update:open', false))
 
 const detail = ref<PaRunDetail | null>(null)
 const loading = ref(false)
+
+/** 跳过三路的差额（T-017-F2）：勾选清单过滤（auto 任务也能配）/建壳等计入 skip 但不入三路。
+ * 不新增库列，差额 = 跳过合计 - 台账 - MD5 - 同名。 */
+const skipGap = computed(() => {
+  const d = detail.value
+  if (!d) return 0
+  return Math.max(0, (d.skip || 0) - (d.skip_ledger || 0) - (d.skip_md5 || 0) - (d.name_skipped || []).length)
+})
+/** 旧记录（本功能上线前）：三路名单全空但跳过不止 MD5 一路 → 差额其实是「没拆过账」 */
+const gapIsLegacy = computed(() => {
+  const d = detail.value
+  if (!d) return false
+  return !(d.skip_ledger || 0) && !(d.name_skipped || []).length && (d.skip || 0) > (d.skip_md5 || 0)
+})
 
 watch(
   () => [props.open, props.runId] as const,
@@ -86,8 +100,14 @@ function clsOf(cls: string): string {
           <div class="rd-stat"><b>{{ detail.total_share }}</b><span>分享文件</span></div>
           <div class="rd-stat"><b class="warn">{{ detail.excl }}</b><span>排除清单跳过</span></div>
           <div class="rd-stat"><b>{{ detail.regex_miss }}</b><span>正则未命中</span></div>
+          <div class="rd-stat"><b>{{ detail.skip_ledger || 0 }}</b><span>台账跳过</span></div>
           <div class="rd-stat"><b>{{ detail.skip_md5 }}</b><span>MD5 命中跳过</span></div>
+          <div class="rd-stat"><b>{{ (detail.name_skipped || []).length }}</b><span>同名跳过</span></div>
+          <div class="rd-stat"><b>{{ detail.skip }}</b><span>跳过合计</span></div>
           <div class="rd-stat"><b class="ok">{{ detail.add }}</b><span>本次转存</span></div>
+        </div>
+        <div v-if="skipGap > 0" class="rd-gapfoot">
+          {{ gapIsLegacy ? `旧记录未拆分（本功能上线前）：另有 ${skipGap} 项跳过未分台账 / MD5 / 同名` : `另有 ${skipGap} 项：勾选清单/其他过滤（未计入三路拆分）` }}
         </div>
       </div>
 
@@ -120,6 +140,28 @@ function clsOf(cls: string): string {
         <div v-else class="rd-empty">
           {{ detail.skip_md5 ? `统计显示 MD5 命中跳过 ${detail.skip_md5} 项，但明细未记录（早于本功能上线的旧运行）` : '本次没有因 MD5 重复被跳过的文件' }}
         </div>
+      </div>
+
+      <div class="rd-section">
+        <div class="rd-title">台账命中的文件（{{ (detail.ledger_skipped || []).length }}）</div>
+        <div v-if="(detail.ledger_skipped || []).length" class="rd-files">
+          <div v-for="(e, i) in detail.ledger_skipped || []" :key="i" class="rd-file" :title="e.md5 ? `MD5 ${e.md5}` : ''">
+            <FileTextOutlined style="color: #13c2c2" /> {{ e.name }}
+          </div>
+        </div>
+        <div v-else class="rd-empty">本次没有台账命中的文件（台账 = 本地已转存账本拦下、连网盘基线都不查的那部分；早于本功能上线的旧运行没有明细）</div>
+      </div>
+
+      <div class="rd-section">
+        <div class="rd-title">同名命中的文件（{{ (detail.name_skipped || []).length }}）</div>
+        <div v-if="(detail.name_skipped || []).length" class="rd-files">
+          <div v-for="(e, i) in detail.name_skipped || []" :key="i" class="rd-file" :class="{ 'rd-diff': e.md5_diff }">
+            <FileTextOutlined :style="{ color: e.md5_diff ? '#fa8c16' : '#722ed1' }" /> {{ e.name }}
+            <span v-if="e.md5_uncomparable" class="rd-diff-tag rd-diff-unk">同名（无法比对 MD5）</span>
+            <span v-else-if="e.md5_diff" class="rd-diff-tag">同名但 MD5 不同，内容可能不同</span>
+          </div>
+        </div>
+        <div v-else class="rd-empty">本次没有同名命中的文件（早于本功能上线的旧运行没有明细）</div>
       </div>
 
       <div class="rd-section">
@@ -167,4 +209,13 @@ html[data-theme='dark'] .rh-tag.bad { color: #ff9c9c; background: rgba(255, 77, 
 .rd-files { display: flex; flex-direction: column; gap: 6px; max-height: 210px; overflow-y: auto; padding-right: 4px; }
 .rd-file { border: 1px solid var(--split); border-radius: 8px; padding: 8px 12px; font-size: 13px; font-family: var(--font-mono); flex: none; }
 .rd-empty { border: 1px dashed var(--split); border-radius: 8px; padding: 10px 12px; font-size: 12.5px; color: var(--text3); }
+/* 同名但 MD5 不同（T-017 用户定稿：跳过但标黄提示「内容可能不同」，不改转存行为） */
+.rd-file.rd-diff { border-color: #faad14; background: rgba(250, 173, 20, 0.08); }
+.rd-diff-tag { margin-left: 8px; font-size: 11.5px; color: #fa8c16; }
+/* 无法比对 MD5（基线/文件任一侧缺）：中性灰，不冒充「不同」 */
+.rd-diff-tag.rd-diff-unk { color: var(--text3); }
+/* 三路拆账差额脚注（勾选过滤/旧记录未拆分，T-017-F2） */
+.rd-gapfoot { margin-top: 8px; font-size: 12px; color: var(--text3); }
+html[data-theme='dark'] .rd-file.rd-diff { border-color: rgba(250, 173, 20, 0.55); background: rgba(250, 173, 20, 0.12); }
+html[data-theme='dark'] .rd-diff-tag { color: #ffa940; }
 </style>

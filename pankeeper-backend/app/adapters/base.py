@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
@@ -93,6 +94,36 @@ class TransferResult:
     renamed: int = 0
     # MD5 命中被跳过的文件（[{name, md5}]）——自动任务把它回写进任务排除清单（双保险 + 排除弹窗可见）
     md5_skipped: list[dict] = field(default_factory=list)
+    # T-017 跳过三路拆账：skip = skip_ledger + skip_md5 + len(name_skipped) + 差额。
+    # ⚠️ 差额 = 勾选清单过滤（only_paths，auto 任务也能配，auto.py:70）+ 建壳整单跳过等
+    # ——计入 skip 但不入三路，前端按「跳过合计 - 三卡」的差值提示「另有 N 项」（T-017-F2）。
+    # core.transfer_share 负责台账两路，适配器负责后两路
+    skip_ledger: int = 0  # 台账命中跳过数（去重第一道，先于适配器的 MD5/名字闸）
+    ledger_skipped: list[dict] = field(default_factory=list)  # [{name, md5}]
+    # 名字闸跳过（[{name, md5_diff}]）：md5_diff=True=文件自带 MD5 且库内同名条目 MD5 与其不同
+    # ——内容可能不同，只标黄提示不改转存行为（T-017 用户定稿）
+    name_skipped: list[dict] = field(default_factory=list)
+
+
+_MD5_HEX = re.compile(r"[0-9a-f]{32}")
+_md5_warned = False
+
+
+def clean_md5(raw) -> str:
+    """网盘返回的 MD5 校验：32 位 hex 才有效，非法丢弃只留名字去重（T-017）。
+
+    生产实测百度分享清单里有 8f635f1f3u7286a57f1e8146dabf732f 这种脏值（第 9 位 u）
+    ——留着会让 MD5 闸永远不命中。非法值进程内只 WARN 一次，别刷屏。"""
+    global _md5_warned
+    md5 = str(raw or "").strip().lower()
+    if not md5:
+        return ""
+    if not _MD5_HEX.fullmatch(md5):
+        if not _md5_warned:
+            _md5_warned = True
+            print(f"[md5] 网盘返回非法 MD5（{md5}），已丢弃该字段，只留名字去重")
+        return ""
+    return md5
 
 
 @dataclass

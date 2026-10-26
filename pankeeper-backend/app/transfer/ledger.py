@@ -43,27 +43,28 @@ def ledger_lookup(drive: str, task_id: int, save_dir: str) -> tuple[set[str], se
     return names, md5s
 
 
-def ledger_prefilter(drive: str, task_id: int, save_dir: str, files: list, on_log=None) -> tuple[list, int]:
+def ledger_prefilter(drive: str, task_id: int, save_dir: str, files: list, on_log=None) -> tuple[list, list[dict]]:
     """转存前查台账过滤（去重第一道，先于适配器内的网盘基线）。
 
     文件名（原名或目标名）或 MD5 任一命中即视为已转存。目录条目永远保留
-    （结构/勾选匹配要用）。返回 (剩余清单, 命中数)；全部命中时调用方应直接
-    短路 save_files——连网盘基线都不查（零网盘请求）。"""
+    （结构/勾选匹配要用）。返回 (剩余清单, 命中名单)；名单元素 {name, md5}
+    （md5=文件自身 MD5，按名字命中的可能为空，T-017）。判定条件与顺序一字未动。
+    全部命中时调用方应直接短路 save_files——连网盘基线都不查（零网盘请求）。"""
     names, md5s = ledger_lookup(drive, task_id, save_dir)
     if not names and not md5s:
-        return files, 0
+        return files, []
     kept: list = []
-    hits = 0
+    hits: list[dict] = []
     for f in files:
         if (
             not f.is_dir
             and (f.name in names or (f.target_name or "") in names or (bool(f.md5) and f.md5 in md5s))
         ):
-            hits += 1
+            hits.append({"name": f.name, "md5": f.md5 or ""})
             continue
         kept.append(f)
     if hits and on_log:
-        on_log(f"本地台账命中 {hits} 个已转存文件，直接跳过（不查网盘基线）")
+        on_log(f"本地台账命中 {len(hits)} 个已转存文件，直接跳过（不查网盘基线）")
     return kept, hits
 
 

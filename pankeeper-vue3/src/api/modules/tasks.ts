@@ -250,6 +250,14 @@ export interface PaRunDetail extends PaRunRow {
   regex_hit: string[]
   /** MD5 去重命中的文件名（只记录、不回写任务配置）；旧运行未记录该字段时为空数组 */
   md5_skipped: string[]
+  /** 本地台账命中名单（T-017，去重第一道）：[{name, md5}]；旧运行为空数组 */
+  ledger_skipped: { name: string; md5: string }[]
+  /** 台账跳过数（= ledger_skipped.length） */
+  skip_ledger: number
+  /** 同名命中名单（T-017）：[{name, md5_diff, md5_uncomparable}]；md5_diff=true=同名但
+   * MD5 不同（详情页标黄）；md5_uncomparable=true=基线/文件缺 MD5 无法比对（中性提示）；
+   * 旧运行为空数组 */
+  name_skipped: { name: string; md5_diff?: boolean; md5_uncomparable?: boolean }[]
   /** QMS/STRM 联动结果快照（{st, cls}）；旧记录/联动没跑为 null，前端显示「—」 */
   qms: { st: string; cls: string } | null
   strm: { st: string; cls: string } | null

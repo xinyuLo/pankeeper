@@ -114,6 +114,8 @@ def _migrate_columns() -> None:
             ("excluded_json", "TEXT DEFAULT '[]'"),
             ("regex_hit_json", "TEXT DEFAULT '[]'"),
             ("md5_skipped_json", "TEXT DEFAULT '[]'"),
+            ("ledger_skipped_json", "TEXT DEFAULT '[]'"),
+            ("name_skipped_json", "TEXT DEFAULT '[]'"),
             ("qms_json", "TEXT DEFAULT ''"),
             ("strm_json", "TEXT DEFAULT ''"),
         ],

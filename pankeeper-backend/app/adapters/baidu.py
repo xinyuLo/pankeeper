@@ -29,7 +29,7 @@ import requests
 from ..security import decrypt_credential
 from ..services import reqstat
 from ..services.dircache import dir_cache
-from .base import AdapterError, CloudAdapter, CredentialExpired, ShareBanned, ShareFile, ShareLocked, TaskSpec, TransferResult
+from .base import AdapterError, CloudAdapter, CredentialExpired, ShareBanned, ShareFile, ShareLocked, TaskSpec, TransferResult, clean_md5
 from .rate_gate import CircuitOpen, RateGate, RateLimited
 
 UA = (
@@ -508,7 +508,7 @@ class BaiduClient(CloudAdapter):
             is_dir=is_dir,
             size=int(row.get("size") or 0),
             path=(base + "/" + name).lstrip("/"),
-            md5=(row.get("md5") or "").lower(),
+            md5=clean_md5(row.get("md5")),
         )
 
     def list_share(self, spec: TaskSpec) -> list[ShareFile]:
@@ -605,7 +605,7 @@ class BaiduClient(CloudAdapter):
 
     @staticmethod
     def _row_md5(row: dict) -> str:
-        return str(row.get("md5") or "").lower()
+        return clean_md5(row.get("md5"))
 
     def _list_dir_cached(self, dir_path: str) -> list[dict]:
         """列一层目录并归一成 dir_cache 统一形状（与 cache_api._load_dir_payload 百度
@@ -628,6 +628,7 @@ class BaiduClient(CloudAdapter):
         budget: list[int] | None = None,
         on_log=None,
         stats: dict | None = None,
+        name_md5s: dict | None = None,
     ) -> tuple[set[str], set[str]]:
         """一次 list_dir 同时收文件名与 MD5（去重基线）。
 
@@ -653,6 +654,8 @@ class BaiduClient(CloudAdapter):
             names.add(self._row_name(e))
             if self._row_md5(e):
                 md5s.add(self._row_md5(e))
+                if name_md5s is not None:
+                    name_md5s[self._row_name(e)] = self._row_md5(e)  # T-017-F2：同名行→MD5（md5_diff 真比对）
         scanned = 1
         if budget is None:
             budget = [SUBDIR_SCAN_LIMIT]
@@ -713,6 +716,8 @@ class BaiduClient(CloudAdapter):
                     names.add(self._row_name(e))
                     if self._row_md5(e):
                         md5s.add(self._row_md5(e))
+                        if name_md5s is not None:
+                            name_md5s[self._row_name(e)] = self._row_md5(e)
         if stats is not None:
             stats["dirs"] = scanned
         return names, md5s
@@ -863,6 +868,7 @@ class BaiduClient(CloudAdapter):
             bases.append(spec.save_dir)
         existing: set[str] = set()
         md5s: set[str] = set()
+        base_name_md5s: dict[str, str] = {}  # 同名行→基线 MD5（md5_diff 真比对，T-017-F2）
 
         def _pending_files() -> list[ShareFile]:
             # 本轮仍待比对的文件（按最终匹配口径剔已命中：MD5 命中**或**名字命中）：
@@ -882,7 +888,8 @@ class BaiduClient(CloudAdapter):
                 # 名字与 MD5 同源：一次扫描拿全（原两遍 list_dir 是给风控送人头的写法）
                 st: dict = {}
                 dir_names, dir_md5s = self._dir_baselines(
-                    base, cands=_pending_files(), budget=budget, on_log=on_log, stats=st
+                    base, cands=_pending_files(), budget=budget, on_log=on_log, stats=st,
+                    name_md5s=base_name_md5s,
                 )
                 existing |= dir_names
                 md5s |= dir_md5s
@@ -901,6 +908,15 @@ class BaiduClient(CloudAdapter):
                 result.md5_skipped.append({"name": f.name, "md5": f.md5})
             elif (f.target_name or f.name) in existing or f.name in existing:
                 result.skip += 1
+                # 名字闸命中：MD5 真比对（T-017-F2）——两侧都有 MD5 且不同才标「不同」
+                # （此前 bool(f.md5) 是推断，基线缺 MD5 会误标黄）；任一侧缺 = 无法比对。
+                # 只提示不改转存行为（T-017 用户定稿）
+                base_md5 = base_name_md5s.get(f.target_name or f.name) or base_name_md5s.get(f.name) or ""
+                result.name_skipped.append({
+                    "name": f.name,
+                    "md5_diff": bool(base_md5) and bool(f.md5) and base_md5 != f.md5,
+                    "md5_uncomparable": not (bool(base_md5) and bool(f.md5)),
+                })
             else:
                 need.append(f)
         on_log(f"清单 {len(save_list)} 项：去重跳过 {result.skip} / 待转存 {len(need)}")

@@ -507,6 +507,9 @@ def run_detail(run_id: int, _user=CurrentUser):
         from ..services.run_watch import overall_of
 
         qms_snap = _safe_snap(getattr(r, "qms_json", ""))
+        # T-017：跳过三路拆账——台账/同名名单（旧记录为空数组，前端空态，不回填）
+        ledger_skipped = json.loads(getattr(r, "ledger_skipped_json", "") or "[]")
+        name_skipped = json.loads(getattr(r, "name_skipped_json", "") or "[]")
         return {
             "id": r.id,
             "task_id": r.task_id,
@@ -534,6 +537,10 @@ def run_detail(run_id: int, _user=CurrentUser):
             "regex_hit": json.loads(r.regex_hit_json or "[]"),
             # MD5 去重命中的文件名（旧记录为空——早于本功能上线的运行没存这个字段）
             "md5_skipped": json.loads(getattr(r, "md5_skipped_json", "") or "[]"),
+            # T-017：台账/同名拆账（skip_ledger = 台账命中数）
+            "skip_ledger": len(ledger_skipped),
+            "ledger_skipped": ledger_skipped,
+            "name_skipped": name_skipped,
             # QMS/STRM 联动结果快照；旧记录为空串 → None，前端显示「—」
             "qms": _safe_snap(getattr(r, "qms_json", "")),
             "strm": _safe_snap(getattr(r, "strm_json", "")),

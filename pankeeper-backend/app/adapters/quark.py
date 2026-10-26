@@ -495,6 +495,8 @@ class QuarkAdapter(CloudAdapter):
             target = f.target_name or f.name
             if target in existing or f.name in existing:
                 result.skip += 1
+                # 名字闸命中（夸克无 MD5）——名单落库供详情查看；无法比对 MD5（T-017-F2）
+                result.name_skipped.append({"name": f.name, "md5_diff": False, "md5_uncomparable": True})
             else:
                 need.append(f)
         on_log(f"清单 {len(save_list)} 项：跳过 {result.skip} / 待转存 {len(need)}")

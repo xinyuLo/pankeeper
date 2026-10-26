@@ -98,6 +98,11 @@ function durTxt(s: number): string {
   if (s < 60) return `${s} 秒`
   return `${Math.floor(s / 60)} 分 ${s % 60} 秒`
 }
+/** 说明列三色（T-017）：失败红、成功有新增绿、成功零新增（重复执行）橘——本项目不用灰色做状态色 */
+function msgCls(r: PaRunListItem): string {
+  if (r.status !== 'success') return 'hr-msg-bad'
+  return r.add > 0 ? 'hr-msg-ok' : 'hr-msg-repeat'
+}
 /** 清空转存历史（下拉选范围） */
 async function onClear(range: ClearRange) {
   let before = ''
@@ -162,7 +167,7 @@ async function onClear(range: ClearRange) {
               </div>
               <span class="hr-substat">分享 {{ r.total_share }} · 正则未命中 {{ r.regex_miss }} · MD5 跳过 {{ r.skip_md5 }}</span>
             </td>
-            <td class="small hr-msgclip" :class="r.status === 'success' ? 'hr-msg-ok' : 'hr-msg-bad'" :title="r.message">{{ r.message || '—' }}</td>
+            <td class="small hr-msgclip" :class="msgCls(r)" :title="r.message">{{ r.message || '—' }}</td>
             <td class="small muted hr-nowrap">{{ durTxt(r.duration) }}</td>
             <td>
               <a-button type="link" size="small" class="hr-op" @click="openDetail(r.id)">详情</a-button>
@@ -194,7 +199,7 @@ async function onClear(range: ClearRange) {
           <div class="hr-card-stats small">
             新增 <b class="ok">{{ r.add }}</b> · 跳过 {{ r.skip }} · 失败 <b :class="{ bad: r.fail }">{{ r.fail }}</b> · 耗时 {{ durTxt(r.duration) }}
           </div>
-          <div class="hr-card-msg small muted">{{ r.message || '—' }}</div>
+          <div class="hr-card-msg small" :class="msgCls(r)">{{ r.message || '—' }}</div>
         </div>
         <div v-if="!rows.length" class="pq-empty">{{ loading ? '加载中…' : '还没有执行历史' }}</div>
       </div>
@@ -239,9 +244,12 @@ html[data-theme='dark'] .hr-pill.dim { color: var(--text3); background: rgba(255
 .hr-msgclip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 说明列与统计列之间留一点间距（用户要求，16px 温和不挤） */
 .hr-table td.hr-msgclip { padding-left: 16px; }
-/* 说明列按成败染色（同转存日志弹窗口径） */
+/* 说明列三色染色（T-017）：成败 + 重复执行；同转存日志弹窗口径 */
 .hr-msg-ok { color: #389e0d; }
 .hr-msg-bad { color: #cf1322; }
+/* 重复执行（成功但零新增）：橘色可辨，暗色提亮一档；不用灰色做状态色 */
+.hr-msg-repeat { color: #fa8c16; }
+html[data-theme='dark'] .hr-msg-repeat { color: #ffa940; }
 html[data-theme='dark'] .hr-msg-ok { color: #95de64; }
 html[data-theme='dark'] .hr-msg-bad { color: #ff9c9c; }
 /* 操作列文字链与记录页同款（link 按钮去掉内边距，密集排布才不飘） */
@@ -257,6 +265,13 @@ html[data-theme='dark'] .hr-msg-bad { color: #ff9c9c; }
 .hr-card-stats b.ok { color: #52c41a; }
 .hr-card-stats b.bad { color: #ff4d4f; }
 .hr-card-msg { margin: 7px 0 0 11px; font-size: 12.5px; color: var(--text3); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+/* 手机卡片 message 三色（T-017-F2）：组合选择器压过上面的中性灰，暗色一并补齐 */
+.hr-card-msg.hr-msg-ok { color: #389e0d; }
+.hr-card-msg.hr-msg-bad { color: #cf1322; }
+.hr-card-msg.hr-msg-repeat { color: #fa8c16; }
+html[data-theme='dark'] .hr-card-msg.hr-msg-ok { color: #95de64; }
+html[data-theme='dark'] .hr-card-msg.hr-msg-bad { color: #ff9c9c; }
+html[data-theme='dark'] .hr-card-msg.hr-msg-repeat { color: #ffa940; }
 
 /* 手机端筛选条分行（同记录页）：下拉平分一行、输入独占一行、按钮整行好按 */
 @media (max-width: 767px) {
