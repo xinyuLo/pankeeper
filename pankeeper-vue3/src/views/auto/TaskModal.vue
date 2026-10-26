@@ -7,12 +7,13 @@
  * 注意：没有排除文件清单——入口在任务行的「排除」按钮上，别加回来（设计约定）。
  * 目录弹窗从这里叠加打开（允许两层）。 */
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { message } from 'ant-design-vue'
+import { message, Modal } from 'ant-design-vue'
 import AutoDirModal from './AutoDirModal.vue'
 import CronPicker from './CronPicker.vue'
 import { DD_MEDIA, DRIVE_META } from '@/api/mock/meta'
 import { accountStore } from '@/api/mock/accounts'
 import { listDdItems, listQmsPaths, listStrmPaths } from '@/api/modules/dd'
+import { getFilesListMeta } from '@/api/modules/files'
 import { getSettings } from '@/api/modules/settings'
 import { pkQueueCfgFetch } from '@/queue/engine'
 import {
@@ -25,6 +26,7 @@ import {
 } from '@/api/modules/tasks'
 import type { DdQmsPath, DdStrmPath, MainDriveType, PaTask } from '@/types/model'
 
+import { USE_MOCK } from '@/api/http'
 import { useBackGuard } from '@/composables/useBackGuard'
 const props = defineProps<{ open: boolean; type: MainDriveType; task: PaTask | null; suspended?: boolean }>()
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void; (e: 'saved', task: PaTask): void }>()
@@ -132,8 +134,37 @@ function browse(target: 'save' | 'compare') {
   dirOpen.value = true
 }
 function onPicked(path: string) {
-  if (dirTarget.value === 'save') saveDir.value = path
-  else comparePath.value = path
+  if (dirTarget.value === 'save') {
+    saveDir.value = path
+    return
+  }
+  comparePath.value = path
+  precheckCompare(path)
+}
+
+/* ===== compare_path 选层防呆（T-018 / D-2）：误选上一级分类目录（如整个「国产剧」）
+ * 会把别的剧的文件名/MD5 都算进去重基线，新剧整部被「已在库」跳过且日志与正常重复执行
+ * 一模一样。选定后立刻对该目录发一次 force_refresh 列目录（真打网盘并回写缓存），
+ * 有子文件夹就记标记，点保存时 Modal.confirm 确认；无子目录（如 Season 1）不弹。 */
+const cmpPre = ref<{ n: number; names: string[] } | null>(null)
+let cmpPreSeq = 0
+
+function precheckCompare(path: string) {
+  cmpPre.value = null
+  if (!path || USE_MOCK) return // mock 模式无真实目录（getFilesListMeta 必抛），预检整体跳过
+  const seq = ++cmpPreSeq
+  getFilesListMeta(props.type, '0', path, true, accId.value)
+    .then((r) => {
+      if (seq !== cmpPreSeq) return // 连续换目录：过期响应不要盖掉新一轮
+      const dirs = (r.items || []).filter((x) => x.is_dir)
+      if (dirs.length) cmpPre.value = { n: dirs.length, names: dirs.slice(0, 3).map((d) => d.name) }
+    })
+    .catch(() => {
+      if (seq !== cmpPreSeq) return
+      cmpPre.value = null
+      // 429 风控/401 凭据失效不拦保存——防呆不能反过来挡正常保存
+      message.warning('目录预检失败，已跳过确认')
+    })
 }
 
 /* ===== 打开时回填 ===== */
@@ -149,6 +180,7 @@ watch(
     shareCode.value = t?.share_code || ''
     saveDir.value = t?.save_dir || ''
     comparePath.value = t?.compare_path || ''
+    cmpPre.value = null
     includeSub.value = t ? t.include_subdirs : true
     postQms.value = !!t?.post_qms
     cron.value = t ? t.cron || '' : '0 3 * * *' // 新任务给个常用默认，编辑带原值（空=仅手动）
@@ -268,6 +300,24 @@ async function onSave() {
   strm_id: postQms.value ? strmId.value ?? null : null,
   lp_event: mediaBackend.value === 'litepan' && postLp.value ? lpEvent.value.trim() : '',
   }
+  if (cmpPre.value) {
+    const { n, names } = cmpPre.value
+    const more = n > names.length ? ' …' : ''
+    Modal.confirm({
+      title: '确定用当前目录进行对比吗？',
+      // 移动端同款 antd Modal；zIndex 压过任务弹窗(1000)/目录弹窗(1002)
+      zIndex: 1010,
+      content: `当前对比目录下还有 ${n} 个子文件夹（${names.join(' / ')}${more}）。选上一层分类目录会把其它作品的文件也算进去重基线，新任务可能被整部跳过。`,
+      okText: '确定',
+      cancelText: '取消',
+      onOk: () => submitTask(task, extras),
+    })
+    return // 取消/关确认框：任务不落库
+  }
+  await submitTask(task, extras)
+}
+
+async function submitTask(task: PaTask, extras: PaExtras) {
   const saved = await savePaTask(task, extras)
   message.success(`保存成功：${saved.name}`)
   emit('saved', saved)
