@@ -5,7 +5,6 @@
 """
 from __future__ import annotations
 
-import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
@@ -105,25 +104,14 @@ class TransferResult:
     name_skipped: list[dict] = field(default_factory=list)
 
 
-_MD5_HEX = re.compile(r"[0-9a-f]{32}")
-_md5_warned = False
-
-
 def clean_md5(raw) -> str:
-    """网盘返回的 MD5 校验：32 位 hex 才有效，非法丢弃只留名字去重（T-017）。
+    """网盘返回的 MD5 归一：只 strip + lower，**不校验格式**。
 
-    生产实测百度分享清单里有 8f635f1f3u7286a57f1e8146dabf732f 这种脏值（第 9 位 u）
-    ——留着会让 MD5 闸永远不命中。非法值进程内只 WARN 一次，别刷屏。"""
-    global _md5_warned
-    md5 = str(raw or "").strip().lower()
-    if not md5:
-        return ""
-    if not _MD5_HEX.fullmatch(md5):
-        if not _md5_warned:
-            _md5_warned = True
-            print(f"[md5] 网盘返回非法 MD5（{md5}），已丢弃该字段，只留名字去重")
-        return ""
-    return md5
+    2026-10-28 回退：早前按「32 位 hex」丢弃非标准值，而百度本来就会返回
+    1e2d69813r903b61fd3192925f13187a（含字母 r）这类值——分享侧与网盘侧同源、
+    本可正常比对；丢弃后去重基线 MD5 变 0 个，run 17/18 每次全量重复转存。
+    只有空值算无效。"""
+    return str(raw or "").strip().lower()
 
 
 @dataclass

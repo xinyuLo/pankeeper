@@ -51,14 +51,15 @@ def test_share_row_to_file_strips_prefix():
     assert f.md5 == "ab" * 16 and not f.is_dir
 
 
-def test_share_row_to_file_drops_invalid_md5():
-    """T-017：非 32 位 hex 的脏 MD5（生产台账实测第 9 位 u）解析即丢弃，只留名字去重。"""
+def test_share_row_to_file_keeps_non_hex_md5():
+    """2026-10-28 回退：百度会返回含字母的非 hex 校验值（生产实测 1e2d69813r903b61…），
+    分享侧与网盘侧同源、本可正常比对，必须原样保留；早前按 32-hex 丢弃导致去重全失效。"""
     f = BaiduClient._share_row_to_file(
         {"fs_id": 1, "path": "/sharelink1-2/剧/第1集.mkv", "server_filename": "第1集.mkv",
          "isdir": 0, "size": 10, "md5": "8f635f1f3u7286a57f1e8146dabf732f"},
         "剧",
     )
-    assert f.md5 == "" and f.name == "第1集.mkv"
+    assert f.md5 == "8f635f1f3u7286a57f1e8146dabf732f" and f.name == "第1集.mkv"
 
 
 def test_spec_exclude_and_compare_defaults():

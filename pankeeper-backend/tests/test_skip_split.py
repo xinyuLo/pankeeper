@@ -119,10 +119,10 @@ def test_transfer_share_full_hit_short_circuit_carries_list():
 
 # ---------- 验收：非法 MD5 丢弃 ----------
 
-def test_invalid_md5_dropped():
-    """生产台账实测脏值 8f635f1f3u7286a57f1e8146dabf732f（第 9 位 u）：解析丢弃只留
-    名字去重；合法 hex 照常且归小写；百度分享行经 _share_row_to_file 落到 ShareFile。"""
-    assert clean_md5("8f635f1f3u7286a57f1e8146dabf732f") == ""
+def test_non_hex_md5_kept():
+    """2026-10-28 回退：非 hex 的 md5 原样保留（百度会返回此类值），只做 strip/lower。
+    早前按 32-hex 丢弃 → 去重基线 MD5 变 0 → run 17/18 全量重复转存。"""
+    assert clean_md5("8f635f1f3u7286a57f1e8146dabf732f") == "8f635f1f3u7286a57f1e8146dabf732f"
     assert clean_md5("A" * 32) == "a" * 32
     assert clean_md5("") == "" and clean_md5(None) == ""
     row = {"fs_id": "1", "server_filename": "E18.mkv", "size": 1, "isdir": 0, "path": "/E18.mkv",
@@ -130,7 +130,7 @@ def test_invalid_md5_dropped():
     from app.adapters.baidu import BaiduClient
 
     f = BaiduClient._share_row_to_file(row, "")
-    assert f.md5 == "" and f.name == "E18.mkv"
+    assert f.md5 == "8f635f1f3u7286a57f1e8146dabf732f" and f.name == "E18.mkv"
 
 
 # ---------- T-017-F2：勾选过滤差额 / md5_diff 真比对 ----------
@@ -160,13 +160,13 @@ def _bare_baidu(table: dict):
     return cli
 
 
-def test_baidu_name_skip_md5_diff_real_compare():
-    """F2 验收：md5_diff 真比对——基线有 MD5 且不同 = True；基线行缺 MD5 = False +
-    md5_uncomparable（前端显示「无法比对」，不再把缺 MD5 误标成「MD5 不同」）。"""
+def test_baidu_name_hit_no_longer_skips():
+    """2026-10-28 老大定：名字不作命中依据（QMS 整理会改文件名）。
+    基线里同名但 MD5 不同 / 基线行无 MD5 的，一律按新增转存。"""
     table = {
         "/库": [
-            _bd_file("/库/不同.mkv", "不同.mkv", "bb" * 16),  # 基线 MD5=bb，文件 MD5=aa → 不同
-            _bd_file("/库/无md5.mkv", "无md5.mkv", ""),  # 基线行缺 MD5 → 无法比对
+            _bd_file("/库/不同.mkv", "不同.mkv", "bb" * 16),  # 同名但 MD5 不同
+            _bd_file("/库/无md5.mkv", "无md5.mkv", ""),  # 同名但基线无 MD5
         ],
         "/t017": [],
     }
@@ -176,13 +176,21 @@ def test_baidu_name_skip_md5_diff_real_compare():
         ShareFile(fid="1", name="不同.mkv", path="不同.mkv", size=10, md5="aa" * 16),
         ShareFile(fid="2", name="无md5.mkv", path="无md5.mkv", size=10, md5="cc" * 16),
     ]
+    cli._ensure_save_dir = lambda *a, **k: None
+    cli._ensure_dirs = lambda *a, **k: None
+
+    def fake_transfer(ctx, group, target, spec_, result, on_log):
+        for f in group:
+            result.transferred.append({"name": f.name, "fid": f.fid})
+        result.add += len(group)
+
+    cli._transfer_group = fake_transfer
 
     result = cli.save_files(files, spec, lambda p: None, lambda txt: None)
 
-    assert result.skip == 2 and result.skip_md5 == 0 and result.add == 0  # 都走名字闸
-    ns = {e["name"]: e for e in result.name_skipped}
-    assert ns["不同.mkv"]["md5_diff"] is True and ns["不同.mkv"]["md5_uncomparable"] is False
-    assert ns["无md5.mkv"]["md5_diff"] is False and ns["无md5.mkv"]["md5_uncomparable"] is True
+    assert result.skip == 0 and result.add == 2
+    assert sorted(e["name"] for e in result.transferred) == ["不同.mkv", "无md5.mkv"]
+    assert result.name_skipped == []
 
 
 def test_baidu_only_paths_gap_out_of_three_way():

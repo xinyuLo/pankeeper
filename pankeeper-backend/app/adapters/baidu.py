@@ -868,18 +868,12 @@ class BaiduClient(CloudAdapter):
             bases.append(spec.save_dir)
         existing: set[str] = set()
         md5s: set[str] = set()
-        base_name_md5s: dict[str, str] = {}  # 同名行→基线 MD5（md5_diff 真比对，T-017-F2）
 
         def _pending_files() -> list[ShareFile]:
-            # 本轮仍待比对的文件（按最终匹配口径剔已命中：MD5 命中**或**名字命中）：
-            # 下个 base 的惰性递归据此决定值不值得下钻——全部命中就一层收工（T-001-F3）
-            return [
-                f
-                for f in save_list
-                if not (f.md5 and f.md5 in md5s)
-                and (f.target_name or f.name) not in existing
-                and f.name not in existing
-            ]
+            # 本轮仍待比对的文件：**只按 MD5 判定**（2026-10-28 老大定：QMS 会改文件名，
+            # 拿分享名去比媒体库文件名没有意义，名字一律不作命中依据）。
+            # 下个 base 的惰性递归据此决定值不值得下钻。
+            return [f for f in save_list if not (f.md5 and f.md5 in md5s)]
 
         budget = [SUBDIR_SCAN_LIMIT]
         scan_stats: dict = {"dirs": 0, "stopped": False}
@@ -889,7 +883,6 @@ class BaiduClient(CloudAdapter):
                 st: dict = {}
                 dir_names, dir_md5s = self._dir_baselines(
                     base, cands=_pending_files(), budget=budget, on_log=on_log, stats=st,
-                    name_md5s=base_name_md5s,
                 )
                 existing |= dir_names
                 md5s |= dir_md5s
@@ -899,6 +892,9 @@ class BaiduClient(CloudAdapter):
                 raise  # 凭据失效必须上抛标记账号 expired，吞了下次任务还会再撞
             except AdapterError as e:
                 on_log(f"对比目录 {base} 读取失败（{e}），该目录不参与去重基线")
+        if existing and not md5s:
+            # 去重全靠 MD5，基线一个都没拿到 = 本次必然全量重复转存（2026-10-27/28 实锤）
+            on_log(f"警告：对比基线扫到 {len(existing)} 个文件名但 0 个 MD5，本次无法去重（可能全量重复转存）")
         on_log(f"去重基线：扫描了 {scan_stats['dirs']} 个目录（含子目录），现有 {len(existing)} 个文件名 / {len(md5s)} 个 MD5")
         need = []
         for f in save_list:
@@ -906,18 +902,8 @@ class BaiduClient(CloudAdapter):
                 result.skip += 1
                 result.skip_md5 += 1
                 result.md5_skipped.append({"name": f.name, "md5": f.md5})
-            elif (f.target_name or f.name) in existing or f.name in existing:
-                result.skip += 1
-                # 名字闸命中：MD5 真比对（T-017-F2）——两侧都有 MD5 且不同才标「不同」
-                # （此前 bool(f.md5) 是推断，基线缺 MD5 会误标黄）；任一侧缺 = 无法比对。
-                # 只提示不改转存行为（T-017 用户定稿）
-                base_md5 = base_name_md5s.get(f.target_name or f.name) or base_name_md5s.get(f.name) or ""
-                result.name_skipped.append({
-                    "name": f.name,
-                    "md5_diff": bool(base_md5) and bool(f.md5) and base_md5 != f.md5,
-                    "md5_uncomparable": not (bool(base_md5) and bool(f.md5)),
-                })
             else:
+                # 名字命中不算数：QMS 整理后会改成媒体库命名，同名也不代表同内容
                 need.append(f)
         on_log(f"清单 {len(save_list)} 项：去重跳过 {result.skip} / 待转存 {len(need)}")
         if not need:
