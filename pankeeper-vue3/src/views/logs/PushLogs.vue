@@ -46,8 +46,13 @@ onMounted(load)
 const detailOpen = ref(false)
 useBackGuard(detailOpen)
 const md = new MarkdownIt({ breaks: true, linkify: true })
+/** TMDB 图走本机代理：正文里存的是 image.tmdb.org 直链，墙内浏览器拉不到、图是空白。
+ *  改成 /img?u=...（后端代拉+缓存），内外网都能显示；只动图片，不动正文其它内容。 */
+function proxifyImages(text: string) {
+  return text.replace(/https:\/\/image\.tmdb\.org\/[^\s)]+/g, (u) => `/img?u=${encodeURIComponent(u)}`)
+}
 /** 正文按 Markdown 渲染（与 Server酱展示同观感：标题/加粗/图片/段落） */
-const detailHtml = computed(() => (detail.value?.content ? md.render(detail.value.content) : ''))
+const detailHtml = computed(() => (detail.value?.content ? md.render(proxifyImages(detail.value.content)) : ''))
 const detailLoading = ref(false)
 const detail = ref<PushLogDetail | null>(null)
 async function openDetail(row: PushLogRow) {

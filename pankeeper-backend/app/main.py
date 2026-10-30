@@ -9,7 +9,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .api import accounts, apikeys, auth, cache_api, dd, drive_logs, pa, pk_ai, qms_api, queue_api, recognize, records, search, settings as settings_api
+from .api import accounts, apikeys, auth, cache_api, dd, drive_logs, img, pa, pk_ai, qms_api, queue_api, recognize, records, search, settings as settings_api
 from .api.auth import ensure_admin
 from .db import init_db
 from .deps import is_local_request
@@ -83,6 +83,7 @@ def create_app() -> FastAPI:
     app.add_middleware(GZipMiddleware, minimum_size=1024)  # 前端包 1.5MB，gzip 必要
 
     app.include_router(auth.router)
+    app.include_router(img.router)  # /img：TMDB 图本地代理，故意不进 /api 鉴权区
     app.include_router(pk_ai.router)
     app.include_router(settings_api.router)
     app.include_router(apikeys.router)
