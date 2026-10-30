@@ -107,6 +107,21 @@ def test_115_verifycode_is_riskcontrol():
         Pan115Adapter._check_state({"state": False, "error": "请输入验证码"}, "分享清单")
 
 
+def test_115_dead_share_message_is_banned():
+    """分享清单里出现死链文案 → ShareBanned（check-link 才判 bad；2026-10-31 与夸克对齐）。"""
+    with pytest.raises(ShareBanned):
+        Pan115Adapter._check_state({"state": False, "error": "分享已失效"}, "分享清单", share=True)
+    with pytest.raises(ShareBanned):
+        Pan115Adapter._check_state({"state": False, "error": "分享不存在或已被删除"}, "分享清单", share=True)
+
+
+def test_115_dir_error_stays_generic():
+    """目录类调用不套死链词表：「目录不存在」是常态，不能把活任务熔断。"""
+    with pytest.raises(AdapterError) as ei:
+        Pan115Adapter._check_state({"state": False, "error": "目录不存在"}, "列目录")
+    assert type(ei.value) is AdapterError
+
+
 def test_115_receive_code_fallback(monkeypatch):
     """链接没带 ?password= 时回落 spec.share_code（115 密码常态就在 URL 里，但搜索源可能剥掉）。"""
     p = Pan115Adapter.__new__(Pan115Adapter)

@@ -126,8 +126,12 @@ class Pan115Adapter(CloudAdapter):
         self.gate.on_success()
         return body
 
+    # 分享级死链关键词（与夸克同口径，2026-10-31）：只用于 share=True 的分享相关调用
+    # （分享清单）。目录类调用（列目录/建目录）不套——那边「不存在」是常态，误判会把活任务熔断。
+    SHARE_DEAD_HINTS = ("不存在", "已取消", "已删除", "过期", "失效", "违规", "敏感", "封禁", "查看受限")
+
     @staticmethod
-    def _check_state(data: dict, action: str, *, already_ok: bool = False) -> bool:
+    def _check_state(data: dict, action: str, *, already_ok: bool = False, share: bool = False) -> bool:
         """webapi state=false 分流。返回 True 表示「已接收」类幂等成功。"""
         if data.get("state", True):
             return False
@@ -142,6 +146,10 @@ class Pan115Adapter(CloudAdapter):
         # 缺码落这里只会得到「分享清单失败：请输入访问码」，AI 侧没法跟死链区分）
         if any(k in err for k in ("访问码", "密码", "提取码", "访问码错误")):
             raise ShareLocked(f"115 分享需要接收码/密码：{err}")
+        # 分享级死链：以前只落通用 AdapterError，check-link 靠文案兜底、没命中就
+        # uncertain 放行（夸克封禁分享同款坑）。分享清单里出现这些词一律按死链熔断。
+        if share and any(k in err for k in Pan115Adapter.SHARE_DEAD_HINTS):
+            raise ShareBanned(f"{action}：{err}")
         raise AdapterError(f"{action}失败：{err or data}")
 
     # ---------- 接口实现 ----------
@@ -208,7 +216,7 @@ class Pan115Adapter(CloudAdapter):
             if cid:
                 params["cid"] = cid
             data = self._get("https://webapi.115.com/share/snap", params)
-            self._check_state(data, "分享清单")
+            self._check_state(data, "分享清单", share=True)
             d = data.get("data")
             if isinstance(d, dict):
                 page = d.get("list") or []
