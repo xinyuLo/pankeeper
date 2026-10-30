@@ -47,7 +47,7 @@ def _api_key_of(request: Request) -> str:
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="PanKeeper API", version="1.2.3")
+    app = FastAPI(title="PanKeeper API", version="1.2.4")
 
     # 鉴权中间件放在其它中间件「内层」：它在最前拦截，而 401 响应仍会穿过
     # CORS/GZip 外层，浏览器才不会把 401 误报成跨域错误。
