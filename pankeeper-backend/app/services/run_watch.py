@@ -38,8 +38,8 @@ CLOCK_TOLERANCE = 60      # updated_at 判据的时钟容差（秒）：QMS 在 
                           # 两边时钟差几秒就会让 `updated_at >= 触发时刻` 误判为假（桩测试实测踩到）
 PAGE_SIZE = 1000          # 每页条数（2026-10-13 实测 pageSize=1000 照单全收，响应带 total）
 RECORD_MAX_PAGES = 5      # 记录窗口读取页数上限：5 页 = 5000 条，覆盖当前全池（2509）仍有余量
-SYNC_POLL_INTERVAL = 5    # STRM 同步任务记录轮询间隔（秒）
-SYNC_WAIT_TIMEOUT = 120   # 等同步任务终态上限（实测定向任务 1~5s 完成；超时回落「已触发」）
+SYNC_POLL_INTERVAL = 3    # STRM 同步任务记录轮询间隔（秒）
+SYNC_WAIT_TIMEOUT = 60    # 等同步任务终态上限（实测定向任务 0.1~5s 完成；超时回落「已触发」）
 
 
 def video_names(names) -> list[str]:
@@ -229,23 +229,37 @@ def _await_sync_done(dests: list[str], local: str, fired_ts: int) -> dict[str, d
     认领规则：remote_path 归一化 == dest、local_path == 同步落点、created_at ≥ 触发时刻-5s
     （防串台：同目录的旧任务不算）。全部 dest 都有终态（status 2=完成 / 3=失败）才收工；
     超时（SYNC_WAIT_TIMEOUT）把已认领的一并返回——调用方对「一条没有 / 没凑齐 / 没到终态」
-    一律回落「已触发」+ Emby 90s 定时旧口径。"""
+    一律回落「已触发」+ Emby 90s 定时旧口径。
+
+    ⚠️ 2026-10-31 修（挽救计划实录）：旧实现用 `key not in found` 认领后就不再刷新，
+    第一次撞上 QMS 临时任务 status=0（排队/运行中）就把这条缓存住，之后任务 0.1s 跑完
+    也永远读不到终态，只能等满超时回落「已触发」+ 90s 兜底。轮询越快越容易撞上运行态，
+    所以每轮都必须用**最新一条**覆盖。"""
     deadline = time.time() + SYNC_WAIT_TIMEOUT
     want = {d.strip("/") for d in dests}
     found: dict[str, dict] = {}
+    polls = 0
     while True:
-        for r in qms.sync_records() or []:
+        polls += 1
+        latest = qms.sync_records()
+        for r in latest or []:
             key = str(r.get("remote_path") or "").strip("/")
             if (
                 key in want
-                and key not in found
                 and str(r.get("local_path") or "").strip("/") == local.strip("/")
                 and int(r.get("created_at") or 0) >= fired_ts - 5
             ):
-                found[key] = r
+                found[key] = r  # 每轮覆盖：status 0/1 运行中 → 2/3 终态
         if found and len(found) == len(want) and all(r.get("status") in (2, 3) for r in found.values()):
             return found
         if time.time() > deadline:
+            # 超时把现场打出来：接口通不通、认领几条、卡在什么状态，下次不用再猜
+            print(
+                f"[run-watch] STRM 同步记录认领超时（{polls} 轮）：接口返回 "
+                f"{'None' if latest is None else len(latest)} 条，认领 {len(found)}/{len(want)}，"
+                f"状态 {[r.get('status') for r in found.values()]}",
+                flush=True,
+            )
             return found or None
         time.sleep(SYNC_POLL_INTERVAL)
 

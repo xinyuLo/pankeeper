@@ -249,6 +249,33 @@ def test_fire_strm_falls_back_when_records_missing(monkeypatch):
     assert snap == {"st": "已触发", "cls": "t-ok", "emby": "华语电影"}
 
 
+def test_await_sync_done_refreshes_running_record(monkeypatch):
+    """2026-10-31 挽救计划实录回归：首个轮询撞上 QMS 临时任务 status=0（运行中），
+    旧实现用 `key not in found` 把这行缓存住，任务 0.1s 跑完也读不到终态，只能等满
+    120s 超时回落「已触发」。修后每轮用最新记录覆盖，第二轮就要拿到 status=2。"""
+    running = {"id": 163, "status": 0, "new_strm": 0, "remote_path": SYNC_DEST,
+               "local_path": "/media/QMS", "created_at": 1000}
+    done = {"id": 163, "status": 2, "new_strm": 1, "remote_path": SYNC_DEST,
+            "local_path": "/media/QMS", "created_at": 1000, "finish_at": 1001}
+    seq = [[running], [done]]
+    calls = {"n": 0}
+
+    def fake_records(page_size=200):
+        i = min(calls["n"], len(seq) - 1)
+        calls["n"] += 1
+        return seq[i]
+
+    monkeypatch.setattr(rw.qms, "sync_records", fake_records)
+    monkeypatch.setattr(rw.time, "sleep", lambda s: None)
+    monkeypatch.setattr(rw, "SYNC_WAIT_TIMEOUT", 5)
+
+    got = rw._await_sync_done([SYNC_DEST], "/media/QMS", 1000)
+    assert got is not None
+    assert got[SYNC_DEST.strip("/")]["status"] == 2
+    assert got[SYNC_DEST.strip("/")]["new_strm"] == 1
+    assert calls["n"] >= 2
+
+
 # ---------- 搭车模式（2026-10-15 并发转存撞 QMS 同路径互斥）----------
 
 def test_rejected_by_concurrent():
