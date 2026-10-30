@@ -53,6 +53,26 @@ function proxifyImages(text: string) {
 }
 /** 正文按 Markdown 渲染（与 Server酱展示同观感：标题/加粗/图片/段落） */
 const detailHtml = computed(() => (detail.value?.content ? md.render(proxifyImages(detail.value.content)) : ''))
+/** 失败原因说人话：库里仍存原始报文（排障要用），只在展示层翻译。
+ *  新增通道错误文案时往这里补映射，别把英文原始报文糊到脸上；表格里 title 仍挂原文。 */
+const ERROR_HUMAN: Array<[RegExp, string]> = [
+  [/device token/i, 'Bark 服务器不认识这个设备：Device Key 对不上，去 Bark App 里重新复制填到设置里'],
+  [/BadStatusLine|SSH-2\.0/i, 'Bark 地址连到 SSH 端口上了：服务器地址或端口填错了'],
+  [/连接超时|timed out|timeout/i, '推送服务器响应超时：网络不稳或服务忙，稍后重试'],
+  [/HTTP 401|Unauthorized/i, '推送服务器拒绝登录：地址或密钥不对（401）'],
+  [/HTTP 404/i, '推送地址不存在：服务器地址填错了（404）'],
+  [/Connection refused|拒绝连接/i, '推送服务器没在跑，或端口不通'],
+  [/Name or service not known|getaddrinfo|nodename nor servname/i, '推送服务器域名解析失败：检查地址'],
+  [/SendKey 未配置/i, 'Server酱 SendKey 还没填'],
+  [/DeviceKey 未配置|服务器地址或 DeviceKey 未配置/i, 'Bark 服务器地址或 Device Key 还没填'],
+  [/地址未配置/i, 'Webhook 地址还没填'],
+]
+function friendlyError(err?: string) {
+  const raw = (err || '').trim()
+  if (!raw) return ''
+  for (const [re, txt] of ERROR_HUMAN) if (re.test(raw)) return txt
+  return raw
+}
 const detailLoading = ref(false)
 const detail = ref<PushLogDetail | null>(null)
 async function openDetail(row: PushLogRow) {
@@ -150,7 +170,7 @@ async function onDeleteRow(r: PushLogRow) {
             <!-- ⚠️ pl-err（display:-webkit-box）绝不能挂在 td 上：会覆盖 table-cell 布局，
                  td 不随行拉伸、border 错位（2026-10-06 行错位实锤根因）。挂内部 span。 -->
             <td class="small">
-              <span class="pl-err" :class="r.error ? 'bad-text' : 'muted'">{{ r.error || '—' }}</span>
+              <span class="pl-err" :class="r.error ? 'bad-text' : 'muted'" :title="r.error || ''">{{ friendlyError(r.error) || '—' }}</span>
             </td>
             <td>
               <span class="pl-acts">
@@ -190,7 +210,7 @@ async function onDeleteRow(r: PushLogRow) {
               </a-popconfirm>
             </div>
             <div class="pl-card-meta small muted">{{ r.ts }} · {{ kindTxt(r.kind) }}</div>
-            <div v-if="r.error" class="pl-err bad-text small">{{ r.error }}</div>
+            <div v-if="r.error" class="pl-err bad-text small">{{ friendlyError(r.error) }}</div>
           </div>
         </template>
         <div v-if="!rows.length" class="pq-empty">{{ loading ? '加载中…' : '还没有推送记录' }}</div>
@@ -211,7 +231,10 @@ async function onDeleteRow(r: PushLogRow) {
           </div>
           <div v-if="detail.error" class="pd-block">
             <div class="pd-label">失败原因</div>
-            <div class="bad-text">{{ detail.error }}</div>
+            <div class="bad-text">{{ friendlyError(detail.error) }}</div>
+            <div v-if="friendlyError(detail.error) !== detail.error" class="small muted" style="margin-top: 4px">
+              原始报错：{{ detail.error }}
+            </div>
           </div>
           <div class="pd-block">
             <div class="pd-label">推送正文（Server酱实际收到）</div>
