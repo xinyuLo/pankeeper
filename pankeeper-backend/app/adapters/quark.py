@@ -147,12 +147,24 @@ class QuarkAdapter(CloudAdapter):
 
     # ---------- 分享 ----------
 
+    # 分享级死链关键词：这些错误必须归成 ShareBanned（死链），不能落回通用 AdapterError。
+    # 2026-10-31 实录：封禁分享走的是「code≠0 且 HTTP≠200」分支，_req 先抛
+    # 「夸克接口错误：分享者用户封禁链接查看受限」，根本到不了下面的 status 判定 →
+    # check-link 只能判 uncertain 放行，死链照样弹快速转存窗。
+    _SHARE_DEAD_HINTS = ("不存在", "已取消", "已删除", "过期", "失效", "违规", "敏感", "封禁", "查看受限")
+
     def get_stoken(self, pwd_id: str, passcode: str) -> str:
-        data = self._req(
-            "POST",
-            "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/token",
-            json_body={"pwd_id": pwd_id, "passcode": passcode},
-        )
+        try:
+            data = self._req(
+                "POST",
+                "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/token",
+                json_body={"pwd_id": pwd_id, "passcode": passcode},
+            )
+        except AdapterError as e:
+            msg = str(e)
+            if "网络" not in msg and any(k in msg for k in self._SHARE_DEAD_HINTS):
+                raise ShareBanned(msg) from e
+            raise
         # 业务语义：status!=200 且非 500 → 分享失效（500 视为网络抖动走 AdapterError 重试链）。
         # 例外：「要提取码/访问码」是活链可行动错误（补码重试），不能混进死链——
         # 2026-10-15 实锤：缺码活链被当 ShareBanned → check-link 判 bad 拦死，

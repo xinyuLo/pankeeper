@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.adapters.base import RiskControlError, ShareBanned, ShareLocked, TaskSpec  # noqa: E402
+from app.adapters.base import AdapterError, RiskControlError, ShareBanned, ShareLocked, TaskSpec  # noqa: E402
 from app.adapters.baidu import BaiduClient  # noqa: E402
 from app.adapters.pan115 import Pan115Adapter  # noqa: E402
 from app.adapters.quark import QuarkAdapter  # noqa: E402
@@ -49,6 +49,36 @@ def test_quark_dead_message_is_banned(monkeypatch):
     monkeypatch.setattr(q, "_req", lambda m, u, **kw: {"status": 404, "message": "分享不存在"})
     with pytest.raises(ShareBanned):
         q.get_stoken("pwdid", "")
+
+
+def test_quark_banned_error_message_is_banned(monkeypatch):
+    """2026-10-31 快速转存弹窗实录：夸克封禁分享走的是「code≠0 且 HTTP≠200」分支，
+    _req 直接抛 AdapterError「夸克接口错误：分享者用户封禁链接查看受限」，到不了
+    status 判定 → check-link 判 uncertain 放行、死链照样开弹窗。get_stoken 必须转 ShareBanned。"""
+    q = _quark()
+
+    def boom(m, u, **kw):
+        raise AdapterError("夸克接口错误：分享者用户封禁链接查看受限")
+
+    monkeypatch.setattr(q, "_req", boom)
+    with pytest.raises(ShareBanned):
+        q.get_stoken("pwdid", "")
+
+
+def test_check_link_banned_message_is_bad(monkeypatch):
+    """兜底词表也要认「封禁/查看受限」：适配器没转 ShareBanned 时 check-link 判 bad。"""
+    from app.api import search as search_api
+
+    class _Fake:
+        def probe_share(self, spec):
+            raise AdapterError("夸克接口错误：分享者用户封禁链接查看受限")
+
+    monkeypatch.setattr("app.adapters.factory.make_adapter", lambda t: _Fake())
+    res = search_api.check_link(
+        {"type": "quark", "url": "https://pan.quark.cn/s/deadbeef20261031", "share_code": ""},
+        _user=None,
+    )
+    assert res["state"] == "bad"
 
 
 def test_quark_prepare_share_code_fallback(monkeypatch):

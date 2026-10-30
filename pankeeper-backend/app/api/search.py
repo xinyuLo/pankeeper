@@ -169,7 +169,10 @@ def check_link(body: dict, _user=CurrentUser):
         adapter = make_adapter(t)
     except AdapterError as e:
         return {"state": "unknown", "summary": str(e), "has_code": has_code}
-    DEAD_HINTS = ("不存在", "已取消", "已删除", "过期", "失效", "违规", "敏感")
+    # 兜底词表：适配器没把分享级错误转成 ShareBanned 时，按文案判死链。
+    # 「封禁 / 查看受限」2026-10-31 加：夸克封禁分享返回「分享者用户封禁链接查看受限」，
+    # 曾经不在表里 → 判 uncertain → 前端放行，死链照样开快速转存弹窗。
+    DEAD_HINTS = ("不存在", "已取消", "已删除", "过期", "失效", "违规", "敏感", "封禁", "查看受限")
     try:
         spec = TaskSpec(share_url=url, share_code=code, include_subdirs=False)
         probe = getattr(adapter, "probe_share", None)
