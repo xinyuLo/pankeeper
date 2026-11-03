@@ -178,6 +178,52 @@ def claim_records(names: set[str], since_id: int = 0) -> dict[str, dict]:
     return out
 
 
+def verify_scrape_started(
+    qms_id: int,
+    names: list[str],
+    baseline: dict[str, list] | None = None,
+    log_fn=None,
+    retry_after: int = 40,
+    poll_interval: int = 5,
+) -> None:
+    """触发刮削后确认 QMS 真扫到本次文件；40 秒没动静就重触发一次（只一次）。
+
+    为什么（2026-11-02 小城良方实录）：百度转存接口是异步的——`share/transfer` 回 errno=0
+    只代表受理，文件落盘还要时间。队列配置的「QMS 触发时间」10s 可能扫到空目录，QMS 正常
+    结束但一条记录都没有，只能人工再点一次刮削。
+
+    判据：出现触发时刻之后的本次文件新记录（claim_records），或该刮削路径正在跑
+    （别的任务代刮本次文件也算）。都不满足 → 等满 retry_after 秒重触发一次，然后收工。
+    只重试一次是老大定稿：再扫不到就是网盘可见性/缓存问题，别无限骚扰 QMS。
+    """
+    want = set(video_names(names))
+    since = max((int(v[0]) for v in (baseline or {}).values() if v and v[0]), default=0)
+    started = time.time()
+    while True:
+        claimed = claim_records(want, since) if want else {}
+        st = qms.scrape_path_status(qms_id) or {}
+        busy = int(st.get("is_running") or 0) != 0 or bool(st.get("is_scraping"))
+        if claimed or busy:
+            if log_fn:
+                log_fn(
+                    "QMS 已开始处理本次文件（"
+                    + (f"新记录 {len(claimed)} 条" if claimed else "刮削运行中")
+                    + "）"
+                )
+            return
+        if time.time() - started >= retry_after:
+            ok, msg = qms.trigger_scrape(int(qms_id))
+            if log_fn:
+                if ok:
+                    log_fn(f"QMS {retry_after} 秒内没扫到本次文件，已重触发一次刮削")
+                elif qms.rejected_by_concurrent(msg):
+                    log_fn(f"QMS {retry_after} 秒内没扫到本次文件，重触发被拒（同路径刮削已在跑）")
+                else:
+                    log_fn(f"QMS {retry_after} 秒内没扫到本次文件，重触发失败：{msg}")
+            return
+        time.sleep(poll_interval)
+
+
 def watch_qms(run_id: int, task_name: str, names: list[str], baseline: dict[str, list] | None = None, table=RunHistory, on_state=None) -> None:
     """spawn 后台线程回填 QMS 真实结果（无文件/无任务名直接返回）。
 

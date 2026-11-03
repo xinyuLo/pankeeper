@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import threading
 import time
 
 from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, ShareLocked, TaskSpec, split_video_files
@@ -250,6 +251,15 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
         _push_log(t, "INFO" if ok else "ERROR", f"QMS 刮削任务 #{qms_id} 触发{'成功' if ok else '失败'}"
                   + (f"：{msg}" if msg else "") + ("，等待 STRM 生成" if ok and strm_id is not None else ""))
     t["_qms_ride"] = ride
+    if ok and not ride:
+        # 刮削是否真扫到本次文件：百度转存是异步的，10s 的 QMS 触发时间可能扫到空目录
+        # （2026-11-02 小城良方实录）。后台盯 40s，没记录就重触发一次（只一次）。
+        threading.Thread(
+            target=run_watch.verify_scrape_started,
+            args=(int(qms_id), [e.get("name") for e in result.transferred], t.get("_qms_baseline") or {}),
+            kwargs={"log_fn": lambda txt: _push_log(t, "STEP", txt)},
+            daemon=True,
+        ).start()
     if strm_id is not None and (ok or ride) and not t.get("_media_reverse"):
         # 默认顺序：STRM 挂后台等刮削完成再触发（搭车模式同款，等的是代刮的记录）。
         # 反转模式已在上面先触发过，不再挂

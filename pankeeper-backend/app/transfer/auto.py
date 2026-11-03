@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 
 from ..adapters.base import AdapterError, CredentialExpired, ShareBanned, TaskSpec, split_video_files
@@ -248,6 +249,15 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
         _push_log(t, "INFO" if ok else "ERROR", f"QMS 刮削任务 #{link['qms_id']} 触发{'成功' if ok else '失败'}"
                   + (f"：{msg}" if msg else "") + ("，等待 STRM 生成" if ok and link.get("strm_id") else ""))
     t["_qms_ride"] = ride
+    if ok and not ride:
+        # 刮削是否真扫到本次文件：百度转存是异步的，10s 的 QMS 触发时间可能扫到空目录
+        # （2026-11-02 小城良方实录）。后台盯 40s，没记录就重触发一次（只一次）。
+        threading.Thread(
+            target=run_watch.verify_scrape_started,
+            args=(int(link["qms_id"]), [e.get("name") for e in result.transferred], t.get("_qms_baseline") or {}),
+            kwargs={"log_fn": lambda txt: _push_log(t, "STEP", txt)},
+            daemon=True,
+        ).start()
 
     # STRM 不在这里等、也不在这里触发：正确做法是「等 QMS 刮削真跑完再触发」
     # （run_watch.trigger_strm_after_scrape：轮询 /api/scrape/pathes/{id} 到 is_running=0
