@@ -227,9 +227,15 @@ def _media_chain(eng, t: dict, cfg: dict, result, name_head: str) -> tuple[dict,
         strm_snap = {"st": "正在生成 STRM（先行）" if ok_s else f"失败 · {msg_s}", "cls": "t-run" if ok_s else "t-bad"}
         _push_log(t, "INFO" if ok_s else "ERROR", f"（反转）STRM 同步 #{strm_id} 先行触发{'成功' if ok_s else '失败'}" + (f"：{msg_s}" if msg_s else ""))
         _sleep_phase(eng, t, "waitstrm", int(cfg.get("strm", 10)), f"等待 {cfg.get('strm', 10)} 秒后触发 QMS 刮削（反转模式）")
-    elif reverse:
-        # 校验在前端拦了，这里是执行侧兜底：没 STRM 就按默认顺序走，不把联动弄丢
-        _push_log(t, "WARN", "反转模式需要 STRM 同步路径，本次未选——退回默认顺序（先 QMS 后 STRM）")
+    else:
+        if reverse:
+            # 校验在前端拦了，这里是执行侧兜底：没 STRM 就按默认顺序走，不把联动弄丢
+            _push_log(t, "WARN", "反转模式需要 STRM 同步路径，本次未选——退回默认顺序（先 QMS 后 STRM）")
+        # 队列配置的「QMS 触发时间」：转存完成后等 N 秒再触发刮削（与 auto.py 同款）。
+        # 2026-11-07 老大实锤缺失：搜索转存的这条等待整段没有，转存完立刻打 QMS
+        # （记录 95「小城良方」日志里直接跳「QMS 刮削任务 #10 触发成功」），
+        # 百度转存是异步的，秒触发极易扫到只有空目录或没落完的文件。
+        _sleep_phase(eng, t, "waitqms", int(cfg.get("qms", 10)), f"等待 {cfg.get('qms', 10)} 秒后触发 QMS 刮削")
 
     t["phase"] = "qms"
     t["phaseStart"] = int(time.time() * 1000)
