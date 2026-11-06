@@ -482,9 +482,12 @@ function start() {
     size: t.size,
     share_url: t.url,
     share_code: t.share_code,
-    /* 更名填了 = 建壳承接（更名文件夹 + 只转勾选文件）；没填 = 按勾选路径直接转 */
+    /* 一律建壳承接：壳名 = 更名值，留空则由后端回落到资源名（spec.share_name）。
+       2026-11-07 老大实锤：留空时以前走的是「直接平铺转」，而弹窗右侧预览（savePath）
+       和输入框 placeholder 都写着「留空则用资源名新建文件夹」——界面承诺与实际行为不一致，
+       转存完盘里没有那层文件夹（记录 95「小城良方 (2026)」实录）。 */
     rename,
-    with_shell: !!rename,
+    with_shell: true,
     file_paths: picked,
     /* 勾选了嵌套路径时必须带子目录列举，否则 only_paths 找不到文件 */
     include_subdirs: includeSub.value || picked.some((x) => x.includes('/')),
